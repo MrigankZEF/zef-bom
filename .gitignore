@@ -18,7 +18,7 @@ backend/uploads/
 # ─── Env / secrets ───
 .env
 *.local
-backend/service_account*.json
+backend/service_account*
 client_secret*.json
 
 # ─── OS / editor ───

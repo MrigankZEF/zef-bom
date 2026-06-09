@@ -7,11 +7,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": {
-        target: "http://localhost:8000",
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api/, ""),
-      },
+      // Backend serves the API under /api, so forward as-is (no rewrite).
+      "/api": { target: "http://localhost:8000", changeOrigin: true },
     },
   },
 });

@@ -49,14 +49,11 @@ def current_claims(authorization: str | None = Header(default=None)) -> dict | N
     return None
 
 
-_PUBLIC_EXACT = {"/", "/health"}
-_PUBLIC_PREFIXES = ("/auth", "/docs", "/redoc", "/openapi")
-
-
 def enforce_access(request: Request, authorization: str | None = Header(default=None)):
-    """App-wide guard. When login is configured, every request must carry a valid
-    session for an allowlisted user; viewers may read but not write. Dev (no client
-    id) is unguarded."""
+    """App-wide guard. Only the API (/api/*) is protected; the served frontend and
+    the login endpoints (/api/auth/*) are public. When login is configured, every
+    /api call must carry a valid session for an allowlisted user; viewers may read
+    but not write. Dev (no client id) is unguarded."""
     from .db import SessionLocal
     from .models import User
 
@@ -66,8 +63,10 @@ def enforce_access(request: Request, authorization: str | None = Header(default=
     if method == "OPTIONS":
         return  # CORS preflight
     path = request.url.path
-    if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
-        return
+    if not path.startswith("/api"):
+        return  # the frontend (static assets + SPA) — public
+    if path.startswith("/api/auth"):
+        return  # login / auth-config — public
 
     claims = current_claims(authorization)
     if not claims:
