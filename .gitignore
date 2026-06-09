@@ -1,0 +1,36 @@
+# ─── Python ───
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# ─── Node / Vite ───
+node_modules/
+frontend/dist/
+.vite/
+
+# ─── Uploaded OPML files ───
+backend/uploads/
+
+# ─── Env / secrets ───
+.env
+*.local
+backend/service_account*.json
+client_secret*.json
+
+# ─── OS / editor ───
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ─── DB dumps / local dev SQLite ───
+*.dump
+*.sql.gz
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3

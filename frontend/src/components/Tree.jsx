@@ -1,0 +1,182 @@
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../api";
+import { Icon, ModulePill, Pill, fmtEURcompact } from "./ui";
+
+// Browse / BOM tree — ported from the prototype, wired to GET /tree (nested nodes
+// with embedded rollups). Expand state + filtering live client-side.
+export default function Tree({ onOpenPart, focus, version }) {
+  const [roots, setRoots] = useState(null);
+  const [error, setError] = useState(null);
+  const [expanded, setExpanded] = useState(() => new Set());
+  const [query, setQuery] = useState("");
+  const [moduleF, setModuleF] = useState("all");
+  const [coverageF, setCoverageF] = useState("all");
+
+  useEffect(() => {
+    api
+      .tree(null, 100)
+      .then((data) => {
+        setRoots(data);
+        setExpanded((prev) => (prev.size ? prev : new Set(data[0] ? [data[0].item_id] : [])));
+      })
+      .catch((e) => setError(e.message));
+  }, [version]);
+
+  const modules = useMemo(() => {
+    const set = new Set();
+    const walk = (n) => { if (n.module_code) set.add(n.module_code); n.children.forEach(walk); };
+    (roots || []).forEach(walk);
+    return [...set].sort();
+  }, [roots]);
+
+  const toggle = (id) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const expandAll = () => {
+    const ids = new Set();
+    const collect = (n) => { if (n.has_children) ids.add(n.item_id); n.children.forEach(collect); };
+    (roots || []).forEach(collect);
+    setExpanded(ids);
+  };
+  const collapseAll = () => setExpanded(new Set());
+
+  const matches = (n) => {
+    if (moduleF !== "all" && n.module_code !== moduleF) return false;
+    if (coverageF === "covered" && n.coverage < 1) return false;
+    if (coverageF === "uncovered" && n.coverage >= 1) return false;
+    if (query) {
+      const q = query.toLowerCase();
+      if (!n.item_id.toLowerCase().includes(q) && !n.item_name.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  };
+  const subtreeMatches = (n) => matches(n) || n.children.some(subtreeMatches);
+  const filtering = query || moduleF !== "all" || coverageF !== "all";
+
+  // While filtering, force-open the ancestors of matches (computed fresh, NOT stored).
+  // This never touches `expanded`, so clearing the search snaps back to your manual state.
+  const forceOpen = new Set();
+  if (filtering && roots) {
+    const visit = (n, path) => {
+      if (matches(n)) path.forEach((id) => forceOpen.add(id));
+      n.children.forEach((c) => visit(c, [...path, n.item_id]));
+    };
+    roots.forEach((r) => visit(r, []));
+  }
+
+  const rows = [];
+  const walk = (n, depth, pathKey) => {
+    if (filtering && !subtreeMatches(n)) return;
+    const open = expanded.has(n.item_id) || (filtering && forceOpen.has(n.item_id));
+    rows.push({ n, depth, open, key: pathKey });
+    if (open) n.children.forEach((c) => walk(c, depth + 1, `${pathKey}/${c.item_id}`));
+  };
+  (roots || []).forEach((r) => walk(r, 0, r.item_id));
+
+  const partCount = rows.filter((r) => r.n.item_type === "part").length;
+  const asmCount = rows.filter((r) => r.n.item_type === "assembly").length;
+
+  if (error) return <div className="page"><p className="err">Failed to load tree: {error}</p></div>;
+  if (!roots) return <div className="page"><p className="muted">Loading BOM…</p></div>;
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <div className="page-eyebrow">Browse</div>
+          <h1 className="page-title">BOM tree</h1>
+          <p className="page-sub">
+            The microplant hierarchy. Expand assemblies, filter, and click any item to inspect.
+          </p>
+        </div>
+        <div className="page-actions">
+          <button className="btn ghost sm" onClick={expandAll}><Icon name="chevD" size={12} /> Expand all</button>
+          <button className="btn ghost sm" onClick={collapseAll}><Icon name="chevR" size={12} /> Collapse all</button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 12, marginBottom: 16, alignItems: "center" }}>
+        <div className="search">
+          <Icon name="search" className="ico" />
+          <input placeholder="Search by part number or name…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+        <select className="select" value={moduleF} onChange={(e) => setModuleF(e.target.value)}>
+          <option value="all">All modules</option>
+          {modules.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <select className="select" value={coverageF} onChange={(e) => setCoverageF(e.target.value)}>
+          <option value="all">All coverage</option>
+          <option value="covered">Fully costed</option>
+          <option value="uncovered">Has uncosted</option>
+        </select>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" }}>
+          {partCount} parts · {asmCount} assemblies
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div className="tree-head">
+          <div>Part / assembly</div>
+          <div className="right">Qty</div>
+          <div className="right">Rollup cost</div>
+          <div className="right">Coverage</div>
+          <div className="right">Module</div>
+          <div></div>
+        </div>
+        <div className="tree">
+          {rows.map(({ n, depth, open, key }) => (
+            <div
+              key={key}
+              className={`tree-row ${focus === n.item_id ? "on" : ""}`}
+              style={{ "--indent": `${12 + depth * 22}px` }}
+              title={n.has_children ? "Click to expand · arrow opens details" : "Click to open details"}
+              onClick={() => (n.has_children ? toggle(n.item_id) : onOpenPart(n.item_id))}
+            >
+              <div className="tree-name">
+                <button
+                  className={`tree-toggle ${n.has_children ? "" : "is-leaf"}`}
+                  onClick={(e) => { e.stopPropagation(); toggle(n.item_id); }}
+                >
+                  <Icon name={open ? "chevD" : "chevR"} size={12} />
+                </button>
+                <span className="num">{n.item_id}</span>
+                <span className={`lbl ${n.item_type === "assembly" ? "assembly" : ""}`}>{n.item_name}</span>
+                {n.item_type === "assembly" && <Pill kind="warm">asm</Pill>}
+              </div>
+              <div className="qty">× {n.quantity}</div>
+              <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}>
+                {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost) : "—"}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                <div className="cov-bar" style={{ width: 38 }}>
+                  <div className="filled" style={{ width: `${n.coverage * 100}%` }} />
+                </div>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>
+                  {Math.round(n.coverage * 100)}%
+                </span>
+              </div>
+              <div style={{ textAlign: "right" }}><ModulePill code={n.module_code} /></div>
+              <button
+                className="tree-toggle"
+                title="Open details"
+                style={{ justifySelf: "end", width: 26, height: 26, color: "var(--ink-3)" }}
+                onClick={(e) => { e.stopPropagation(); onOpenPart(n.item_id); }}
+              >
+                <Icon name="chevR" size={13} />
+              </button>
+            </div>
+          ))}
+          {rows.length === 0 && (
+            <div className="empty" style={{ padding: 24, textAlign: "center", color: "var(--ink-3)" }}>
+              No items match these filters.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

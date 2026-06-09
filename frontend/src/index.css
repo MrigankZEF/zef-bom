@@ -1,0 +1,10 @@
+/* Minimal app-level helpers. Layout + components come from styles/zef.css
+   (the ported ZEF design system). Don't redefine .topbar/.page/.card here. */
+.muted { color: var(--ink-3); }
+.ok { color: var(--ok); }
+.err { color: var(--accent); }
+
+main { display: block; }
+
+/* Hide the expand toggle on leaf rows WITHOUT inheriting the .empty padding. */
+.tree-toggle.is-leaf { visibility: hidden; }

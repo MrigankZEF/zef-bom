@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>mindmap.opml</title>
+    <dateCreated>Mon Jun 08 2026 13:45:51 GMT+0200 (Central European Summer Time)</dateCreated>
+  </head>
+  <body>
+    <outline text="AEC066A:AEC Standalone">
+      <outline text="AEC A: Base ">
+        <outline text="AEC Sump"/>
+        <outline text="UN Plastic pallet"/>
+      </outline>
+      <outline text="AEC000A:AEC">
+        <outline text="AEC Core">
+          <outline text="AEC Riser Cooler #3">
+            <outline text="Un tie wraps short #4"/>
+            <outline text="UN Fan 140mm IP">
+              <outline text="UN Low power connector 4pin male "/>
+              <outline text="UN fan 140mm "/>
+            </outline>
+            <outline text="AEC connector block Swagelok Top #2">
+              <outline text="UN ferrule set"/>
+              <outline text="UN socket head M6 #2"/>
+              <outline text="Aec connector block swagelok top body"/>
+            </outline>
+            <outline text="Riser radiator cover">
+              <outline text=""/>
+            </outline>
+            <outline text="AEC connector block Oring Top #2">
+              <outline text="UN ferrule set"/>
+              <outline text="UN- Oring 8mm"/>
+              <outline text="UN socket head M6 #2"/>
+              <outline text="Aec connector cover"/>
+              <outline text="AEC Connector Gasket"/>
+            </outline>
+            <outline text="AEC Riser Radiator "/>
+          </outline>
+          <outline text="AEC A: Product Output H2">
+            <outline text="UN socket head M5 #2"/>
+            <outline text="AEC manifold mount"/>
+            <outline text="UN Socket head M4 #4"/>
+            <outline text="A: Product Cooler">
+              <outline text="UN tie wraps long #2"/>
+              <outline text="AEC Cooler profile"/>
+              <outline text="AEC Cooler Endcap"/>
+              <outline text="A: Fan ">
+                <outline text="UN self tapping screws m4 #4 "/>
+                <outline text="AEC P:Fan mount"/>
+                <outline text="UN P:Fan"/>
+              </outline>
+              <outline text="AEC P: Product Cooler Tube"/>
+            </outline>
+            <outline text="AEC003A:Manifold H2">
+              <outline text="AEC P: Manifold ECU"/>
+              <outline text="AEC022P:H2 Manifold Body"/>
+              <outline text="AEC023P:H2 Output Valve"/>
+              <outline text="AEC024P:Purge Valve"/>
+              <outline text="AEC028P:AEC Coalescer Intern"/>
+              <outline text="AEC026P:H2 Flute"/>
+            </outline>
+          </outline>
+          <outline text="AEC A: Product Output O2">
+            <outline text="socket head M5 #2"/>
+            <outline text="AEC manifold mount //3d print"/>
+            <outline text="Socket head M4 #4"/>
+            <outline text="AEC046A:Product Cooler">
+              <outline text="UN tie wraps long #2"/>
+              <outline text="UN Cable tray"/>
+              <outline text="AEC Endcap"/>
+              <outline text="A: Fan ">
+                <outline text="UN self tapping screws m4 #4 "/>
+                <outline text="AEC060P:Product Cooler Funnel"/>
+                <outline text="AEC061P:Product Cooler Fan"/>
+              </outline>
+              <outline text="Product Cooler Tube"/>
+            </outline>
+            <outline text="AEC007A:Manifold O2">
+              <outline text="AEC044P:O2 Flute"/>
+              <outline text="AEC028P:AEC Coalescer Intern"/>
+              <outline text="AEC042P:O2 Manifold Body"/>
+              <outline text="AEC043P:O2 Output Valve"/>
+              <outline text="AEC025P:Pressure Relief"/>
+              <outline text="AEC027P:Pressure Sensor"/>
+            </outline>
+          </outline>
+          <outline text="AEC004A:C-tube">
+            <outline text="Power Cable tray"/>
+            <outline text="AEC Feet #6">
+              <outline text="UN P: tie wraps #2"/>
+              <outline text="Feet Plastic"/>
+            </outline>
+            <outline text="AEC031P:C-Tube Weldpart">
+              <outline text="C-Tube">
+                <outline text="Connector Weld-in 8mm"/>
+                <outline text="Feed tube short #6"/>
+                <outline text="Feed tube long #6"/>
+                <outline text="C-Tube Bend"/>
+              </outline>
+              <outline text="AEC A: O2 flash tank">
+                <outline text="AEC P: Connector Weld-in"/>
+                <outline text="AEC P: Connector Block Swagelok Base #5"/>
+                <outline text="AEC P: O2 Caps"/>
+              </outline>
+              <outline text="AEC A: h2 flash tank">
+                <outline text="AEC P: Connector Weld-in 12mm"/>
+                <outline text="AEC P: Connector Block Swagelok Base #5"/>
+                <outline text="AEC P: H2 Caps"/>
+              </outline>
+            </outline>
+          </outline>
+          <outline text="AEC081A:Triple Stack#2">
+            <outline text="AEC014P:Endplate#2"/>
+            <outline text="AEC018P:Stack Bolt#8"/>
+            <outline text="AEC019P:Stack Nut#32"/>
+            <outline text="AEC020P:Insulator Plate#4"/>
+            <outline text="AEC002A:Stack#3">
+              <outline text="AEC015A:Midplate">
+                <outline text="UN003P:Socket Head Screw - M6x10"/>
+                <outline text="UN P:Washer M6"/>
+                <outline text="UN001P:O-Ring 124x2.62 EPDM#2"/>
+                <outline text="AEC050P:Midplate Body"/>
+                <outline text="DRY012P:NTC"/>
+              </outline>
+              <outline text="AEC084A:End Cell#2">
+                <outline text="AEC029P:End Cell Membrane Gasket"/>
+                <outline text="AEC053P:End Cell Frame"/>
+              </outline>
+              <outline text="AEC054P:Midplate Cell#2">
+                <outline text="UN001P:O-Ring 124x2.62 EPDM"/>
+                <outline text="AEC085P:MidPlate Cell Frame"/>
+                <outline text="AEC062P:Cell Membrane"/>
+              </outline>
+              <outline text="AEC083A:Electrode#2">
+                <outline text="AEC055P:Electrode Plate"/>
+                <outline text="UN003P:Socket Head Screw - M6x10"/>
+                <outline text="UN002P:Hex Nut - M6"/>
+              </outline>
+              <outline text="AEC082A:Half Stack Cells#2">
+                <outline text="AEC052A:Cell#26">
+                  <outline text="AEC063A:Cell Frame">
+                    <outline text="AEC065P:Bipolar Plate"/>
+                    <outline text="AEC064P:Frame Body"/>
+                  </outline>
+                  <outline text="UN001P:O-Ring 124x2.62 EPDM"/>
+                  <outline text="AEC062P:Cell Membrane"/>
+                </outline>
+              </outline>
+            </outline>
+          </outline>
+        </outline>
+        <outline text="AEC009A:Electronics">
+          <outline text="AEC Sensor cable tray horizontal #2">
+            <outline text="AEC Tube mount 30mm #3">
+              <outline text="UN tie wrap 150mm"/>
+              <outline text="UN self tapping screw m5"/>
+              <outline text="UN tube mount 30mm"/>
+            </outline>
+            <outline text=" UN cable tray 25mm"/>
+          </outline>
+          <outline text="AEC Solar Through Panel">
+            <outline text="UN Throughput cable CAN"/>
+            <outline text="UN Self tapping screws m5 #4"/>
+            <outline text="AEC Through Panel"/>
+            <outline text="UN power through mounts 4pin #12"/>
+          </outline>
+          <outline text="AEC Power ECU">
+            <outline text="UN Tube mounting hubs #4">
+              <outline text="UN self tapping screw m5"/>
+              <outline text="UN tie wrap 150mm"/>
+              <outline text="UN Tube mount 34mm"/>
+            </outline>
+            <outline text="Power ECU mounting sheet metal "/>
+            <outline text="Power ECU Casing"/>
+            <outline text="Power ECU PCB"/>
+          </outline>
+          <outline text="AEC P: Wire Harness Core">
+            <outline text="UN level sensors ">
+              <outline text="UN P:Sensor connector 2pin"/>
+              <outline text="AEC032P:Level Sensor#6"/>
+            </outline>
+            <outline text="UN Pressure booster connector high power 2pin female //3?"/>
+            <outline text="CAN Bus //gevasol board, power board, upstream"/>
+            <outline text="un low power connector 4pin female #3 //fans"/>
+            <outline text="UN Sensor connector female 8 pin #3 //to riser cooler harnesss"/>
+            <outline text="Riser Cooler Harness #3">
+              <outline text="Un sensor connector male //8pin"/>
+              <outline text="UN A:NTC  #2 //connector Flashtanks">
+                <outline text="UN P:Sensor connector 2"/>
+                <outline text="UN P: NTC"/>
+              </outline>
+              <outline text="UN Wires"/>
+              <outline text="UN A:NTC  #2 //connector midplate">
+                <outline text="UN P:Sensor connector 2"/>
+                <outline text="UN P: NTC"/>
+              </outline>
+            </outline>
+            <outline text="UN Wires"/>
+            <outline text="UN A:NTC  #2 //Product Cooler Out">
+              <outline text="UN P:Sensor connector 2"/>
+              <outline text="UN P: NTC"/>
+            </outline>
+            <outline text="UN microphone #2">
+              <outline text="UN P: Microphone"/>
+              <outline text="UN P:Sensor connector 2pin"/>
+            </outline>
+            <outline text="UN ECU connector"/>
+          </outline>
+          <outline text="AEC048P:Wire Harness Power">
+            <outline text="UN ring lug terminals M6 #18"/>
+            <outline text="UN wires 80Amp"/>
+          </outline>
+          <outline text="AEC047P:ECU"/>
+        </outline>
+        <outline text="AEC006A:Pressurizer Section">
+          <outline text="Pressure connection">
+            <outline text="T-section to C-tube connector tube"/>
+            <outline text="T-section"/>
+            <outline text="Booster to Valve tube"/>
+            <outline text="Valve to T-section Tube"/>
+            <outline text="AEC038P:Check Valve#1"/>
+            <outline text="AEC037P:Drain Valve"/>
+            <outline text="AEC036P:Drain Connector tube"/>
+          </outline>
+          <outline text="AEC039A:Pressure Booster">
+            <outline text="Pressure Booster Mount"/>
+            <outline text="AEC057P:Pressure Booster Motor"/>
+            <outline text="AEC056P:Pressure Booster Pump"/>
+          </outline>
+        </outline>
+      </outline>
+    </outline>
+  </body>
+</opml>
