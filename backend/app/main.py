@@ -34,8 +34,22 @@ for _r in (meta, items, tree, edit, uploads, admin, attachments, auth):
 
 
 @app.on_event("startup")
-def _seed_admin() -> None:
-    """On first boot with an empty users table, seed ADMIN_EMAIL as the first admin."""
+def _startup() -> None:
+    """Run DB migrations, then seed the first admin — so a fresh deploy is self-setup,
+    regardless of the platform's start command."""
+    # 1) migrate (idempotent): creates/updates all tables to head
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        backend_dir = Path(__file__).resolve().parent.parent
+        cfg = Config(str(backend_dir / "alembic.ini"))
+        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+        command.upgrade(cfg, "head")
+    except Exception as exc:  # don't take the whole app down; surface in logs
+        print(f"[startup] migration error: {exc}")
+
+    # 2) seed the first admin if the users table is empty
     if not settings.admin_email:
         return
     from .db import SessionLocal
@@ -46,8 +60,8 @@ def _seed_admin() -> None:
         if db.query(User).first() is None:
             db.add(User(email=settings.admin_email.strip().lower(), role="admin"))
             db.commit()
-    except Exception:
-        pass  # table may not exist yet if migrations haven't run
+    except Exception as exc:
+        print(f"[startup] admin seed error: {exc}")
     finally:
         db.close()
 
