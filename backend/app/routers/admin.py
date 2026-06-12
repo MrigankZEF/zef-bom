@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from ..auth import current_user, require_admin
 from ..db import get_db
 from ..history import record_change
-from ..models import BomLink, CostEvidence, DecidedCost, FieldValue, Item, ReferenceValue, User
+from ..models import (
+    AssemblyLabor, BomLink, CostEvidence, DecidedCost, FieldValue, Item, ReferenceValue, User,
+)
 from ..schemas import ReferenceIn, UserIn, UserRoleIn
 
 router = APIRouter(tags=["admin"])
@@ -83,6 +85,9 @@ def archive_item(item_id: str, db: Session = Depends(get_db), user: str = Depend
     record_change(db, entity_type="item", entity_id=item_id, change_type="remove",
                   field_changed="archived", old_value=False, new_value=True, changed_by=user,
                   change_reason="archived (soft-delete)")
+    db.flush()
+    from ..operations import normalize_structure  # parents lose this child → may demote A→P
+    normalize_structure(db, user=user)
     db.commit()
     return {"item_id": item_id, "archived": True}
 
@@ -96,6 +101,9 @@ def restore_item(item_id: str, db: Session = Depends(get_db), user: str = Depend
     record_change(db, entity_type="item", entity_id=item_id, change_type="update",
                   field_changed="archived", old_value=True, new_value=False, changed_by=user,
                   change_reason="restored")
+    db.flush()
+    from ..operations import normalize_structure  # child is back → parent may re-promote P→A
+    normalize_structure(db, user=user)
     db.commit()
     return {"item_id": item_id, "archived": False}
 
@@ -112,12 +120,17 @@ def _find_link(db: Session, parent: str, child: str) -> BomLink:
 
 @router.delete("/items/{parent_id}/links/{child_id}")
 def archive_link(parent_id: str, child_id: str, db: Session = Depends(get_db), user: str = Depends(current_user)) -> dict:
+    from ..operations import normalize_structure, resolve_rename
+
     link = _find_link(db, parent_id, child_id)
     link.archived = True
     record_change(db, entity_type="bom_link", entity_id=f"{parent_id}>{child_id}", change_type="remove",
                   field_changed="archived", new_value=True, changed_by=user, change_reason="removed from assembly")
+    db.flush()
+    # parent may demote A→P (no children left); the removed subtree re-codes to its smaller usage
+    changes = normalize_structure(db, user=user)
     db.commit()
-    return {"parent": parent_id, "child": child_id, "archived": True}
+    return {"parent": resolve_rename(changes, parent_id), "child": resolve_rename(changes, child_id), "archived": True}
 
 
 @router.post("/items/{parent_id}/links/{child_id}/restore")
@@ -147,7 +160,11 @@ def purge_item(item_id: str, db: Session = Depends(get_db), user: str = Depends(
     db.execute(delete(CostEvidence).where(CostEvidence.item_id == item_id))
     db.execute(delete(DecidedCost).where(DecidedCost.item_id == item_id))
     db.execute(delete(FieldValue).where(FieldValue.item_id == item_id))
+    db.execute(delete(AssemblyLabor).where(AssemblyLabor.item_id == item_id))
     db.delete(item)
+    db.flush()
+    from ..operations import normalize_structure
+    normalize_structure(db, user=user)
     db.commit()
     return {"item_id": item_id, "deleted": True}
 

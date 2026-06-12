@@ -50,10 +50,27 @@ export const api = {
     request(`/costing/breakdown?${new URLSearchParams({ root, volume })}`),
   pending: (module) =>
     request(`/pending${module ? `?${new URLSearchParams({ module })}` : ""}`),
+  catalog: () => request("/catalog"),
+  createCatalogItem: (body) => request("/catalog/items", { method: "POST", body: JSON.stringify(body) }),
+
+  // ── export (top-level BOM → OPML / CSV download) ──
+  exportBom: async (root, fmt) => {
+    const res = await fetch(`${BASE}/export/${fmt}?${new URLSearchParams({ root })}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`Export failed: ${res.status} — ${await res.text().catch(() => "")}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${root}.${fmt}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  },
 
   // ── M4: edit + cost ──
   patchItem: (id, patch) =>
     request(`/items/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  promoteItem: (id) => request(`/items/${encodeURIComponent(id)}/promote`, { method: "POST" }),
+  addChild: (parentId, body) =>
+    request(`/items/${encodeURIComponent(parentId)}/children`, { method: "POST", body: JSON.stringify(body) }),
   costEvidence: (id) => request(`/items/${encodeURIComponent(id)}/cost-evidence`),
   addCostEvidence: (id, body) =>
     request(`/items/${encodeURIComponent(id)}/cost-evidence`, { method: "POST", body: JSON.stringify(body) }),
@@ -62,6 +79,14 @@ export const api = {
   decidedCost: (id) => request(`/items/${encodeURIComponent(id)}/decided-cost`),
   setDecidedCost: (id, body) =>
     request(`/items/${encodeURIComponent(id)}/decided-cost`, { method: "PUT", body: JSON.stringify(body) }),
+  assemblyLabor: (id) => request(`/items/${encodeURIComponent(id)}/assembly-labor`),
+  setAssemblyLabor: (id, body) =>
+    request(`/items/${encodeURIComponent(id)}/assembly-labor`, { method: "PUT", body: JSON.stringify(body) }),
+
+  // ── assembly cost types (reference values w/ a €/hour rate in meta) ──
+  costTypes: () => request("/reference?category=assembly_cost_type"),
+  addCostType: (name, rate) =>
+    request("/reference", { method: "POST", body: JSON.stringify({ category: "assembly_cost_type", value: name, meta: { rate_eur_h: rate } }) }),
   itemHistory: (id) => request(`/items/${encodeURIComponent(id)}/history`),
   history: (entityType) =>
     request(`/history${entityType ? `?${new URLSearchParams({ entity_type: entityType })}` : ""}`),
@@ -69,11 +94,12 @@ export const api = {
   // ── M5: uploads ──
   listUploads: () => request("/uploads"),
   getUpload: (id) => request(`/uploads/${encodeURIComponent(id)}`),
-  createUpload: async (file, { notes, isTopLevel } = {}) => {
+  createUpload: async (file, { notes, isTopLevel, attachTo } = {}) => {
     const fd = new FormData();
     fd.append("file", file);
     if (notes) fd.append("notes", notes);
     fd.append("is_top_level", isTopLevel ? "true" : "false");
+    if (attachTo) fd.append("attach_to", attachTo);
     const res = await fetch(`${BASE}/uploads`, { method: "POST", body: fd, headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => res.statusText)}`);
     return res.json();

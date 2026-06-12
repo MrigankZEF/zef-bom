@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from ..db import get_db
-from ..models import BomLink, DecidedCost, Item
+from ..models import AssemblyLabor, BomLink, DecidedCost, Item
 from ..rollups import BomGraph
 
 router = APIRouter(tags=["bom"])
@@ -52,6 +52,10 @@ def get_rollup(
         "root": root,
         "volume_tier": volume,
         "cost": round(r.cost, 2),
+        "cost_min": round(r.cost_min, 2),
+        "cost_max": round(r.cost_max, 2),
+        "assembly_cost": round(r.assembly_cost, 2),
+        "parts_cost": round(r.cost - r.assembly_cost, 2),
         "covered": r.covered,
         "total": r.total,
         "coverage": round(r.coverage, 4),
@@ -73,6 +77,8 @@ def costing_summary(db: Session = Depends(get_db), volume: int = Query(default=1
             "item_id": r.item_id,
             "item_name": r.item_name,
             "cost": round(rl.cost, 2),
+            "cost_min": round(rl.cost_min, 2),
+            "cost_max": round(rl.cost_max, 2),
             "coverage": round(rl.coverage, 4),
             "covered": rl.covered,
             "total": rl.total,
@@ -85,7 +91,13 @@ def costing_summary(db: Session = Depends(get_db), volume: int = Query(default=1
         total = sum(gv.rollup(r.item_id).cost for r in gv.roots())
         tiers.append({"volume": v, "total": round(total, 2)})
     grand = sum(p["cost"] for p in per_root)
-    return {"volume_tier": volume, "grand_total": round(grand, 2), "per_root": per_root, "tiers": tiers}
+    grand_min = sum(p["cost_min"] for p in per_root)
+    grand_max = sum(p["cost_max"] for p in per_root)
+    return {
+        "volume_tier": volume, "grand_total": round(grand, 2),
+        "grand_min": round(grand_min, 2), "grand_max": round(grand_max, 2),
+        "per_root": per_root, "tiers": tiers,
+    }
 
 
 @router.get("/costing/breakdown")
@@ -104,14 +116,17 @@ def costing_breakdown(
     if root not in g.items:
         raise HTTPException(404, f"Item {root} not found")
     leaves = g.flatten_leaves(root)
-    parts, cost_total, weight_total, covered = [], 0.0, 0.0, 0
+    parts, cost_total, cost_min_total, cost_max_total, weight_total, covered = [], 0.0, 0.0, 0.0, 0.0, 0
     for leaf_id, eff_qty in leaves.items():
         it = g.items[leaf_id]
-        unit_cost = g.decided.get((leaf_id, volume))
+        _est = g.decided.get((leaf_id, volume))  # (min, likely, max) or None
+        unit_cost = _est[1] if _est is not None else None
         weight = it.weight_grams
         cost = (unit_cost or 0.0) * eff_qty
         wt = (weight or 0.0) * eff_qty
         cost_total += cost
+        cost_min_total += (_est[0] if _est is not None else 0.0) * eff_qty
+        cost_max_total += (_est[2] if _est is not None else 0.0) * eff_qty
         weight_total += wt
         if unit_cost is not None:
             covered += 1
@@ -124,18 +139,29 @@ def costing_breakdown(
         })
     parts.sort(key=lambda x: -x["cost"])
 
+    # Per-assembly cost (its own time × rate × effective qty) — one entry per assembly.
+    asm_costs = []
+    for aid, eff in g.flatten_assemblies(root).items():
+        ac = g.assembly_cost(g.items[aid])[1] * eff
+        if ac > 0:
+            asm_costs.append({"item_id": aid, "item_name": g.items[aid].item_name, "cost": round(ac, 2)})
+    asm_costs.sort(key=lambda x: -x["cost"])
+
+    rl = g.rollup(root)  # full cost incl. assembly labour, with min/max
     tiers = []
     for v in VOLUME_TIERS:
-        gv = BomGraph(db, volume_tier=v)
-        lv = gv.flatten_leaves(root)
-        tv = sum((gv.decided.get((lid, v)) or 0.0) * q for lid, q in lv.items())
-        tiers.append({"volume": v, "total": round(tv, 2)})
+        rv = BomGraph(db, volume_tier=v).rollup(root)
+        tiers.append({"volume": v, "total": round(rv.cost, 2), "total_min": round(rv.cost_min, 2), "total_max": round(rv.cost_max, 2)})
 
     return {
         "root": root, "root_name": g.items[root].item_name, "volume_tier": volume,
-        "parts": parts, "tiers": tiers,
+        "parts": parts, "assemblies": asm_costs, "tiers": tiers,
         "totals": {
-            "cost": round(cost_total, 2), "weight_grams": round(weight_total, 1),
+            "cost": round(rl.cost, 2),                       # full: parts + assembly labour
+            "parts_cost": round(cost_total, 2),
+            "assembly_cost": round(rl.cost - cost_total, 2),
+            "cost_min": round(rl.cost_min, 2), "cost_max": round(rl.cost_max, 2),
+            "weight_grams": round(weight_total, 1),
             "covered": covered, "total": len(leaves),
             "coverage": round(covered / len(leaves), 4) if leaves else 0,
         },
@@ -153,14 +179,20 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
         it.item_id: it
         for it in db.execute(select(Item).where(Item.archived.is_(False))).scalars()
     }
-    parents = {
-        bl.parent_item_id
-        for bl in db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars()
-    }
-    costed = {dc.item_id for dc in db.execute(select(DecidedCost)).scalars()}
+    links = list(db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars())
+    parents = {bl.parent_item_id for bl in links}
+    linked = parents | {bl.child_item_id for bl in links}  # items actually used in a BOM
+    costed_tiers: dict[str, set] = {}
+    for dc in db.execute(select(DecidedCost)).scalars():
+        costed_tiers.setdefault(dc.item_id, set()).add(dc.volume_tier)
+    labored_tiers: dict[str, set] = {}
+    for al in db.execute(select(AssemblyLabor)).scalars():
+        labored_tiers.setdefault(al.item_id, set()).add(al.volume_tier)
 
     out = []
     for it in items.values():
+        if it.item_id not in linked:
+            continue  # catalog-only item (not in any BOM) — not a pending gap
         if module and it.module_code != module:
             continue
         is_leaf = it.item_id not in parents
@@ -172,10 +204,17 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
                 missing.append("material")
             if not it.supplier_country:
                 missing.append("supplier_country")
-            if it.item_id not in costed:
-                missing.append("cost")
-        elif it.assembly_time_min_1pc is None:
-            missing.append("assembly_time")
+            have = costed_tiers.get(it.item_id, set())
+            for tier, lbl in ((1, "cost@1"), (100, "cost@100"), (10000, "cost@10k")):
+                if tier not in have:
+                    missing.append(lbl)
+        else:  # assembly
+            have_t = labored_tiers.get(it.item_id, set())
+            for tier, lbl in ((1, "asm_time@1"), (100, "asm_time@100"), (10000, "asm_time@10k")):
+                if tier not in have_t:
+                    missing.append(lbl)
+            if it.cost_type_id is None:
+                missing.append("cost_type")
         if missing:
             out.append({
                 "item_id": it.item_id, "item_name": it.item_name,

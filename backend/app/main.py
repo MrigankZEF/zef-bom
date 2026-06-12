@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import enforce_access
 from .config import settings
-from .routers import admin, attachments, auth, edit, items, meta, tree, uploads
+from .routers import admin, attachments, auth, catalog, edit, export, items, meta, tree, uploads
 
 app = FastAPI(
     title="ZEF BOM API",
@@ -29,7 +29,7 @@ app.add_middleware(
 
 # All API routes live under /api so the guard protects exactly the API and the
 # frontend is served from everything else.
-for _r in (meta, items, tree, edit, uploads, admin, attachments, auth):
+for _r in (meta, items, tree, edit, uploads, admin, attachments, auth, export, catalog):
     app.include_router(_r.router, prefix="/api")
 
 

@@ -15,9 +15,12 @@ from sqlalchemy.orm import Session
 
 from ..auth import current_user
 from ..db import get_db
-from ..models import UploadBatch
+from ..history import record_change
+from ..models import BomLink, Item, UploadBatch
 from ..bom_ingest.miro_csv_fix import BLOCKER_STATUSES
 from ..bom_ingest.service import apply_incremental, build_incremental_diff, parse_opml
+from ..bom_ingest.writer import _top_level_numbers
+from ..operations import normalize_structure, promote_to_assembly, would_cycle
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -61,6 +64,7 @@ async def create_upload(
     file: UploadFile = File(...),
     notes: str | None = Form(default=None),
     is_top_level: bool = Form(default=False),
+    attach_to: str | None = Form(default=None),
     db: Session = Depends(get_db),
     user: str = Depends(current_user),
 ) -> dict:
@@ -75,6 +79,8 @@ async def create_upload(
         raise HTTPException(400, f"Could not parse OPML: {exc}") from exc
 
     diff = build_incremental_diff(db, cells, opml_path=path)
+    if attach_to and not is_top_level:  # remember where this sub-BOM should hang
+        diff["attach_to"] = attach_to.strip()
     blockers = sum(1 for c in cells if c.resolution_status in BLOCKER_STATUSES)
 
     batch = UploadBatch(
@@ -112,9 +118,38 @@ def approve_upload(batch_id: str, db: Session = Depends(get_db), user: str = Dep
     applied = apply_incremental(
         db, cells, batch_id=batch_id, user=user, mark_top_level=b.is_top_level_bom
     )
+    db.flush()
+
+    # Attach a non-top-level import under the chosen parent (its sub-BOM roots hang there).
+    attach_to = (b.summary_json or {}).get("attach_to")
+    attached: list[str] = []
+    if attach_to and not b.is_top_level_bom and db.get(Item, attach_to) is not None:
+        for root_num in _top_level_numbers(cells):
+            if root_num == attach_to or would_cycle(db, attach_to, root_num):
+                continue  # skip self / loop-creating attachments
+            existing = db.execute(
+                select(BomLink).where(BomLink.parent_item_id == attach_to, BomLink.child_item_id == root_num)
+            ).scalar_one_or_none()
+            if existing is None:
+                db.add(BomLink(parent_item_id=attach_to, child_item_id=root_num, quantity=1))
+                record_change(db, entity_type="bom_link", entity_id=f"{attach_to}>{root_num}",
+                              change_type="create", new_value="qty=1", changed_by=user,
+                              change_reason=f"attached import {batch_id}")
+                attached.append(root_num)
+            elif existing.archived:
+                existing.archived = False
+                attached.append(root_num)
+        db.flush()
+        promote_to_assembly(db, attach_to, user=user)
+
+    # Naming rules: types follow children (assembly ↔ part) and codes follow usage (system / UN).
+    recodes = normalize_structure(db, user=user)
     b.status = "approved"
     db.commit()
-    return {"batch_id": batch_id, "status": "approved", "applied": applied}
+    return {
+        "batch_id": batch_id, "status": "approved", "applied": applied,
+        "attached": attached, "recodes": recodes,
+    }
 
 
 @router.post("/{batch_id}/reject")

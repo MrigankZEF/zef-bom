@@ -13,8 +13,13 @@ from sqlalchemy.orm import Session
 from ..auth import current_user
 from ..db import get_db
 from ..history import record_change
-from ..models import ChangeHistory, CostEvidence, DecidedCost, FieldDefinition, FieldValue, Item
+from ..models import (
+    AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldDefinition, FieldValue, Item,
+)
 from ..schemas import (
+    AddChildIn,
+    AssemblyLaborIn,
+    AssemblyLaborOut,
     ChangeHistoryOut,
     CostEvidenceIn,
     CostEvidenceOut,
@@ -60,6 +65,56 @@ def patch_item(
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.post("/items/{item_id}/promote")
+def promote_item(item_id: str, db: Session = Depends(get_db), user: str = Depends(current_user)) -> dict:
+    """Convert a part into an assembly (…P → …A, retype), repointing all references.
+    Used when a part gains children (the P→A naming rule)."""
+    from ..operations import promote_to_assembly
+
+    _get_item(db, item_id)
+    new_id = promote_to_assembly(db, item_id, user=user)
+    db.commit()
+    return {"old_id": item_id, "new_id": new_id, "item_type": "assembly"}
+
+
+@router.post("/items/{parent_id}/children")
+def add_child(
+    parent_id: str, body: AddChildIn, db: Session = Depends(get_db), user: str = Depends(current_user)
+) -> dict:
+    """Add an existing catalog item as a child of `parent_id`. The parent becomes an
+    assembly (P→A) and the child is re-coded to match its new usage (system code, or UN
+    if now used across systems)."""
+    from ..operations import normalize_structure, resolve_rename, would_cycle
+
+    _get_item(db, parent_id)
+    _get_item(db, body.child_id)
+    if would_cycle(db, parent_id, body.child_id):
+        raise HTTPException(409, f"Can't add {body.child_id} under {parent_id} — it would create a loop")
+    link = db.execute(
+        select(BomLink).where(BomLink.parent_item_id == parent_id, BomLink.child_item_id == body.child_id)
+    ).scalar_one_or_none()
+    if link is not None and not link.archived:
+        raise HTTPException(409, f"{body.child_id} is already under {parent_id}")
+    if link is not None:
+        link.archived = False
+        link.quantity = body.quantity
+    else:
+        db.add(BomLink(parent_item_id=parent_id, child_item_id=body.child_id, quantity=body.quantity))
+    record_change(
+        db, entity_type="bom_link", entity_id=f"{parent_id}>{body.child_id}", change_type="create",
+        new_value=f"qty={body.quantity}", changed_by=user, change_reason="added from catalog",
+    )
+    db.flush()
+    # parent → assembly, added subtree re-coded to its new usage (and any cascade)
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    return {
+        "parent_id": resolve_rename(changes, parent_id),
+        "child_id": resolve_rename(changes, body.child_id),
+        "quantity": body.quantity,
+    }
 
 
 # ── cost evidence ────────────────────────────────────────────────────────────
@@ -135,6 +190,8 @@ def set_decided_cost(
         existing = DecidedCost(item_id=item_id, volume_tier=body.volume_tier)
         db.add(existing)
     existing.unit_cost_eur = body.unit_cost_eur
+    existing.cost_min = body.cost_min
+    existing.cost_max = body.cost_max
     existing.confidence = body.confidence
     existing.make_or_buy = body.make_or_buy
     existing.source_type = body.source_type
@@ -146,6 +203,46 @@ def set_decided_cost(
         change_type="update" if old is not None else "create",
         field_changed=f"decided_cost@{body.volume_tier}", old_value=old, new_value=body.unit_cost_eur,
         changed_by=user, change_reason=body.change_reason,
+    )
+    db.commit()
+    db.refresh(existing)
+    return existing
+
+
+# ── assembly labour (minutes → cost via the item's cost type) ────────────────
+@router.get("/items/{item_id}/assembly-labor", response_model=list[AssemblyLaborOut])
+def list_assembly_labor(item_id: str, db: Session = Depends(get_db)) -> list[AssemblyLabor]:
+    _get_item(db, item_id)
+    return list(
+        db.execute(
+            select(AssemblyLabor).where(AssemblyLabor.item_id == item_id).order_by(AssemblyLabor.volume_tier)
+        ).scalars()
+    )
+
+
+@router.put("/items/{item_id}/assembly-labor", response_model=AssemblyLaborOut)
+def set_assembly_labor(
+    item_id: str, body: AssemblyLaborIn, db: Session = Depends(get_db), user: str = Depends(current_user)
+) -> AssemblyLabor:
+    _get_item(db, item_id)
+    existing = db.execute(
+        select(AssemblyLabor).where(
+            AssemblyLabor.item_id == item_id, AssemblyLabor.volume_tier == body.volume_tier
+        )
+    ).scalar_one_or_none()
+    old = existing.time_likely if existing else None
+    if existing is None:
+        existing = AssemblyLabor(item_id=item_id, volume_tier=body.volume_tier)
+        db.add(existing)
+    existing.time_likely = body.time_likely
+    existing.time_min = body.time_min
+    existing.time_max = body.time_max
+    existing.updated_by = user
+    record_change(
+        db, entity_type="assembly_labor", entity_id=item_id,
+        change_type="update" if old is not None else "create",
+        field_changed=f"assembly_time@{body.volume_tier}", old_value=old, new_value=body.time_likely,
+        changed_by=user,
     )
     db.commit()
     db.refresh(existing)

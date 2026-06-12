@@ -11,16 +11,18 @@ export default function Tree({ onOpenPart, focus, version }) {
   const [query, setQuery] = useState("");
   const [moduleF, setModuleF] = useState("all");
   const [coverageF, setCoverageF] = useState("all");
+  const [tier, setTier] = useState(100);
+  const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
   useEffect(() => {
     api
-      .tree(null, 100)
+      .tree(null, tier)
       .then((data) => {
         setRoots(data);
         setExpanded((prev) => (prev.size ? prev : new Set(data[0] ? [data[0].item_id] : [])));
       })
       .catch((e) => setError(e.message));
-  }, [version]);
+  }, [version, tier]);
 
   const modules = useMemo(() => {
     const set = new Set();
@@ -93,7 +95,17 @@ export default function Tree({ onOpenPart, focus, version }) {
             The microplant hierarchy. Expand assemblies, filter, and click any item to inspect.
           </p>
         </div>
-        <div className="page-actions">
+        <div className="page-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="card-meta" style={{ marginRight: 2 }}>cost @</span>
+          <span style={{ display: "inline-flex", border: "1px solid var(--hair)", borderRadius: 7, overflow: "hidden" }}>
+            {[1, 100, 10000].map((t) => (
+              <button key={t} onClick={() => setTier(t)} title={`${t.toLocaleString()} pcs`}
+                style={{ border: 0, cursor: "pointer", padding: "5px 11px", fontFamily: "var(--font-mono)", fontSize: 11,
+                  background: tier === t ? "var(--accent)" : "transparent", color: tier === t ? "#fff" : "var(--ink-3)" }}>
+                {tierLabel(t)}
+              </button>
+            ))}
+          </span>
           <button className="btn ghost sm" onClick={expandAll}><Icon name="chevD" size={12} /> Expand all</button>
           <button className="btn ghost sm" onClick={collapseAll}><Icon name="chevR" size={12} /> Collapse all</button>
         </div>
@@ -122,24 +134,26 @@ export default function Tree({ onOpenPart, focus, version }) {
         <div className="tree-head">
           <div>Part / assembly</div>
           <div className="right">Qty</div>
-          <div className="right">Rollup cost</div>
+          <div className="right">Cost @ {tierLabel(tier)}</div>
           <div className="right">Coverage</div>
           <div className="right">Module</div>
           <div></div>
         </div>
         <div className="tree">
-          {rows.map(({ n, depth, open, key }) => (
+          {rows.map(({ n, depth, open, key }) => {
+            const expandable = n.has_children && (n.children?.length ?? 0) > 0;  // false when a loop cut its children
+            return (
             <div
               key={key}
               className={`tree-row ${focus === n.item_id ? "on" : ""}`}
               style={{ "--indent": `${12 + depth * 22}px` }}
-              title={n.has_children ? "Click to expand · arrow opens details" : "Click to open details"}
-              onClick={() => (n.has_children ? toggle(n.item_id) : onOpenPart(n.item_id))}
+              title={expandable ? "Click to expand · arrow opens details" : (n.has_children ? "In a loop — click to open details" : "Click to open details")}
+              onClick={() => (expandable ? toggle(n.item_id) : onOpenPart(n.item_id))}
             >
               <div className="tree-name">
                 <button
-                  className={`tree-toggle ${n.has_children ? "" : "is-leaf"}`}
-                  onClick={(e) => { e.stopPropagation(); toggle(n.item_id); }}
+                  className={`tree-toggle ${expandable ? "" : "is-leaf"}`}
+                  onClick={(e) => { e.stopPropagation(); expandable ? toggle(n.item_id) : onOpenPart(n.item_id); }}
                 >
                   <Icon name={open ? "chevD" : "chevR"} size={12} />
                 </button>
@@ -169,7 +183,8 @@ export default function Tree({ onOpenPart, focus, version }) {
                 <Icon name="chevR" size={13} />
               </button>
             </div>
-          ))}
+            );
+          })}
           {rows.length === 0 && (
             <div className="empty" style={{ padding: 24, textAlign: "center", color: "var(--ink-3)" }}>
               No items match these filters.

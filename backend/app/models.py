@@ -61,9 +61,10 @@ class Item(Base):
     supplier_country: Mapped[str | None] = mapped_column(String(64))
     lead_time_weeks: Mapped[float | None] = mapped_column(Float)
 
-    # Assemblies only: minutes to assemble direct children into this item.
-    assembly_time_min_1pc: Mapped[float | None] = mapped_column(Float)
-    assembly_time_min_10k: Mapped[float | None] = mapped_column(Float)
+    # Assemblies only: the assembly cost type — a reference_values row (category
+    # 'assembly_cost_type') whose meta carries a €/hour rate. Assembly cost = assembly
+    # time (assembly_labor table) × that rate, added ON TOP of the rolled-up children.
+    cost_type_id: Mapped[int | None] = mapped_column(Integer)
 
     drawing_url: Mapped[str | None] = mapped_column(Text)
     drive_folder_url: Mapped[str | None] = mapped_column(Text)
@@ -178,7 +179,9 @@ class DecidedCost(Base):
         String(32), ForeignKey("items.item_id"), nullable=False, index=True
     )
     volume_tier: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 | 100 | 10000 | ...
-    unit_cost_eur: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)
+    unit_cost_eur: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)  # most-likely
+    cost_min: Mapped[float | None] = mapped_column(Numeric(14, 4))  # optional 3-point estimate
+    cost_max: Mapped[float | None] = mapped_column(Numeric(14, 4))
     confidence: Mapped[str | None] = mapped_column(String(8))
     # Per-tier basis: make/buy + provenance can differ by volume (e.g. make@10k, buy@100).
     make_or_buy: Mapped[str | None] = mapped_column(String(16))
@@ -261,6 +264,29 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="editor")  # admin|editor|viewer
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AssemblyLabor(Base):
+    """Minutes to assemble an item from its direct children, as a 3-point estimate
+    (min/likely/max) per volume tier. Cost = time × the item's cost-type rate."""
+
+    __tablename__ = "assembly_labor"
+    __table_args__ = (
+        UniqueConstraint("item_id", "volume_tier", name="uq_assembly_labor_item_volume"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("items.item_id"), nullable=False, index=True
+    )
+    volume_tier: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 | 100 | 10000
+    time_min: Mapped[float | None] = mapped_column(Float)
+    time_likely: Mapped[float] = mapped_column(Float, nullable=False)  # minutes, most-likely
+    time_max: Mapped[float | None] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(255))
 
 
 class ReferenceValue(Base):

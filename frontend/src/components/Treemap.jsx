@@ -1,6 +1,6 @@
 // Lightweight squarified treemap in SVG (no d3). Sizes rects by `value`.
-const PALETTE = ["#1C1B1A", "#3D5A6B", "#6B7A55", "#A8751F", "#B8001F", "#6B6862", "#9A958D"];
-const colorFor = (key) => {
+const PALETTE = ["#4E79A7", "#59A14F", "#E1A53F", "#B8001F", "#76689A", "#2E9B8F", "#C16E3A"];
+export const colorFor = (key) => {
   let h = 0;
   for (const ch of String(key || "")) h = (h * 31 + ch.charCodeAt(0)) % 997;
   return PALETTE[h % PALETTE.length];
@@ -55,9 +55,10 @@ export default function Treemap({ items, width = 760, height = 380, format, onSe
     <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: "auto", display: "block", fontFamily: "var(--font-body)" }}>
       {rects.map((r) => {
         const showLabel = r.w > 54 && r.h > 26;
-        const fill = r.colorKey ? colorFor(r.colorKey) : "#1C1B1A";
+        const fill = r.color || (r.colorKey ? colorFor(r.colorKey) : "#1C1B1A");
+        const clickable = onSelect && !String(r.id).startsWith("__");
         return (
-          <g key={r.id} onClick={() => onSelect?.(r.id)} style={{ cursor: onSelect ? "pointer" : "default" }}>
+          <g key={r.id} onClick={() => clickable && onSelect(r.id)} style={{ cursor: clickable ? "pointer" : "default" }}>
             <title>{`${r.label}\n${format ? format(r.value) : r.value}`}</title>
             <rect x={r.x + 0.5} y={r.y + 0.5} width={Math.max(0, r.w - 1)} height={Math.max(0, r.h - 1)}
               fill={fill} opacity={0.88} stroke="var(--bg)" strokeWidth="1" rx="1" />

@@ -7,6 +7,7 @@ const CATEGORIES = [
   { key: "material", label: "Materials" },
   { key: "country", label: "Countries" },
   { key: "module", label: "Modules" },
+  { key: "assembly_cost_type", label: "Assembly cost types" },
 ];
 
 export default function Admin({ onOpenPart, onChanged }) {
@@ -90,14 +91,18 @@ function Reference() {
   const [rows, setRows] = useState([]);
   const [val, setVal] = useState("");
   const [label, setLabel] = useState("");
+  const [rate, setRate] = useState("");
   const [error, setError] = useState(null);
+  const catLabel = cat === "assembly_cost_type" ? "cost type" : cat;
 
   const load = () => api.reference(cat).then(setRows).catch((e) => setError(e.message));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [cat]);
 
   const add = async () => {
     if (!val.trim()) return;
-    try { await api.addReference({ category: cat, value: val.trim(), label: label.trim() || null }); setVal(""); setLabel(""); load(); }
+    const body = { category: cat, value: val.trim(), label: label.trim() || null };
+    if (cat === "assembly_cost_type") { if (rate === "") return; body.meta = { rate_eur_h: Number(rate) }; }
+    try { await api.addReference(body); setVal(""); setLabel(""); setRate(""); load(); }
     catch (e) { setError(e.message); }
   };
   const remove = async (id) => { try { await api.deleteReference(id); load(); } catch (e) { setError(e.message); } };
@@ -110,13 +115,14 @@ function Reference() {
       {error && <p className="err">{error}</p>}
       <div className="card" style={{ maxWidth: 640, padding: 0, overflow: "hidden" }}>
         <div style={{ display: "flex", gap: 8, padding: 14, borderBottom: "1px solid var(--hair)", alignItems: "end" }}>
-          <div style={{ flex: 1 }}><span className="input-label">New {cat}</span><input className="input" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} /></div>
+          <div style={{ flex: 1 }}><span className="input-label">New {catLabel}</span><input className="input" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} /></div>
           {cat === "module" && <div style={{ flex: 1 }}><span className="input-label">Label (optional)</span><input className="input" value={label} onChange={(e) => setLabel(e.target.value)} /></div>}
+          {cat === "assembly_cost_type" && <div style={{ width: 110 }}><span className="input-label">Rate €/hour</span><input className="input mono" type="number" value={rate} onChange={(e) => setRate(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} /></div>}
           <button className="btn" onClick={add}><Icon name="check" /> add</button>
         </div>
         {rows.map((r) => (
           <div key={r.id} style={{ display: "flex", gap: 10, padding: "8px 14px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
-            <span style={{ flex: 1 }}>{r.value}{r.label ? <span style={{ color: "var(--ink-3)" }}> — {r.label}</span> : ""}{r.meta?.region ? <span style={{ color: "var(--ink-3)", fontFamily: "var(--font-mono)", fontSize: 11 }}> · {r.meta.region}</span> : ""}</span>
+            <span style={{ flex: 1 }}>{r.value}{r.label ? <span style={{ color: "var(--ink-3)" }}> — {r.label}</span> : ""}{r.meta?.region ? <span style={{ color: "var(--ink-3)", fontFamily: "var(--font-mono)", fontSize: 11 }}> · {r.meta.region}</span> : ""}{r.meta?.rate_eur_h != null ? <span style={{ color: "var(--ink-3)", fontFamily: "var(--font-mono)", fontSize: 11 }}> · €{r.meta.rate_eur_h}/h</span> : ""}</span>
             <button className="btn ghost sm danger" title="Remove" onClick={() => remove(r.id)}><Icon name="close" size={11} /></button>
           </div>
         ))}

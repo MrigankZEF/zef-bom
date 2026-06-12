@@ -12,12 +12,15 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import BomLink, DecidedCost, Item
+from .models import AssemblyLabor, BomLink, DecidedCost, Item, ReferenceValue
 
 
 @dataclass
 class Rollup:
-    cost: float = 0.0
+    cost: float = 0.0         # most-likely: children parts + this assembly's process cost
+    cost_min: float = 0.0     # 3-point estimate, summed independently up the tree
+    cost_max: float = 0.0
+    assembly_cost: float = 0.0  # just the process cost added at this node (for breakdown)
     covered: int = 0          # leaf instances with a decided cost
     total: int = 0            # leaf instances in total
     missing: list[str] = field(default_factory=list)
@@ -48,13 +51,49 @@ class BomGraph:
             self.parents.setdefault(link.child_item_id, []).append(
                 (link.parent_item_id, link.quantity)
             )
-        self.decided: dict[tuple[str, int], float] = {
-            (dc.item_id, dc.volume_tier): float(dc.unit_cost_eur)
+        # (cost_min, most_likely, cost_max) — min/max default to the likely value when blank.
+        self.decided: dict[tuple[str, int], tuple[float, float, float]] = {
+            (dc.item_id, dc.volume_tier): (
+                float(dc.cost_min) if dc.cost_min is not None else float(dc.unit_cost_eur),
+                float(dc.unit_cost_eur),
+                float(dc.cost_max) if dc.cost_max is not None else float(dc.unit_cost_eur),
+            )
             for dc in db.execute(
                 select(DecidedCost).where(DecidedCost.volume_tier == volume_tier)
             ).scalars()
         }
+        # Assembly labour: minutes (min, likely, max) per item at this tier, + the €/h rates.
+        self.labor: dict[str, tuple[float | None, float, float | None]] = {
+            al.item_id: (al.time_min, al.time_likely, al.time_max)
+            for al in db.execute(
+                select(AssemblyLabor).where(AssemblyLabor.volume_tier == volume_tier)
+            ).scalars()
+        }
+        # Assembly cost types are reference values (category 'assembly_cost_type') with a
+        # €/hour rate in meta; keyed by the reference value's id (= item.cost_type_id).
+        self.rates: dict[int, float] = {
+            rv.id: float((rv.meta or {}).get("rate_eur_h") or 0.0)
+            for rv in db.execute(
+                select(ReferenceValue).where(ReferenceValue.category == "assembly_cost_type")
+            ).scalars()
+        }
         self._rollup_cache: dict[str, Rollup] = {}
+
+    def assembly_cost(self, item) -> tuple[float, float, float]:
+        """(min, likely, max) € to assemble this item at the current tier = minutes × €/min."""
+        if item is None or item.cost_type_id is None:
+            return (0.0, 0.0, 0.0)
+        rate = self.rates.get(item.cost_type_id)
+        t = self.labor.get(item.item_id)
+        if not rate or t is None:
+            return (0.0, 0.0, 0.0)
+        tmin, tlikely, tmax = t
+        per_min = rate / 60.0
+        return (
+            (tmin if tmin is not None else tlikely) * per_min,
+            tlikely * per_min,
+            (tmax if tmax is not None else tlikely) * per_min,
+        )
 
     # ── structure ────────────────────────────────────────────────────────────
     def roots(self) -> list[Item]:
@@ -73,15 +112,16 @@ class BomGraph:
         if item_id in _seen:  # circular reference guard
             return Rollup(total=0)
         kids = self.children.get(item_id, [])
-        if not kids:  # leaf
-            cost = self.decided.get((item_id, self.volume))
-            item = self.items.get(item_id)
+        item = self.items.get(item_id)
+        if not kids:  # leaf — its own decided unit cost (min, likely, max)
+            est = self.decided.get((item_id, self.volume))
             w = item.weight_grams if item else None
+            cmin, likely, cmax = est if est is not None else (0.0, 0.0, 0.0)
             r = Rollup(
-                cost=cost or 0.0,
-                covered=1 if cost is not None else 0,
+                cost=likely, cost_min=cmin, cost_max=cmax,
+                covered=1 if est is not None else 0,
                 total=1,
-                missing=[] if cost is not None else [item_id],
+                missing=[] if est is not None else [item_id],
                 weight_grams=w if w is not None else 0.0,
                 weight_missing=[] if w is not None else [item_id],
             )
@@ -92,11 +132,19 @@ class BomGraph:
         for child, qty in kids:
             cr = self.rollup(child, seen)
             r.cost += cr.cost * qty
+            r.cost_min += cr.cost_min * qty
+            r.cost_max += cr.cost_max * qty
             r.covered += cr.covered
             r.total += cr.total
             r.missing.extend(cr.missing)
             r.weight_grams = (r.weight_grams or 0.0) + (cr.weight_grams or 0.0) * qty
             r.weight_missing.extend(cr.weight_missing)
+        # An assembly's own process cost (time × rate) is added ON TOP of the children.
+        amin, alikely, amax = self.assembly_cost(item)
+        r.assembly_cost = alikely
+        r.cost += alikely
+        r.cost_min += amin
+        r.cost_max += amax
         self._rollup_cache[item_id] = r
         return r
 
@@ -120,11 +168,32 @@ class BomGraph:
             walk(root, 1.0, frozenset())
         return acc
 
+    def flatten_assemblies(self, root: str) -> dict[str, float]:
+        """Effective quantity of each assembly (non-leaf) within `root` — including the
+        root itself. Powers per-assembly cost contributions in the treemap."""
+        acc: dict[str, float] = {}
+
+        def walk(item_id: str, qty: float, seen: frozenset[str]) -> None:
+            kids = self.children.get(item_id, [])
+            if not kids:
+                return
+            acc[item_id] = acc.get(item_id, 0.0) + qty
+            inner = seen | {item_id}
+            for child, q in kids:
+                if child in inner:
+                    continue
+                walk(child, qty * q, inner)
+
+        if root in self.items:
+            walk(root, 1.0, frozenset())
+        return acc
+
     def assembly_time_total(self, item_id: str, _seen: frozenset[str] = frozenset()) -> float:
+        """Recursive most-likely assembly minutes at the current tier."""
         if item_id in _seen:
             return 0.0
-        item = self.items.get(item_id)
-        total = float(item.assembly_time_min_1pc or 0.0) if item else 0.0
+        t = self.labor.get(item_id)
+        total = float(t[1]) if t else 0.0  # time_likely at this tier
         seen = _seen | {item_id}
         for child, qty in self.children.get(item_id, []):
             total += self.assembly_time_total(child, seen) * qty

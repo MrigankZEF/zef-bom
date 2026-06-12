@@ -30,6 +30,7 @@ export default function Uploads({ onApplied }) {
   const [diff, setDiff] = useState(null);      // {id, status, diff, counts}
   const [notes, setNotes] = useState("");
   const [isTop, setIsTop] = useState(true);
+  const [attachTo, setAttachTo] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const fileRef = useRef(null);
@@ -48,7 +49,7 @@ export default function Uploads({ onApplied }) {
     if (!file) { setError("Pick an OPML file first."); return; }
     setBusy(true); setError(null);
     try {
-      const res = await api.createUpload(file, { notes, isTopLevel: isTop });
+      const res = await api.createUpload(file, { notes, isTopLevel: isTop, attachTo: isTop ? null : (attachTo || null) });
       setDiff(res); setStep("diff"); setNotes(""); loadList();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
@@ -112,6 +113,7 @@ export default function Uploads({ onApplied }) {
               <input type="checkbox" checked={isTop} onChange={(e) => setIsTop(e.target.checked)} />
               This is a top-level BOM (mark its root accordingly)
             </label>
+            {!isTop && <ParentPicker value={attachTo} onChange={setAttachTo} setError={setError} />}
             <div>
               <span className="input-label">Notes</span>
               <textarea className="input" style={{ height: 56, padding: 8 }} value={notes}
@@ -194,6 +196,43 @@ export default function Uploads({ onApplied }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ParentPicker({ value, onChange, setError }) {
+  const [cat, setCat] = useState(null);
+  const [q, setQ] = useState("");
+  useEffect(() => { api.catalog().then(setCat).catch((e) => setError(e.message)); }, []);
+  const s = q.trim().toLowerCase();
+  const results = !s ? [] : (cat || []).filter((r) => r.item_id.toLowerCase().includes(s) || (r.item_name || "").toLowerCase().includes(s)).slice(0, 20);
+  if (value) {
+    const item = (cat || []).find((r) => r.item_id === value);
+    return (
+      <div>
+        <span className="input-label">Attach this sub-BOM under</span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+          <Mono>{value}</Mono><span style={{ flex: 1 }}>{item?.item_name || ""}</span>
+          <button className="btn ghost sm" onClick={() => onChange("")}>change</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <span className="input-label">Attach this sub-BOM under (search a parent)</span>
+      <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code or name…" />
+      {results.length > 0 && (
+        <div className="card" style={{ marginTop: 4, padding: 0, maxHeight: 180, overflowY: "auto" }}>
+          {results.map((r) => (
+            <div key={r.item_id} onClick={() => { onChange(r.item_id); setQ(""); }}
+              style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, padding: "6px 10px", borderTop: "1px solid var(--hair-faint)", cursor: "pointer", fontSize: 13 }}>
+              <Mono>{r.item_id}</Mono><span>{r.item_name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Its root will hang under this item; codes re-adjust to the combined usage.</p>
     </div>
   );
 }

@@ -22,8 +22,7 @@ class ItemOut(BaseModel):
     supplier: str | None = None
     supplier_country: str | None = None
     lead_time_weeks: float | None = None
-    assembly_time_min_1pc: float | None = None
-    assembly_time_min_10k: float | None = None
+    cost_type_id: int | None = None
     drawing_url: str | None = None
     drive_folder_url: str | None = None
     comment: str | None = None
@@ -46,8 +45,7 @@ class ItemPatch(BaseModel):
     supplier: str | None = None
     supplier_country: str | None = None
     lead_time_weeks: float | None = None
-    assembly_time_min_1pc: float | None = None
-    assembly_time_min_10k: float | None = None
+    cost_type_id: int | None = None
     drawing_url: str | None = None
     comment: str | None = None
     change_reason: str | None = None
@@ -71,13 +69,42 @@ class CostEvidenceIn(BaseModel):
 
 class DecidedCostIn(BaseModel):
     volume_tier: int
-    unit_cost_eur: float
+    unit_cost_eur: float  # most-likely (required)
+    cost_min: float | None = None
+    cost_max: float | None = None
     confidence: str | None = None
     make_or_buy: str | None = None
     source_type: str | None = None
     basis_note: str | None = None
     based_on_evidence_id: int | None = None
     change_reason: str | None = None
+
+
+class AssemblyLaborIn(BaseModel):
+    volume_tier: int
+    time_likely: float  # minutes, most-likely (required)
+    time_min: float | None = None
+    time_max: float | None = None
+
+
+class AssemblyLaborOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    item_id: str
+    volume_tier: int
+    time_min: float | None = None
+    time_likely: float
+    time_max: float | None = None
+
+
+class AddChildIn(BaseModel):
+    child_id: str
+    quantity: float = 1
+
+
+class NewItemIn(BaseModel):
+    item_name: str
+    item_type: str = "part"  # part | assembly
 
 
 class FieldValueIn(BaseModel):
@@ -143,6 +170,8 @@ class DecidedCostOut(BaseModel):
     item_id: str
     volume_tier: int
     unit_cost_eur: float
+    cost_min: float | None = None
+    cost_max: float | None = None
     confidence: str | None = None
     make_or_buy: str | None = None
     source_type: str | None = None

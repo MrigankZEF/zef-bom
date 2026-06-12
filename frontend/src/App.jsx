@@ -4,6 +4,7 @@ import Tree from "./components/Tree.jsx";
 import PartDrawer from "./components/PartDrawer.jsx";
 import Uploads from "./components/Uploads.jsx";
 import Costing from "./components/Costing.jsx";
+import Catalog from "./components/Catalog.jsx";
 import Pending from "./components/Pending.jsx";
 import History from "./components/History.jsx";
 import Admin from "./components/Admin.jsx";
@@ -11,6 +12,7 @@ import Login from "./components/Login.jsx";
 
 const TABS = [
   { id: "browse", label: "Browse" },
+  { id: "catalog", label: "Catalog" },
   { id: "costing", label: "Costing" },
   { id: "pending", label: "Pending" },
   { id: "uploads", label: "Uploads" },
@@ -78,6 +80,7 @@ export default function App() {
 
       <main style={{ marginRight: openPart ? "min(680px, 96vw)" : 0, transition: "margin-right 320ms cubic-bezier(.2,.8,.2,1)" }}>
         {activeRoute === "browse" && <Tree onOpenPart={setOpenPart} focus={openPart} version={version} />}
+        {activeRoute === "catalog" && <Catalog onOpenPart={setOpenPart} version={version} />}
         {activeRoute === "costing" && <Costing onOpenPart={setOpenPart} />}
         {activeRoute === "pending" && <Pending onOpenPart={setOpenPart} version={version} />}
         {activeRoute === "uploads" && <Uploads onApplied={() => setVersion((v) => v + 1)} />}
