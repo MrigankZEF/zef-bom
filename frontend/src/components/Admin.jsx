@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { Icon, ModulePill } from "./ui";
 
@@ -26,12 +26,14 @@ export default function Admin({ onOpenPart, onChanged }) {
             <button className={sub === "users" ? "on" : ""} onClick={() => setSub("users")}>Users</button>
             <button className={sub === "reference" ? "on" : ""} onClick={() => setSub("reference")}>Reference data</button>
             <button className={sub === "archive" ? "on" : ""} onClick={() => setSub("archive")}>Archive</button>
+            <button className={sub === "import" ? "on" : ""} onClick={() => setSub("import")}>Catalog import</button>
           </div>
         </div>
       </div>
       {sub === "users" && <Users />}
       {sub === "reference" && <Reference />}
       {sub === "archive" && <Archive onOpenPart={onOpenPart} onChanged={onChanged} />}
+      {sub === "import" && <CatalogImport onChanged={onChanged} />}
     </div>
   );
 }
@@ -128,6 +130,43 @@ function Reference() {
         ))}
         {rows.length === 0 && <div style={{ padding: 16, color: "var(--ink-3)" }}>None yet.</div>}
       </div>
+    </div>
+  );
+}
+
+function CatalogImport({ onChanged }) {
+  const fileRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const run = async () => {
+    const f = fileRef.current?.files?.[0];
+    if (!f) { setError("Pick the ZEF BOM inventory .xlsx first."); return; }
+    if (!window.confirm("This DELETES all current items, BOMs and costs, then rebuilds the catalog from this Excel. Users and reference lists are kept. This cannot be undone. Continue?")) return;
+    setBusy(true); setError(null); setResult(null);
+    try { const r = await api.importCatalog(f); setResult(r); onChanged?.(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="card" style={{ maxWidth: 640, padding: 18 }}>
+      <div className="card-head"><span className="card-title">Wipe &amp; import catalog from Excel</span></div>
+      <p style={{ fontSize: 13, color: "var(--ink-2)", margin: "4px 0 12px" }}>
+        Upload the <strong>ZEF BOM inventory</strong> spreadsheet (Sheet1). This{" "}
+        <strong style={{ color: "var(--accent)" }}>deletes all current items, BOMs and costs</strong> and rebuilds the catalog
+        from the sheet — codes, names, and the 10k min/likely/max costs. Users, suppliers, materials and cost types are kept.
+        Then re-import your BOMs on top.
+      </p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" className="input" style={{ paddingTop: 6, flex: 1 }} />
+        <button className="btn danger" onClick={run} disabled={busy}>{busy ? "Importing…" : "Wipe & import"}</button>
+      </div>
+      {error && <p className="err" style={{ marginTop: 10 }}>{error}</p>}
+      {result && (
+        <p style={{ marginTop: 10, fontSize: 13, color: "var(--ok)" }}>
+          ✓ Wiped and seeded <strong>{result.items_created}</strong> items ({result.with_10k_cost} with a 10k cost).
+          The catalog is fresh — Browse is empty until you import a BOM.
+        </p>
+      )}
     </div>
   );
 }

@@ -6,7 +6,7 @@ dropdowns and are managed here via '+ add'.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,8 @@ from ..auth import current_user, require_admin
 from ..db import get_db
 from ..history import record_change
 from ..models import (
-    AssemblyLabor, BomLink, CostEvidence, DecidedCost, FieldValue, Item, ReferenceValue, User,
+    AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item,
+    ReferenceValue, UploadBatch, User,
 )
 from ..schemas import ReferenceIn, UserIn, UserRoleIn
 
@@ -238,3 +239,60 @@ def archive_reference(ref_id: int, db: Session = Depends(get_db), _: str = Depen
     ref.archived = True
     db.commit()
     return {"id": ref_id, "archived": True}
+
+
+@router.post("/admin/import-catalog")
+async def import_catalog(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    admin: str = Depends(require_admin),
+) -> dict:
+    """DESTRUCTIVE (admin only): wipe all BOM data and seed the catalog fresh from a ZEF
+    inventory Excel. Keeps users + reference lists (suppliers/materials/cost types)."""
+    import io
+
+    import pandas as pd
+
+    from ..bom_ingest.miro_csv_fix import ITEM_NUMBER_RE, normalize_item_name
+
+    try:
+        df = pd.read_excel(io.BytesIO(await file.read()), "Sheet1")
+    except Exception as exc:
+        raise HTTPException(400, f"Could not read the Excel (expects a 'Sheet1'): {exc}") from exc
+
+    # wipe BOM data — keep users and reference values
+    for model in (ChangeHistory, BomLink, DecidedCost, CostEvidence, AssemblyLabor, FieldValue, UploadBatch):
+        db.execute(delete(model))
+    db.execute(delete(Item))
+    db.flush()
+
+    def _num(v):
+        return float(v) if pd.notna(v) else None
+
+    created = costed = 0
+    for _, row in df.iterrows():
+        code = str(row.get("partnumber") or "").strip()
+        m = ITEM_NUMBER_RE.match(code)
+        name = str(row.get("partname") or "").strip()
+        if not m or not name or db.get(Item, code) is not None:
+            continue
+        db.add(Item(
+            item_id=code, item_name=normalize_item_name(name),
+            item_type="assembly" if m.group("suffix") == "A" else "part",
+            module_code=m.group("module"), is_top_level=False,
+            created_by=admin, updated_by=admin,
+        ))
+        created += 1
+        avg = _num(row.get("avg"))
+        if avg is not None:
+            db.add(DecidedCost(
+                item_id=code, volume_tier=10000, unit_cost_eur=avg,
+                cost_min=_num(row.get("Future_10k_min")), cost_max=_num(row.get("Future_10k_max")),
+                decided_by=admin,
+            ))
+            costed += 1
+        proto = _num(row.get("current_cost_proto"))
+        if proto is not None:
+            db.add(DecidedCost(item_id=code, volume_tier=1, unit_cost_eur=proto, decided_by=admin))
+    db.commit()
+    return {"wiped": True, "items_created": created, "with_10k_cost": costed}

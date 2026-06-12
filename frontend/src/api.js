@@ -125,6 +125,14 @@ export const api = {
   purgeLink: (parent, child) =>
     request(`/items/${encodeURIComponent(parent)}/links/${encodeURIComponent(child)}/purge`, { method: "DELETE" }),
 
+  importCatalog: async (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${BASE}/admin/import-catalog`, { method: "POST", body: fd, headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => "")}`);
+    return res.json();
+  },
+
   // ── users (admin) ──
   listUsers: () => request("/users"),
   addUser: (body) => request("/users", { method: "POST", body: JSON.stringify(body) }),
