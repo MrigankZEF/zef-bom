@@ -13,7 +13,9 @@ import datetime as _dt
 import io
 import json
 
-from sqlalchemy import select
+from sqlalchemy import (
+    Boolean, Date, DateTime, Float, Integer, JSON, Numeric, delete, select, text,
+)
 from sqlalchemy.orm import Session
 
 from . import drive
@@ -124,3 +126,173 @@ def monthly_backup_if_due(db: Session) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"saved": False, "reason": "error", "error": str(exc)}
     return run_drive_backup(db, reason="auto", monthly=True)
+
+
+# ── restore (rebuild the DB from a backup workbook) ──────────────────────────
+# Sheet → model. NOTE: Users is intentionally NOT restored — a data restore must never
+# change who can sign in (that would risk locking out the current admin). Everything else
+# is replaced wholesale. Order satisfies foreign keys on insert (parents before children):
+# items first; cost_evidence before decided_costs (decided_costs.based_on_evidence_id →
+# cost_evidence.id); field_definitions before field_values.
+RESTORE_ORDER = [
+    ("Items", Item),
+    ("FieldDefinitions", FieldDefinition),
+    ("Reference", ReferenceValue),
+    ("UploadBatches", UploadBatch),
+    ("CostEvidence", CostEvidence),
+    ("DecidedCosts", DecidedCost),
+    ("AssemblyLabor", AssemblyLabor),
+    ("FieldValues", FieldValue),
+    ("BomLinks", BomLink),
+    ("ChangeHistory", ChangeHistory),
+]
+RESTORE_MODELS = dict(RESTORE_ORDER)
+
+
+def _is_na(v) -> bool:
+    import pandas as pd
+
+    if v is None:
+        return True
+    if isinstance(v, (list, dict)):
+        return False
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
+
+
+def _coerce(value, column):
+    """Turn a spreadsheet cell back into the right Python type for its column. Lenient:
+    a value that can't be coerced becomes None rather than failing the whole restore."""
+    import pandas as pd
+
+    if _is_na(value):
+        return None
+    t = column.type
+    try:
+        if isinstance(t, JSON):
+            if isinstance(value, (dict, list)):
+                return value
+            s = str(value).strip()
+            return json.loads(s) if s else None
+        if isinstance(t, DateTime):
+            if isinstance(value, str):
+                return _dt.datetime.fromisoformat(value)
+            if isinstance(value, pd.Timestamp):
+                return value.to_pydatetime()
+            return value
+        if isinstance(t, Date):
+            if isinstance(value, str):
+                return _dt.date.fromisoformat(value[:10])
+            if isinstance(value, pd.Timestamp):
+                return value.date()
+            if isinstance(value, _dt.datetime):
+                return value.date()
+            return value
+        if isinstance(t, Boolean):
+            if isinstance(value, str):
+                return value.strip().lower() in ("true", "1", "yes", "t")
+            return bool(value)
+        if isinstance(t, Integer):
+            return int(float(value))
+        if isinstance(t, (Numeric, Float)):
+            return float(value)
+        return str(value)
+    except Exception:  # noqa: BLE001 — bad cell → null, never abort the restore
+        return None
+
+
+def read_backup_workbook(raw: bytes) -> dict:
+    """Open every sheet of a backup .xlsx into {sheet_name: DataFrame}."""
+    import pandas as pd
+
+    try:
+        return pd.read_excel(io.BytesIO(raw), sheet_name=None)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Could not read the backup .xlsx: {exc}") from exc
+
+
+def plan_restore(sheets: dict) -> dict:
+    """Validate a backup workbook and report what a restore would do — without touching
+    the DB. A valid backup must have an 'Items' sheet with an 'item_id' column."""
+    known = [name for name, _ in RESTORE_ORDER if name in sheets]
+    unknown = [s for s in sheets if s not in RESTORE_MODELS and s != "Users"]
+    counts, column_issues = {}, {}
+    for name, model in RESTORE_ORDER:
+        df = sheets.get(name)
+        counts[name] = 0 if df is None else int(len(df))
+        if df is None:
+            continue
+        model_cols = {c.name for c in model.__table__.columns}
+        sheet_cols = set(map(str, df.columns))
+        missing = sorted(model_cols - sheet_cols)
+        extra = sorted(sheet_cols - model_cols)
+        if missing or extra:
+            column_issues[name] = {"missing": missing, "extra": extra}
+
+    items_df = sheets.get("Items")
+    has_items = items_df is not None and len(items_df) > 0 and "item_id" in map(str, items_df.columns)
+    return {
+        "ok": bool(has_items),
+        "reason": None if has_items else "The backup has no usable 'Items' sheet — this doesn't look like a ZEF BOM backup.",
+        "counts": counts,
+        "total_items": counts.get("Items", 0),
+        "missing_sheets": [name for name, _ in RESTORE_ORDER if name not in sheets],
+        "unknown_sheets": unknown,
+        "column_issues": column_issues,
+        "users_note": "Users / sign-in access are preserved (not restored).",
+    }
+
+
+def restore_from_workbook(db: Session, sheets: dict) -> dict:
+    """Replace all BOM data with the backup's contents, atomically. Only columns present in
+    BOTH the sheet and the current schema are written (resilient to schema drift); ids are
+    preserved so internal references stay intact. Commits on success, rolls back on error."""
+    plan = plan_restore(sheets)
+    if not plan["ok"]:
+        raise ValueError(plan["reason"])
+
+    try:
+        # wipe in reverse FK order (children before parents); Users left untouched
+        for name, model in reversed(RESTORE_ORDER):
+            db.execute(delete(model))
+        db.flush()
+
+        counts = {}
+        for name, model in RESTORE_ORDER:
+            df = sheets.get(name)
+            counts[name] = 0
+            if df is None or len(df) == 0:
+                continue
+            cols = {c.name: c for c in model.__table__.columns}
+            usable = [c for c in map(str, df.columns) if c in cols]
+            rows = [
+                {c: _coerce(rec[c], cols[c]) for c in usable}
+                for rec in df.to_dict(orient="records")
+            ]
+            if rows:
+                db.execute(model.__table__.insert(), rows)
+                db.flush()
+            counts[name] = len(rows)
+
+        # Postgres: realign autoincrement sequences so future inserts don't collide with
+        # the preserved ids (SQLite needs no fixup).
+        if db.bind.dialect.name == "postgresql":
+            for name, model in RESTORE_ORDER:
+                pk = list(model.__table__.primary_key.columns)[0]
+                if isinstance(pk.type, Integer):
+                    tbl, col = model.__tablename__, pk.name
+                    try:
+                        db.execute(text(
+                            f"SELECT setval(pg_get_serial_sequence('{tbl}', '{col}'), "
+                            f"(SELECT COALESCE(MAX({col}), 1) FROM {tbl}))"
+                        ))
+                    except Exception:  # noqa: BLE001 — table may have no sequence; ignore
+                        pass
+
+        db.commit()
+        return {"restored": True, "counts": counts}
+    except Exception:
+        db.rollback()
+        raise

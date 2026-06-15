@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from .. import drive
 from ..auth import current_user, require_admin
-from ..backup import XLSX_MIME, build_backup_workbook, run_drive_backup
+from ..backup import (
+    XLSX_MIME, build_backup_workbook, plan_restore, read_backup_workbook,
+    restore_from_workbook, run_drive_backup,
+)
 from ..db import get_db
 from ..history import record_change
 from ..models import (
@@ -442,3 +445,43 @@ def list_drive_backups(admin: str = Depends(require_admin)) -> dict:
         {"name": f.get("name"), "url": f.get("webViewLink"), "created": f.get("createdTime"),
          "size": f.get("size")} for f in files
     ]}
+
+
+@router.post("/admin/restore/preview")
+async def restore_preview(
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin),
+) -> dict:
+    """Dry-run: validate a backup .xlsx and report what a restore would replace. No writes."""
+    try:
+        sheets = read_backup_workbook(await file.read())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return plan_restore(sheets)
+
+
+@router.post("/admin/restore")
+async def restore_backup(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    admin: str = Depends(require_admin),
+) -> dict:
+    """DESTRUCTIVE (admin only): replace all BOM data with a backup .xlsx. Takes an
+    automatic pre-restore Drive snapshot first (so the restore is itself reversible), then
+    rebuilds every table from the workbook atomically. Users / sign-in access are preserved."""
+    try:
+        sheets = read_backup_workbook(await file.read())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    plan = plan_restore(sheets)
+    if not plan["ok"]:
+        raise HTTPException(400, plan["reason"] or "Not a valid ZEF BOM backup. Nothing was changed.")
+
+    # Snapshot the current data BEFORE replacing it, so this is reversible too.
+    pre_backup = run_drive_backup(db, reason="prerestore")
+    try:
+        result = restore_from_workbook(db, sheets)
+    except Exception as exc:  # noqa: BLE001 — restore rolled back; report clearly
+        raise HTTPException(500, f"Restore failed and was rolled back — nothing changed: {exc}") from exc
+    return {**result, "backup": pre_backup}

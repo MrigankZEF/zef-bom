@@ -68,6 +68,20 @@ export const api = {
   // ── full database backup (every table → one .xlsx) ──
   backupToDrive: () => request("/admin/backup-to-drive", { method: "POST" }),
   listBackups: () => request("/admin/backups"),
+  restorePreview: async (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${BASE}/admin/restore/preview`, { method: "POST", body: fd, headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => "")}`);
+    return res.json();
+  },
+  restoreBackup: async (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${BASE}/admin/restore`, { method: "POST", body: fd, headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => "")}`);
+    return res.json();
+  },
   downloadBackup: async () => {
     const res = await fetch(`${BASE}/admin/export`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`Backup failed: ${res.status} — ${await res.text().catch(() => "")}`);

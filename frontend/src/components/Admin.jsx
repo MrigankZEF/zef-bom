@@ -34,7 +34,7 @@ export default function Admin({ onOpenPart, onChanged }) {
       {sub === "users" && <Users />}
       {sub === "reference" && <Reference />}
       {sub === "archive" && <Archive onOpenPart={onOpenPart} onChanged={onChanged} />}
-      {sub === "backup" && <Backup />}
+      {sub === "backup" && <><Backup /><Restore onChanged={onChanged} /></>}
       {sub === "import" && <CatalogImport onChanged={onChanged} />}
     </div>
   );
@@ -200,6 +200,92 @@ function Backup() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function Restore({ onChanged }) {
+  const fileRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  const onPick = () => { setPreview(null); setResult(null); setError(null); };
+  const check = async () => {
+    const f = fileRef.current?.files?.[0];
+    if (!f) { setError("Pick a backup .xlsx first."); return; }
+    setBusy(true); setError(null); setResult(null); setPreview(null);
+    try { setPreview(await api.restorePreview(f)); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  const run = async () => {
+    const f = fileRef.current?.files?.[0];
+    if (!f) { setError("Pick the file again."); return; }
+    if (!window.confirm(`This REPLACES all current BOM data with the backup (${preview?.total_items} items). A pre-restore backup is saved first. Continue?`)) return;
+    setBusy(true); setError(null);
+    try { const r = await api.restoreBackup(f); setResult(r); setPreview(null); onChanged?.(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  const counts = preview?.counts || {};
+  return (
+    <div className="card" style={{ maxWidth: 680, padding: 18, marginTop: 16 }}>
+      <div className="card-head"><span className="card-title">Restore from backup</span></div>
+      <p style={{ fontSize: 13, color: "var(--ink-2)", margin: "4px 0 12px" }}>
+        Rebuild the database from a backup <strong>.xlsx</strong> (the kind produced above).{" "}
+        <strong style={{ color: "var(--accent)" }}>This replaces all current BOM data.</strong>{" "}
+        A pre-restore backup is saved to Drive automatically first, so this is reversible.
+        Sign-in access (Users) is preserved, not restored. <strong>Check the file first.</strong>
+      </p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input ref={fileRef} type="file" accept=".xlsx" className="input" style={{ paddingTop: 6, flex: 1 }} onChange={onPick} />
+        <button className="btn" onClick={check} disabled={busy}>{busy && !preview ? "Checking…" : "Check backup"}</button>
+      </div>
+      {error && <p className="err" style={{ marginTop: 10 }}>{error}</p>}
+
+      {preview && (
+        <div className="card" style={{ marginTop: 12, padding: 14 }}>
+          {!preview.ok ? (
+            <p className="err" style={{ margin: 0, fontSize: 13 }}>✗ {preview.reason}</p>
+          ) : (
+            <>
+              <p style={{ margin: "0 0 8px", fontSize: 13 }}>Preview — <strong>nothing changed yet.</strong></p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: "2px 18px", fontSize: 12.5, color: "var(--ink-2)" }}>
+                {Object.entries(counts).map(([k, v]) => (
+                  <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>{k}</span><span style={{ fontFamily: "var(--font-mono)" }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+              {Object.keys(preview.column_issues || {}).length > 0 && (
+                <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "var(--warn)" }}>
+                  Some columns differ from the current schema (extra/missing are ignored safely):{" "}
+                  {Object.keys(preview.column_issues).join(", ")}.
+                </p>
+              )}
+              <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "var(--ink-3)" }}>{preview.users_note}</p>
+              <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
+                <button className="btn danger" onClick={run} disabled={busy}>
+                  {busy ? "Restoring…" : `Restore ${preview.total_items} items (replace all)`}
+                </button>
+                <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>A pre-restore backup is saved first.</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {result && (
+        <div style={{ marginTop: 10, fontSize: 13 }}>
+          <p style={{ color: "var(--ok)", margin: 0 }}>✓ Restored. Items: {result.counts?.Items ?? "?"}.</p>
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-3)" }}>
+            {result.backup?.saved
+              ? <>A pre-restore backup was saved{result.backup.url ? <> — <a href={result.backup.url} target="_blank" rel="noreferrer">{result.backup.name}</a></> : ` (${result.backup.name})`}.</>
+              : <>⚠ No pre-restore Drive backup ({result.backup?.reason || "drive not configured"}).</>}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
