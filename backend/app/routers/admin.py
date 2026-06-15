@@ -6,7 +6,7 @@ dropdowns and are managed here via '+ add'.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -14,8 +14,8 @@ from ..auth import current_user, require_admin
 from ..db import get_db
 from ..history import record_change
 from ..models import (
-    AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item,
-    ReferenceValue, UploadBatch, User,
+    AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldDefinition,
+    FieldValue, Item, ReferenceValue, UploadBatch, User,
 )
 from ..schemas import ReferenceIn, UserIn, UserRoleIn
 
@@ -392,3 +392,67 @@ async def import_catalog(
             costed += 1
     db.commit()
     return {"wiped": True, "items_created": created, "with_10k_cost": costed, "skipped": plan["skipped"]}
+
+
+# ── full database backup (every table → one .xlsx workbook) ───────────────────
+# Order matters for human readability, not for restore. Each tuple is (sheet, model).
+BACKUP_SHEETS = [
+    ("Items", Item),
+    ("BomLinks", BomLink),
+    ("DecidedCosts", DecidedCost),
+    ("CostEvidence", CostEvidence),
+    ("AssemblyLabor", AssemblyLabor),
+    ("FieldDefinitions", FieldDefinition),
+    ("FieldValues", FieldValue),
+    ("Reference", ReferenceValue),
+    ("UploadBatches", UploadBatch),
+    ("ChangeHistory", ChangeHistory),
+    ("Users", User),
+]
+
+
+def _backup_cell(v):
+    """Make any column value safe for an .xlsx cell: JSON for dict/list (JSON columns),
+    ISO strings for datetimes (avoids openpyxl's no-timezone error)."""
+    import datetime as _dt
+    import json
+
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        return v.isoformat()
+    return v
+
+
+def build_backup_workbook(db: Session) -> bytes:
+    """Dump every table to a single multi-sheet .xlsx and return the bytes. Reused by the
+    manual 'Backup now' download and (later) the scheduled Drive backup."""
+    import io
+
+    import pandas as pd
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        for sheet, model in BACKUP_SHEETS:
+            cols = [c.name for c in model.__table__.columns]
+            recs = [
+                {c: _backup_cell(getattr(obj, c)) for c in cols}
+                for obj in db.execute(select(model)).scalars().all()
+            ]
+            pd.DataFrame(recs, columns=cols).to_excel(xw, sheet_name=sheet[:31], index=False)
+    return buf.getvalue()
+
+
+@router.get("/admin/export")
+def export_backup(db: Session = Depends(get_db), admin: str = Depends(require_admin)) -> Response:
+    """Download a full database backup: one .xlsx workbook with a sheet per table
+    (items, BOM links, costs, labor, fields, reference, uploads, history, users)."""
+    import datetime as _dt
+
+    data = build_backup_workbook(db)
+    stamp = _dt.date.today().isoformat()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="zef-bom-backup-{stamp}.xlsx"'},
+    )

@@ -26,6 +26,7 @@ export default function Admin({ onOpenPart, onChanged }) {
             <button className={sub === "users" ? "on" : ""} onClick={() => setSub("users")}>Users</button>
             <button className={sub === "reference" ? "on" : ""} onClick={() => setSub("reference")}>Reference data</button>
             <button className={sub === "archive" ? "on" : ""} onClick={() => setSub("archive")}>Archive</button>
+            <button className={sub === "backup" ? "on" : ""} onClick={() => setSub("backup")}>Backup</button>
             <button className={sub === "import" ? "on" : ""} onClick={() => setSub("import")}>Catalog import</button>
           </div>
         </div>
@@ -33,6 +34,7 @@ export default function Admin({ onOpenPart, onChanged }) {
       {sub === "users" && <Users />}
       {sub === "reference" && <Reference />}
       {sub === "archive" && <Archive onOpenPart={onOpenPart} onChanged={onChanged} />}
+      {sub === "backup" && <Backup />}
       {sub === "import" && <CatalogImport onChanged={onChanged} />}
     </div>
   );
@@ -130,6 +132,35 @@ function Reference() {
         ))}
         {rows.length === 0 && <div style={{ padding: 16, color: "var(--ink-3)" }}>None yet.</div>}
       </div>
+    </div>
+  );
+}
+
+function Backup() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(false);
+  const run = async () => {
+    setBusy(true); setError(null); setDone(false);
+    try { await api.downloadBackup(); setDone(true); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="card" style={{ maxWidth: 640, padding: 18 }}>
+      <div className="card-head"><span className="card-title">Backup — full database export</span></div>
+      <p style={{ fontSize: 13, color: "var(--ink-2)", margin: "4px 0 12px" }}>
+        Download a complete snapshot of the database as a single <strong>.xlsx</strong> workbook — one sheet per table:
+        items, BOM links (the full hierarchy), decided costs, cost evidence, assembly labor, custom fields, reference lists,
+        uploads, change history and users. Open it in Excel, or keep it as a manual backup. File attachments live in Drive and
+        aren’t included here.
+      </p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button className="btn" onClick={run} disabled={busy}>
+          <Icon name="download" size={13} /> {busy ? "Preparing…" : "Backup now (.xlsx)"}
+        </button>
+        {done && <span style={{ fontSize: 12.5, color: "var(--ok)" }}>✓ Backup downloaded.</span>}
+      </div>
+      {error && <p className="err" style={{ marginTop: 10 }}>{error}</p>}
     </div>
   );
 }

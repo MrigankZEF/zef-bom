@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -73,12 +73,12 @@ async def create_upload(
     path.write_bytes(await file.read())
 
     try:
-        cells, _authority = parse_opml(db, path)
+        cells, _authority, name_matches = parse_opml(db, path)
     except Exception as exc:  # malformed OPML, etc.
         path.unlink(missing_ok=True)
         raise HTTPException(400, f"Could not parse OPML: {exc}") from exc
 
-    diff = build_incremental_diff(db, cells, opml_path=path)
+    diff = build_incremental_diff(db, cells, opml_path=path, name_matches=name_matches)
     if attach_to and not is_top_level:  # remember where this sub-BOM should hang
         diff["attach_to"] = attach_to.strip()
     blockers = sum(1 for c in cells if c.resolution_status in BLOCKER_STATUSES)
@@ -98,7 +98,12 @@ async def create_upload(
 
 
 @router.post("/{batch_id}/approve")
-def approve_upload(batch_id: str, db: Session = Depends(get_db), user: str = Depends(current_user)) -> dict:
+def approve_upload(
+    batch_id: str,
+    body: dict | None = Body(default=None),
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+) -> dict:
     b = db.get(UploadBatch, batch_id)
     if b is None:
         raise HTTPException(404, "Upload batch not found")
@@ -108,11 +113,15 @@ def approve_upload(batch_id: str, db: Session = Depends(get_db), user: str = Dep
     if not path.exists():
         raise HTTPException(410, "Uploaded file no longer available; re-upload to approve")
 
-    cells, _authority = parse_opml(db, path)
+    # Per-conflict choices {reused_number: "new"|"rename"|"skip"} from the review screen.
+    decisions = (body or {}).get("decisions") or {}
+    cells, _authority, _name_matches = parse_opml(db, path, decisions)
     blockers = [c for c in cells if c.resolution_status in BLOCKER_STATUSES]
     if blockers:
+        nums = ", ".join(sorted({c.explicit_item_number or c.cleaned_text for c in blockers})[:8])
         raise HTTPException(
-            409, f"{len(blockers)} unresolved cell(s) block approval — resolve them in Miro and re-upload"
+            409,
+            f"{len(blockers)} unresolved item(s) block approval — choose rename or new for: {nums}",
         )
 
     applied = apply_incremental(

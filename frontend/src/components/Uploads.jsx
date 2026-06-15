@@ -24,6 +24,46 @@ const Mono = ({ children }) => (
   <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{children}</span>
 );
 
+// Top-of-review explainer: how each kind of node is handled. Collapsible; nothing is
+// written until you click Approve.
+function HowItWorks() {
+  const [open, setOpen] = useState(true);
+  const ROWS = [
+    ["Known part", "number + name both match the catalog", "linked into the tree — no change to the part"],
+    ["Brand-new part", "number + name are both new", "created in the catalog (a fresh part)"],
+    ["Number drifted", "the number doesn’t match, but the name matches an existing part", "linked to that catalog part — numbering reconciled, no duplicate"],
+    ["Number collision", "the number belongs to a different part, and the name is new", "you choose: rename the existing part, or add as a new part"],
+  ];
+  return (
+    <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+      <button onClick={() => setOpen((v) => !v)}
+        style={{ width: "100%", border: 0, background: "transparent", cursor: "pointer",
+          display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", textAlign: "left" }}>
+        <Icon name={open ? "chevD" : "chevR"} size={12} />
+        <strong style={{ fontSize: 13 }}>How this review works</strong>
+        <span style={{ flex: 1 }} />
+        <span className="card-meta">nothing is saved until you click Approve</span>
+      </button>
+      {open && (
+        <div style={{ borderTop: "1px solid var(--hair)" }}>
+          {ROWS.map(([what, when, then]) => (
+            <div key={what} style={{ display: "grid", gridTemplateColumns: "150px 1fr 1fr",
+              gap: 12, padding: "9px 16px", borderBottom: "1px solid var(--hair-faint)", fontSize: 12.5 }}>
+              <strong>{what}</strong>
+              <span style={{ color: "var(--ink-3)" }}>{when}</span>
+              <span>→ {then}</span>
+            </div>
+          ))}
+          <div style={{ padding: "9px 16px", fontSize: 11.5, color: "var(--ink-3)" }}>
+            After applying, the naming rules re-run automatically: a part used across two or more
+            systems becomes <Mono>UN…</Mono>, otherwise it takes its system’s code.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Uploads({ onApplied }) {
   const [step, setStep] = useState("list");   // list | upload | diff
   const [batches, setBatches] = useState([]);
@@ -33,6 +73,7 @@ export default function Uploads({ onApplied }) {
   const [attachTo, setAttachTo] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [decisions, setDecisions] = useState({});  // {reusedNumber: "new"|"rename"|"skip"}
   const fileRef = useRef(null);
 
   const loadList = () => api.listUploads().then(setBatches).catch((e) => setError(e.message));
@@ -40,7 +81,7 @@ export default function Uploads({ onApplied }) {
 
   const openDiff = async (id) => {
     setError(null);
-    try { const b = await api.getUpload(id); setDiff(b); setStep("diff"); }
+    try { const b = await api.getUpload(id); setDiff(b); setDecisions({}); setStep("diff"); }
     catch (e) { setError(e.message); }
   };
 
@@ -50,13 +91,16 @@ export default function Uploads({ onApplied }) {
     setBusy(true); setError(null);
     try {
       const res = await api.createUpload(file, { notes, isTopLevel: isTop, attachTo: isTop ? null : (attachTo || null) });
-      setDiff(res); setStep("diff"); setNotes(""); loadList();
+      setDiff(res); setDecisions({}); setStep("diff"); setNotes(""); loadList();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
   const approve = async () => {
     setBusy(true); setError(null);
-    try { await api.approveUpload(diff.id); onApplied?.(); setStep("list"); loadList(); }
+    // Default any number-collision the user didn't touch to "add as new".
+    const eff = {};
+    (diff?.diff?.conflicts || []).forEach((c) => { if (c.number) eff[c.number] = decisions[c.number] || "new"; });
+    try { await api.approveUpload(diff.id, eff); onApplied?.(); setStep("list"); loadList(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   const reject = async () => {
@@ -139,8 +183,11 @@ export default function Uploads({ onApplied }) {
         action={<button className="btn ghost" onClick={() => setStep("list")}><Icon name="chevL" /> Back</button>} />
       {error && <p className="err">{error}</p>}
 
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(6,1fr)" }}>
+      <HowItWorks />
+
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(7,1fr)" }}>
         <KPI label="New parts" v={cn.new_parts} accent />
+        <KPI label="Matched by name" v={cn.name_matched} />
         <KPI label="Renamed" v={cn.renamed} />
         <KPI label="Links +" v={cn.added} />
         <KPI label="Links −" v={cn.removed} />
@@ -150,8 +197,8 @@ export default function Uploads({ onApplied }) {
 
       {(cn.conflicts > 0 || cn.needs_review > 0 || cn.merges > 0) && (
         <div className="card" style={{ marginBottom: 16, borderColor: "var(--warn)" }}>
-          <strong style={{ color: "var(--warn)" }}>Needs attention:</strong>{" "}
-          {cn.conflicts ? `${cn.conflicts} conflict(s) · ` : ""}{cn.needs_review ? `${cn.needs_review} need review · ` : ""}{cn.merges ? `${cn.merges} possible name-merge(s)` : ""}
+          <strong style={{ color: "var(--warn)" }}>Needs your choice:</strong>{" "}
+          {cn.conflicts ? `${cn.conflicts} number collision(s) — pick rename or new below · ` : ""}{cn.needs_review ? `${cn.needs_review} need review · ` : ""}{cn.merges ? `${cn.merges} possible name-merge(s)` : ""}
         </div>
       )}
 
@@ -160,6 +207,19 @@ export default function Uploads({ onApplied }) {
           <Row key={p.number}><Mono>{p.number}</Mono><span style={{ flex: 1 }}>{p.name}</span>
             <Pill kind={p.allocated ? "warm" : "info"}>{p.allocated ? "auto-numbered" : "from Miro"}</Pill>
             <Pill kind={p.confidence === "high" ? "ok" : "warm"}>{p.confidence}</Pill></Row>
+        ))}
+      </Section>
+      <Section title="Matched by name" count={cn.name_matched} tone="var(--ok)">
+        {cn.name_matched > 0 && (
+          <Row><span style={{ flex: 1, color: "var(--ink-3)", fontSize: 11.5 }}>
+            These Miro nodes carried a part number that didn’t match the catalog, but their
+            name did — so they were linked to the existing catalog item (numbering reconciled,
+            no duplicates created).
+          </span></Row>
+        )}
+        {d.name_matched?.map((m, i) => (
+          <Row key={i}><Mono>{m.from}</Mono><span style={{ color: "var(--ink-3)" }}>→</span>
+            <Mono>{m.to}</Mono><span style={{ flex: 1 }}>{m.name}</span></Row>
         ))}
       </Section>
       <Section title="Renamed" count={cn.renamed}>
@@ -176,8 +236,34 @@ export default function Uploads({ onApplied }) {
       <Section title="Quantity changes" count={cn.qty_changed}>
         {st.qty_changed?.map((l, i) => <Row key={i}><Mono>{l.parent}</Mono> → <Mono>{l.child}</Mono><span style={{ color: "var(--ink-3)" }}>qty <strong>{l.from}</strong> → <strong>{l.to}</strong></span></Row>)}
       </Section>
-      <Section title="Conflicts" count={cn.conflicts} tone="var(--accent)">
-        {d.conflicts?.map((c, i) => <Row key={i}><Mono>{c.number || "—"}</Mono><span style={{ flex: 1 }}>{c.name}</span><span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>{c.issue}</span></Row>)}
+      <Section title="Number collisions — your choice" count={cn.conflicts} tone="var(--accent)">
+        {cn.conflicts > 0 && (
+          <Row><span style={{ flex: 1, color: "var(--ink-3)", fontSize: 11.5 }}>
+            Miro reused a number that already belongs to a different catalog part, and the new
+            name isn’t in the catalog. Pick what each one is. Default is <strong>Add as new</strong>.
+          </span></Row>
+        )}
+        {d.conflicts?.map((c) => {
+          const choice = decisions[c.number] || "new";
+          const set = (v) => setDecisions((p) => ({ ...p, [c.number]: v }));
+          return (
+            <Row key={c.number}>
+              <Mono>{c.number}</Mono>
+              <span style={{ flex: 1 }}>
+                Miro: <strong>{c.name}</strong>
+                <span style={{ color: "var(--ink-3)" }}> · catalog has “{c.catalog_name || "—"}”</span>
+              </span>
+              <div style={{ display: "inline-flex", gap: 4 }}>
+                {[["new", "Add as new"], ["rename", `Rename ${c.number}`], ["skip", "Skip"]].map(([v, label]) => (
+                  <button key={v} className={`btn sm ${choice === v ? "" : "ghost"}`} onClick={() => set(v)}
+                    title={v === "new" ? "Create a brand-new part with a fresh number; the catalog item keeps its name"
+                      : v === "rename" ? `Rename catalog ${c.number} to “${c.name}”`
+                      : "Ignore this node"}>{label}</button>
+                ))}
+              </div>
+            </Row>
+          );
+        })}
       </Section>
       <Section title="Needs review" count={cn.needs_review} tone="var(--warn)">
         {d.needs_review?.map((c, i) => <Row key={i}><span style={{ flex: 1 }}>{c.cell}</span><span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>{c.issue} · guess {c.module_guess || "?"}</span></Row>)}
@@ -189,7 +275,7 @@ export default function Uploads({ onApplied }) {
       {pending && (
         <div style={{ position: "sticky", bottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center",
           background: "var(--bg-raised)", border: "1px solid var(--hair-strong)", borderRadius: 6, padding: "12px 16px", boxShadow: "var(--shadow-2)" }}>
-          <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Approving writes all changes atomically + an audit entry. Conflicts must be fixed in Miro first.</span>
+          <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Approving writes all changes at once + an audit entry. Number collisions use your choice above (default: add as new).</span>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn ghost danger sm" onClick={reject} disabled={busy}>Reject</button>
             <button className="btn" onClick={approve} disabled={busy}><Icon name="check" /> {busy ? "Applying…" : "Approve batch"}</button>

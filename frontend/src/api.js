@@ -65,6 +65,20 @@ export const api = {
     URL.revokeObjectURL(url);
   },
 
+  // ── full database backup (every table → one .xlsx) ──
+  downloadBackup: async () => {
+    const res = await fetch(`${BASE}/admin/export`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`Backup failed: ${res.status} — ${await res.text().catch(() => "")}`);
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = m ? m[1] : "zef-bom-backup.xlsx";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  },
+
   // ── M4: edit + cost ──
   patchItem: (id, patch) =>
     request(`/items/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
@@ -104,7 +118,8 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => res.statusText)}`);
     return res.json();
   },
-  approveUpload: (id) => request(`/uploads/${encodeURIComponent(id)}/approve`, { method: "POST" }),
+  approveUpload: (id, decisions) =>
+    request(`/uploads/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({ decisions: decisions || {} }) }),
   rejectUpload: (id) => request(`/uploads/${encodeURIComponent(id)}/reject`, { method: "POST" }),
 
   // ── reference data (admin-managed dropdowns) ──

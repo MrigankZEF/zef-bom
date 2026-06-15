@@ -9,6 +9,7 @@ const ICONS = {
   alert: "M8 1l7 13H1L8 1zm0 5v4m0 2v.5",
   check: "M3 8l3.5 3.5L13 5",
   box: "M8 1.5l6 3v7l-6 3-6-3v-7l6-3zM2 4.5l6 3 6-3M8 7.5v7",
+  download: "M8 2v7m0 0l3-3m-3 3L5 6M3 13h10",
 };
 
 export function Icon({ name, size = 14, className = "", style }) {

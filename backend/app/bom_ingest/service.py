@@ -26,6 +26,7 @@ from .miro_csv_fix import (
     InventoryAuthority,
     InventoryItem,
     ParsedCell,
+    ReviewOverride,
     build_parsed_cells,
     load_bom_input,
     normalize_item_name,
@@ -64,21 +65,119 @@ def _augment_with_opml_numbers(
     return InventoryAuthority(authority.items + list(extra.values()), pd.DataFrame())
 
 
-def parse_opml(db: Session, path: Path) -> tuple[list[ParsedCell], InventoryAuthority]:
+def _name_match_overrides(
+    cells: list[ParsedCell], catalog: InventoryAuthority
+) -> tuple[dict[str, ReviewOverride], list[dict]]:
+    """Re-point numbered nodes whose number is wrong but whose NAME uniquely identifies
+    an existing catalog item — untangling a catalog↔Miro numbering drift.
+
+    Run against the *pure catalog* authority (before augmenting with the OPML's own
+    numbers). A numbered node that the catalog can't cleanly match by number is either:
+      * a conflict — its number exists under a different name, or
+      * unknown    — its number isn't in the catalog at all.
+    In both cases, if the node's name uniquely matches one catalog item, we adopt that
+    item's number (the name is the stable identity). Nodes whose name matches nothing (or
+    matches ambiguously) are left alone — they flow through as genuinely new / needs-review.
+
+    Returns (overrides keyed by cell_key, deduped list of {from, to, name} matches).
+    """
+    overrides: dict[str, ReviewOverride] = {}
+    matches: dict[tuple[str, str], dict] = {}
+    for c in cells:
+        if not c.explicit_item_number or not c.normalized_item_name:
+            continue
+        # Skip nodes the catalog already matched cleanly by their own number.
+        if c.resolution_status == "matched_by_number":
+            continue
+        is_blocked = c.resolution_status in ("conflict", "needs_review") or c.blocker_reason == "conflict"
+        if not is_blocked:
+            continue
+        module = c.explicit_module or c.inferred_module
+        suffix = c.explicit_suffix or c.inferred_suffix
+        cand = catalog.lookup_exact(c.normalized_item_name, module, suffix) if (module and suffix) else []
+        if len(cand) != 1:
+            by_name = catalog.lookup_by_name(c.normalized_item_name)
+            cand = by_name if len(by_name) == 1 else []
+        if len(cand) != 1 or cand[0].partnumber == c.explicit_item_number:
+            continue
+        target = cand[0]
+        overrides[c.cell_key] = ReviewOverride(
+            review_decision="match_existing", approved_item_number=target.partnumber
+        )
+        matches.setdefault(
+            (c.explicit_item_number, target.partnumber),
+            {"from": c.explicit_item_number, "to": target.partnumber, "name": target.partname},
+        )
+    return overrides, list(matches.values())
+
+
+def _decision_overrides(
+    cells: list[ParsedCell], already: dict[str, ReviewOverride], decisions: dict[str, str]
+) -> dict[str, ReviewOverride]:
+    """Turn the user's per-conflict choices into per-cell overrides.
+
+    `decisions` is {explicit_number: "new" | "rename" | "skip"}, applied to the cells that
+    are STILL a conflict after auto name-matching (i.e. a number reused for a different part
+    whose name the catalog doesn't know):
+      * new    — create a brand-new part (a fresh number is allocated; the catalog item that
+                 owns the reused number is left untouched).
+      * rename — keep the reused number and update that catalog item's name to Miro's.
+      * skip   — ignore this node entirely.
+    """
+    extra = dict(already)
+    for c in cells:
+        num = c.explicit_item_number
+        if not num or num not in decisions or c.cell_key in extra:
+            continue
+        if not (c.resolution_status in ("conflict", "needs_review") or c.blocker_reason == "conflict"):
+            continue
+        action = decisions[num]
+        if action == "new":
+            extra[c.cell_key] = ReviewOverride(review_decision="create_new")
+        elif action == "skip":
+            extra[c.cell_key] = ReviewOverride(review_decision="skip")
+        elif action == "rename":
+            extra[c.cell_key] = ReviewOverride(review_decision="match_existing")
+    return extra
+
+
+def parse_opml(
+    db: Session, path: Path, decisions: dict[str, str] | None = None
+) -> tuple[list[ParsedCell], InventoryAuthority, list[dict]]:
     """Load + repair an OPML/CSV and resolve every cell against the live items table.
 
-    Two-pass: resolve once to surface the explicit numbers the OPML carries, seed
-    those into the authority, then re-resolve so they're treated as known.
+    (1) Resolve against the pure catalog. (2) Reconcile numbering drift by name — re-point
+    numbered nodes whose number is wrong but whose name matches a catalog item. (3) Apply any
+    per-conflict user `decisions` (new / rename / skip). (4) Seed genuinely-new OPML numbers
+    so they resolve as new rather than blocking.
+
+    Returns (cells, authority, name_matches) where name_matches lists {from, to, name} for
+    nodes re-pointed to an existing catalog item by name.
     """
+    decisions = decisions or {}
     df_raw, input_format = load_bom_input(path)
     df = df_raw if input_format == "opml" else repair_mindmap_tree(df_raw)
-    authority = build_authority_from_db(db)
-    cells = build_parsed_cells(df, authority)
+    catalog = build_authority_from_db(db)
+    cells = build_parsed_cells(df, catalog)
+
+    overrides, name_matches = _name_match_overrides(cells, catalog)
+    if decisions:
+        overrides = _decision_overrides(cells, overrides, decisions)
+    if overrides:
+        cells = build_parsed_cells(df, catalog, overrides)
+
+    authority = catalog
     augmented = _augment_with_opml_numbers(authority, cells)
     if augmented is not authority:
         authority = augmented
-        cells = build_parsed_cells(df, authority)
-    return cells, authority
+        cells = build_parsed_cells(df, authority, overrides)
+
+    # A "rename" choice keeps the reused number but adopts Miro's name → make the rename visible.
+    for c in cells:
+        num = c.explicit_item_number
+        if num and decisions.get(num) == "rename" and c.resolved_item_number == num:
+            c.resolved_item_name = c.normalized_item_name
+    return cells, authority, name_matches
 
 
 def _confidence(cell: ParsedCell) -> str:
@@ -146,7 +245,7 @@ def ingest_opml_file(
     """Parse an OPML, record an upload_batch, and (if clean) apply it. Commits."""
     path = Path(path)
     batch_id = batch_id or f"ub-{uuid.uuid4().hex[:10]}"
-    cells, _authority = parse_opml(db, path)
+    cells, _authority, _name_matches = parse_opml(db, path)
     diff = build_diff_summary(cells)
     blockers = [c for c in cells if c.resolution_status in BLOCKER_STATUSES]
 
@@ -234,7 +333,8 @@ def detect_merges_from_opml(path: Path) -> list[dict]:
 
 
 def build_incremental_diff(
-    db: Session, cells: list[ParsedCell], opml_path: Path | None = None
+    db: Session, cells: list[ParsedCell], opml_path: Path | None = None,
+    name_matches: list[dict] | None = None,
 ) -> dict:
     """Compare resolved cells against the live DB: new / renamed / structural / blockers."""
     items: dict[str, ParsedCell] = {}
@@ -273,11 +373,23 @@ def build_incremental_diff(
         if p in opml_parents and (p, ch) not in opml_links:
             removed.append({"parent": p, "child": ch, "qty": q})
 
-    conflicts = [
-        {"number": c.resolved_item_number, "name": c.normalized_item_name,
-         "issue": c.blocker_reason, "raw": c.cleaned_text}
-        for c in cells if c.resolution_status == "conflict" or c.blocker_reason == "conflict"
-    ]
+    # A conflict = a Miro node whose number belongs to a DIFFERENT catalog part and whose
+    # name the catalog doesn't recognise. Keyed by the reused number; show both names so the
+    # user can choose rename-vs-new. (Deduped — a number can appear in many tree branches.)
+    conflict_map: dict[str, dict] = {}
+    for c in cells:
+        if c.resolution_status != "conflict" and c.blocker_reason != "conflict":
+            continue
+        num = c.explicit_item_number
+        existing = db.get(Item, num) if num else None
+        conflict_map.setdefault(num or c.cleaned_text, {
+            "number": num,
+            "name": c.normalized_item_name,
+            "catalog_name": existing.item_name if existing else None,
+            "issue": c.blocker_reason,
+            "raw": c.cleaned_text,
+        })
+    conflicts = list(conflict_map.values())
     needs_review = [
         {"cell": c.cleaned_text, "issue": c.blocker_reason,
          "module_guess": c.explicit_module or c.inferred_module}
@@ -285,15 +397,19 @@ def build_incremental_diff(
     ]
     merges = detect_merges_from_opml(opml_path) if opml_path else []
 
+    name_matched_list = name_matches or []
+
     return {
         "new_parts": new_parts,
         "renamed": renamed,
+        "name_matched": name_matched_list,
         "structural": {"added": added, "removed": removed, "qty_changed": qty_changed},
         "conflicts": conflicts,
         "needs_review": needs_review,
         "merges": merges,
         "counts": {
             "new_parts": len(new_parts), "renamed": len(renamed), "unchanged": unchanged_items,
+            "name_matched": len(name_matched_list),
             "added": len(added), "removed": len(removed), "qty_changed": len(qty_changed),
             "conflicts": len(conflicts), "needs_review": len(needs_review), "merges": len(merges),
         },
