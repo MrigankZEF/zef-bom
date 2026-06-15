@@ -16,12 +16,13 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 
-ITEM_NUMBER_RE = re.compile(r"^(?P<module>[A-Z]{2,3})(?P<number>\d{3})(?P<suffix>[PA])$")
+# Module codes are 2–5 letters (AEC, UN, DRY, … and longer ones like MDAC) + 3 digits + P/A.
+ITEM_NUMBER_RE = re.compile(r"^(?P<module>[A-Z]{2,5})(?P<number>\d{3})(?P<suffix>[PA])$")
 NUMBERED_CELL_RE = re.compile(
-    r"^(?P<item_number>[A-Z]{2,3}\d{3}[PA])\s*:\s*(?P<name>.+)$"
+    r"^(?P<item_number>[A-Z]{2,5}\d{3}[PA])\s*:\s*(?P<name>.+)$"
 )
 MODULE_TYPED_CELL_RE = re.compile(
-    r"^(?P<module>[A-Z]{2,3})\s+(?P<suffix>[PA])\s*:\s*(?P<name>.+)$"
+    r"^(?P<module>[A-Z]{2,5})\s+(?P<suffix>[PA])\s*:\s*(?P<name>.+)$"
 )
 TYPE_ONLY_CELL_RE = re.compile(r"^(?P<suffix>[PA])\s*:\s*(?P<name>.+)$")
 QUANTITY_RE = re.compile(r"#\s*(\d+)\s*$")
@@ -403,7 +404,7 @@ def _parse_explicit_structure(
             type_only_match.group("name"),
         )
 
-    prefix_match = re.match(r"^(?P<module>[A-Za-z]{2,3})(?P<separator>\s*-\s*|\s+)(?P<name>.+)$", base_text)
+    prefix_match = re.match(r"^(?P<module>[A-Za-z]{2,5})(?P<separator>\s*-\s*|\s+)(?P<name>.+)$", base_text)
     if prefix_match and prefix_match.group("module").upper() in module_codes:
         return (
             "module_prefix",
@@ -637,6 +638,17 @@ def resolve_candidate(cell: ParsedCell, authority: InventoryAuthority) -> None:
     )
 
     if module_code and suffix:
+        # An explicit "create new" choice (from the review screen) wins over any name match —
+        # the user has decided this is a brand-new part, even if the name resembles existing
+        # items. Without this, an ambiguous name (>1 match) would ignore the choice and stay
+        # stuck in needs-review.
+        if forced_create_new:
+            cell.resolved_item_number = None
+            cell.resolved_item_name = cell.normalized_item_name
+            cell.resolution_status = "new_number_assigned"
+            cell.action = "create_item"
+            return
+
         exact_matches = authority.lookup_exact(cell.normalized_item_name, module_code, suffix)
         if len(exact_matches) == 1:
             item = exact_matches[0]

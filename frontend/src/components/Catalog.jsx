@@ -28,13 +28,24 @@ export default function Catalog({ onOpenPart, version }) {
   const [adding, setAdding] = useState(false);
   const [nm, setNm] = useState("");
   const [ntype, setNtype] = useState("part");
+  const [nmod, setNmod] = useState("UN");
+  const [refMods, setRefMods] = useState([]);
 
   useEffect(() => { setRows(null); api.catalog().then(setRows).catch((e) => setError(e.message)); }, [version]);
+  useEffect(() => { api.reference("module").then((r) => setRefMods(r.map((x) => x.value))).catch(() => {}); }, []);
+
+  // Module choices: UN first, then every system code in use + any admin-added module.
+  const modules = useMemo(() => {
+    const s = new Set(["UN"]);
+    (rows || []).forEach((r) => r.module_code && s.add(r.module_code));
+    refMods.forEach((m) => m && s.add(String(m).toUpperCase()));
+    return [...s].sort((a, b) => (a === "UN" ? -1 : b === "UN" ? 1 : a.localeCompare(b)));
+  }, [rows, refMods]);
 
   const create = async () => {
     if (!nm.trim()) return;
     try {
-      const r = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype });
+      const r = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype, module: nmod });
       setNm(""); setAdding(false);
       api.catalog().then(setRows);
       onOpenPart?.(r.item_id);
@@ -70,8 +81,14 @@ export default function Catalog({ onOpenPart, version }) {
         <div className="card" style={{ marginBottom: 14, display: "flex", gap: 8, alignItems: "end", maxWidth: 600, padding: 14, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 200 }}><span className="input-label">Name (free text)</span><input className="input" value={nm} onChange={(e) => setNm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} autoFocus placeholder="e.g. Custom bracket" /></div>
           <div><span className="input-label">Type</span><select className="select" value={ntype} onChange={(e) => setNtype(e.target.value)}><option value="part">part</option><option value="assembly">assembly</option></select></div>
+          <div><span className="input-label">Module</span><select className="select" value={nmod} onChange={(e) => setNmod(e.target.value)}>{modules.map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
           <button className="btn" onClick={create}>create</button>
-          <p style={{ width: "100%", fontSize: 11, color: "var(--ink-3)", margin: "2px 0 0" }}>Gets a placeholder <strong>UN</strong> code. When you add it into a BOM, it re-codes to that system (or stays UN if used across systems).</p>
+          <p style={{ width: "100%", fontSize: 11, color: "var(--ink-3)", margin: "2px 0 0" }}>
+            {nmod === "UN"
+              ? <><strong>UN</strong> = universal: it keeps the UN code wherever it's used.</>
+              : <><strong>{nmod}</strong>: stays {nmod} while used only in {nmod}; becomes <strong>UN</strong> if it ends up shared across systems.</>}
+            {" "}Add new module names in <strong>Admin → Reference data → Modules</strong>.
+          </p>
         </div>
       )}
 

@@ -105,6 +105,7 @@ class AddChildIn(BaseModel):
 class NewItemIn(BaseModel):
     item_name: str
     item_type: str = "part"  # part | assembly
+    module: str = "UN"  # UN (universal, stays UN) or a system code like AEC / DAC / MDAC
 
 
 class FieldValueIn(BaseModel):

@@ -113,15 +113,18 @@ def approve_upload(
     if not path.exists():
         raise HTTPException(410, "Uploaded file no longer available; re-upload to approve")
 
-    # Per-conflict choices {reused_number: "new"|"rename"|"skip"} from the review screen.
+    # Per-row choices from the review screen:
+    #   decisions = {reused_number: "new"|"rename"|"skip"}  (number collisions)
+    #   reviews   = {node_text: {action, module, type, match}}  (needs-review items)
     decisions = (body or {}).get("decisions") or {}
-    cells, _authority, _name_matches = parse_opml(db, path, decisions)
+    reviews = (body or {}).get("reviews") or {}
+    cells, _authority, _name_matches = parse_opml(db, path, decisions, reviews)
     blockers = [c for c in cells if c.resolution_status in BLOCKER_STATUSES]
     if blockers:
         nums = ", ".join(sorted({c.explicit_item_number or c.cleaned_text for c in blockers})[:8])
         raise HTTPException(
             409,
-            f"{len(blockers)} unresolved item(s) block approval — choose rename or new for: {nums}",
+            f"{len(blockers)} item(s) still need a choice before approval: {nums}",
         )
 
     applied = apply_incremental(

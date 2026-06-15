@@ -197,6 +197,10 @@ def recode_item(db: Session, item_id: str, *, user: str | None) -> str:
     m = ITEM_NUMBER_RE.match(item_id)
     if not m:
         return item_id
+    # UN means "universal" — a deliberately shared part. Once UN, it stays UN regardless of
+    # where it's used (and a multi-system part that became UN never reverts to a single system).
+    if m.group("module") == UNIVERSAL:
+        return item_id
     mods = containing_root_modules(db, item_id)
     if not mods:
         return item_id  # not used in any BOM → leave its catalog code alone

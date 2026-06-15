@@ -141,8 +141,43 @@ def _decision_overrides(
     return extra
 
 
+def _review_overrides(
+    cells: list[ParsedCell], already: dict[str, ReviewOverride], reviews: dict[str, dict]
+) -> dict[str, ReviewOverride]:
+    """Turn the user's per-needs-review choices into per-cell overrides.
+
+    `reviews` is keyed by the node's text {cell_text: {action, module, type, match}}:
+      * create — make a new part in the chosen module + type (a number is allocated).
+      * match  — point this node at an existing catalog code.
+      * skip   — ignore this node.
+    Applied to cells the engine couldn't resolve on its own (needs_review).
+    """
+    extra = dict(already)
+    for c in cells:
+        key = c.cleaned_text
+        if key not in reviews or c.cell_key in extra or c.resolution_status != "needs_review":
+            continue
+        r = reviews[key] or {}
+        action = r.get("action")
+        if action == "skip":
+            extra[c.cell_key] = ReviewOverride(review_decision="skip")
+        elif action == "match" and r.get("match"):
+            extra[c.cell_key] = ReviewOverride(
+                review_decision="match_existing", approved_item_number=str(r["match"]).strip().upper()
+            )
+        elif action == "create":
+            mod = (r.get("module") or "").strip().upper() or None
+            suffix = "A" if r.get("type") == "assembly" else "P"
+            extra[c.cell_key] = ReviewOverride(
+                review_decision="create_new", approved_module=mod, approved_suffix=suffix
+            )
+    return extra
+
+
 def parse_opml(
-    db: Session, path: Path, decisions: dict[str, str] | None = None
+    db: Session, path: Path,
+    decisions: dict[str, str] | None = None,
+    reviews: dict[str, dict] | None = None,
 ) -> tuple[list[ParsedCell], InventoryAuthority, list[dict]]:
     """Load + repair an OPML/CSV and resolve every cell against the live items table.
 
@@ -155,6 +190,7 @@ def parse_opml(
     nodes re-pointed to an existing catalog item by name.
     """
     decisions = decisions or {}
+    reviews = reviews or {}
     df_raw, input_format = load_bom_input(path)
     df = df_raw if input_format == "opml" else repair_mindmap_tree(df_raw)
     catalog = build_authority_from_db(db)
@@ -163,6 +199,8 @@ def parse_opml(
     overrides, name_matches = _name_match_overrides(cells, catalog)
     if decisions:
         overrides = _decision_overrides(cells, overrides, decisions)
+    if reviews:
+        overrides = _review_overrides(cells, overrides, reviews)
     if overrides:
         cells = build_parsed_cells(df, catalog, overrides)
 
@@ -390,11 +428,21 @@ def build_incremental_diff(
             "raw": c.cleaned_text,
         })
     conflicts = list(conflict_map.values())
-    needs_review = [
-        {"cell": c.cleaned_text, "issue": c.blocker_reason,
-         "module_guess": c.explicit_module or c.inferred_module}
-        for c in cells if c.resolution_status == "needs_review"
-    ]
+    # Items the engine couldn't resolve — surfaced with a stable key (the node text) so the
+    # user can resolve each inline (create / match / skip). Deduped by that key.
+    review_map: dict[str, dict] = {}
+    for c in cells:
+        if c.resolution_status != "needs_review":
+            continue
+        review_map.setdefault(c.cleaned_text, {
+            "key": c.cleaned_text,
+            "cell": c.cleaned_text,
+            "name": c.normalized_item_name,
+            "issue": c.blocker_reason,
+            "module_guess": c.explicit_module or c.inferred_module,
+            "type_guess": "assembly" if (c.explicit_suffix or c.inferred_suffix) == "A" else "part",
+        })
+    needs_review = list(review_map.values())
     merges = detect_merges_from_opml(opml_path) if opml_path else []
 
     name_matched_list = name_matches or []

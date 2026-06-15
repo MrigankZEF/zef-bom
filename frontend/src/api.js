@@ -134,8 +134,8 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => res.statusText)}`);
     return res.json();
   },
-  approveUpload: (id, decisions) =>
-    request(`/uploads/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({ decisions: decisions || {} }) }),
+  approveUpload: (id, decisions, reviews) =>
+    request(`/uploads/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({ decisions: decisions || {}, reviews: reviews || {} }) }),
   rejectUpload: (id) => request(`/uploads/${encodeURIComponent(id)}/reject`, { method: "POST" }),
 
   // ── reference data (admin-managed dropdowns) ──

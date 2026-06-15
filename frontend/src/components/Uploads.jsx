@@ -74,14 +74,28 @@ export default function Uploads({ onApplied }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [decisions, setDecisions] = useState({});  // {reusedNumber: "new"|"rename"|"skip"}
+  const [reviews, setReviews] = useState({});       // {nodeText: {action, module, type, match}}
+  const [modules, setModules] = useState(["UN"]);
+  const [catItems, setCatItems] = useState([]);     // catalog, for "match existing" search
   const fileRef = useRef(null);
 
   const loadList = () => api.listUploads().then(setBatches).catch((e) => setError(e.message));
   useEffect(() => { loadList(); }, []);
+  // Module choices + catalog (for resolving review items): UN + system codes + admin-added.
+  useEffect(() => {
+    Promise.all([api.catalog().catch(() => []), api.reference("module").catch(() => [])])
+      .then(([cat, ref]) => {
+        setCatItems(cat);
+        const s = new Set(["UN"]);
+        cat.forEach((r) => r.module_code && s.add(r.module_code));
+        ref.forEach((m) => m.value && s.add(String(m.value).toUpperCase()));
+        setModules([...s].sort((a, b) => (a === "UN" ? -1 : b === "UN" ? 1 : a.localeCompare(b))));
+      });
+  }, []);
 
   const openDiff = async (id) => {
     setError(null);
-    try { const b = await api.getUpload(id); setDiff(b); setDecisions({}); setStep("diff"); }
+    try { const b = await api.getUpload(id); setDiff(b); setDecisions({}); setReviews({}); setStep("diff"); }
     catch (e) { setError(e.message); }
   };
 
@@ -91,7 +105,7 @@ export default function Uploads({ onApplied }) {
     setBusy(true); setError(null);
     try {
       const res = await api.createUpload(file, { notes, isTopLevel: isTop, attachTo: isTop ? null : (attachTo || null) });
-      setDiff(res); setDecisions({}); setStep("diff"); setNotes(""); loadList();
+      setDiff(res); setDecisions({}); setReviews({}); setStep("diff"); setNotes(""); loadList();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -100,7 +114,7 @@ export default function Uploads({ onApplied }) {
     // Default any number-collision the user didn't touch to "add as new".
     const eff = {};
     (diff?.diff?.conflicts || []).forEach((c) => { if (c.number) eff[c.number] = decisions[c.number] || "new"; });
-    try { await api.approveUpload(diff.id, eff); onApplied?.(); setStep("list"); loadList(); }
+    try { await api.approveUpload(diff.id, eff, reviews); onApplied?.(); setStep("list"); loadList(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   const reject = async () => {
@@ -265,20 +279,87 @@ export default function Uploads({ onApplied }) {
           );
         })}
       </Section>
-      <Section title="Needs review" count={cn.needs_review} tone="var(--warn)">
-        {d.needs_review?.map((c, i) => <Row key={i}><span style={{ flex: 1 }}>{c.cell}</span><span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>{c.issue} · guess {c.module_guess || "?"}</span></Row>)}
+      <Section title="Needs your review" count={cn.needs_review} tone="var(--warn)">
+        {cn.needs_review > 0 && (
+          <Row><span style={{ flex: 1, color: "var(--ink-3)", fontSize: 11.5 }}>
+            The importer couldn’t place these on its own. Resolve each here — no need to go back to Miro.
+          </span></Row>
+        )}
+        {d.needs_review?.map((c) => {
+          const r = reviews[c.key] || {};
+          const upd = (patch) => setReviews((p) => ({ ...p, [c.key]: { ...(p[c.key] || {}), ...patch } }));
+          const act = r.action;
+          return (
+            <div key={c.key} style={{ padding: "10px 16px", borderBottom: "1px solid var(--hair-faint)", fontSize: 13 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ flex: 1, minWidth: 220 }}><strong>{c.name || c.cell}</strong>
+                  <span style={{ color: "var(--ink-3)", fontSize: 11.5 }}> · {c.issue}</span></span>
+                <div style={{ display: "inline-flex", gap: 4 }}>
+                  {[["create", "Create new"], ["match", "Match existing"], ["skip", "Skip"]].map(([v, label]) => (
+                    <button key={v} className={`btn sm ${act === v ? "" : "ghost"}`}
+                      onClick={() => upd({ action: v, module: r.module || c.module_guess || "UN", type: r.type || c.type_guess || "part" })}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              {act === "create" && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, paddingLeft: 4 }}>
+                  <span style={{ color: "var(--ink-3)", fontSize: 12 }}>as</span>
+                  <select className="select" style={{ height: 30 }} value={r.module || c.module_guess || "UN"} onChange={(e) => upd({ module: e.target.value })}>
+                    {modules.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                  <select className="select" style={{ height: 30 }} value={r.type || c.type_guess || "part"} onChange={(e) => upd({ type: e.target.value })}>
+                    <option value="part">part</option><option value="assembly">assembly</option>
+                  </select>
+                  <span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>→ a new {(r.module || c.module_guess || "UN")} code is allocated</span>
+                </div>
+              )}
+              {act === "match" && (() => {
+                const sel = catItems.find((it) => it.item_id === r.match);
+                if (sel) return (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8, paddingLeft: 4, fontSize: 13 }}>
+                    <span style={{ color: "var(--ink-3)", fontSize: 12 }}>links to</span>
+                    <Mono>{sel.item_id}</Mono><span>{sel.item_name}</span>
+                    <button className="btn ghost sm" onClick={() => upd({ match: undefined })}>change</button>
+                  </div>
+                );
+                const q = (r.q || "").trim().toLowerCase();
+                const results = q ? catItems.filter((it) => it.item_id.toLowerCase().includes(q) || (it.item_name || "").toLowerCase().includes(q)).slice(0, 6) : [];
+                return (
+                  <div style={{ marginTop: 8, paddingLeft: 4 }}>
+                    <input className="input" style={{ height: 30, maxWidth: 340 }} placeholder="search the catalog by code or name…"
+                      value={r.q || ""} onChange={(e) => upd({ q: e.target.value })} />
+                    <div style={{ marginTop: 4 }}>
+                      {results.map((it) => (
+                        <div key={it.item_id} onClick={() => upd({ match: it.item_id, q: "" })}
+                          style={{ cursor: "pointer", padding: "5px 8px", fontSize: 12.5, display: "flex", gap: 10, alignItems: "center", borderRadius: 4 }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--hair-faint)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                          <Mono>{it.item_id}</Mono><span style={{ flex: 1 }}>{it.item_name}</span>
+                        </div>
+                      ))}
+                      {q && results.length === 0 && <div style={{ fontSize: 12, color: "var(--ink-3)", padding: "4px 8px" }}>No catalog item matches “{r.q}”.</div>}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          );
+        })}
       </Section>
       <Section title="Possible name-merges" count={cn.merges} tone="var(--warn)">
         {d.merges?.map((m, i) => <Row key={i}><strong>{m.name}</strong><span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>same name, {m.child_variants?.length} different child sets — split in Miro if these are distinct</span></Row>)}
       </Section>
 
       {pending && (
-        <div style={{ position: "sticky", bottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center",
-          background: "var(--bg-raised)", border: "1px solid var(--hair-strong)", borderRadius: 6, padding: "12px 16px", boxShadow: "var(--shadow-2)" }}>
-          <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Approving writes all changes at once + an audit entry. Number collisions use your choice above (default: add as new).</span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn ghost danger sm" onClick={reject} disabled={busy}>Reject</button>
-            <button className="btn" onClick={approve} disabled={busy}><Icon name="check" /> {busy ? "Applying…" : "Approve batch"}</button>
+        <div style={{ position: "sticky", bottom: 16, display: "flex", flexDirection: "column", gap: 8,
+          background: "var(--bg-raised)", border: `1px solid ${error ? "var(--accent)" : "var(--hair-strong)"}`, borderRadius: 6, padding: "12px 16px", boxShadow: "var(--shadow-2)" }}>
+          {error && <div className="err" style={{ margin: 0, fontSize: 13 }}>⚠ {error}</div>}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Approving writes all changes at once + an audit entry. Resolve any review/collision rows above first.</span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn ghost danger sm" onClick={reject} disabled={busy}>Reject</button>
+              <button className="btn" onClick={approve} disabled={busy}><Icon name="check" /> {busy ? "Applying…" : "Approve batch"}</button>
+            </div>
           </div>
         </div>
       )}

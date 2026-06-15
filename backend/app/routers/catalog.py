@@ -4,6 +4,8 @@ here automatically and it doubles as the naming authority for imports.
 """
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,20 +50,26 @@ def catalog(db: Session = Depends(get_db)) -> list[dict]:
 
 @router.post("/catalog/items", status_code=201)
 def create_catalog_item(body: NewItemIn, db: Session = Depends(get_db), user: str = Depends(current_user)) -> dict:
-    """Create a new catalog item with a free name. It gets a placeholder UN code; once you
-    add it into a BOM, the naming engine re-codes it to its system (or keeps UN if shared)."""
+    """Create a new catalog item with a free name and a chosen module.
+
+    UN (default) = a universal part: it keeps the UN code wherever it's used. A specific
+    system code (AEC / DAC / MDAC / …) follows usage — it stays that code while used in only
+    that system, and becomes UN if it ends up shared across two or more systems."""
     from ..operations import allocate_code
 
     name = (body.item_name or "").strip()
     if not name:
         raise HTTPException(400, "Name is required")
+    module = (body.module or "UN").strip().upper()
+    if not re.fullmatch(r"[A-Z]{2,5}", module):
+        raise HTTPException(400, f"Invalid module code '{module}' — use 2–5 letters (e.g. UN, AEC, MDAC).")
     suffix = "A" if body.item_type == "assembly" else "P"
-    code = allocate_code(db, "UN", suffix)
+    code = allocate_code(db, module, suffix)
     db.add(Item(
-        item_id=code, item_name=name, item_type=body.item_type, module_code="UN",
+        item_id=code, item_name=name, item_type=body.item_type, module_code=module,
         is_top_level=False, created_by=user, updated_by=user,
     ))
     record_change(db, entity_type="item", entity_id=code, change_type="create",
-                  new_value=name, changed_by=user, change_reason="created in catalog")
+                  new_value=name, changed_by=user, change_reason=f"created in catalog ({module})")
     db.commit()
-    return {"item_id": code, "item_name": name, "item_type": body.item_type}
+    return {"item_id": code, "item_name": name, "item_type": body.item_type, "module_code": module}
