@@ -33,6 +33,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const [form, setForm] = useState({});
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
 
   const load = () => {
@@ -70,7 +71,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes } = d;
   const isAssembly = item.item_type === "assembly";
   const isLeaf = !node.has_children;
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const set = (k, v) => { setSaved(false); setForm((f) => ({ ...f, [k]: v })); };
   const totalQty = parents.reduce((s, p) => s + (p.quantity || 0), 0) || 1;
 
   const saveDetails = async () => {
@@ -88,7 +89,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
     if (JSON.stringify(form.materials || []) !== JSON.stringify(curMats)) { patch.materials = form.materials || []; dirty = true; }
     if (!dirty) return;
     setBusy(true);
-    try { await api.patchItem(itemId, patch); setReason(""); load(); onChanged?.(); }
+    try { await api.patchItem(itemId, patch); setReason(""); setSaved(true); load(); onChanged?.(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -212,7 +213,8 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Notes"><textarea className="input" style={{ height: 56, padding: 8 }} value={form.comment ?? ""} onChange={(e) => set("comment", e.target.value)} /></Field></div>
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Change comment (audit)"><input className="input" value={reason} placeholder="why this change…" onChange={(e) => setReason(e.target.value)} /></Field></div>
               </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, marginTop: 14 }}>
+                {saved && <span style={{ fontSize: 12.5, color: "var(--ok)" }}>✓ Saved — shown under Key figures above.</span>}
                 <button className="btn" onClick={saveDetails} disabled={busy}><Icon name="check" /> {busy ? "Saving…" : "Save changes"}</button>
               </div>
             </Accordion>
@@ -291,6 +293,15 @@ function TierToggle({ tier, setTier }) {
   );
 }
 
+// Make a user-entered URL absolute, so a value like "drive.google.com/x" or "www.foo.com"
+// opens externally instead of being treated as a localhost-relative path.
+function extUrl(u) {
+  const s = String(u || "").trim();
+  if (!s) return s;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("//")) return s; // already has a scheme
+  return `https://${s}`;
+}
+
 function Readouts({ isAssembly, rollups, tier, setTier, item, parents }) {
   const rollup = rollups[tier] || {};
   const hasRange = rollup.cost_min != null && (rollup.cost_min < rollup.cost || rollup.cost_max > rollup.cost);
@@ -323,6 +334,40 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents }) {
           </>
         )}
       </div>
+
+      {(item.drawing_url || item.drive_folder_url || item.supplier || item.comment) && (
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--hair-faint)", display: "grid", gap: 10 }}>
+          {item.drawing_url && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+              <span className="label" style={{ minWidth: 96 }}>Drawing / CAD</span>
+              <a href={extUrl(item.drawing_url)} target="_blank" rel="noreferrer" className="mono"
+                style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 12 }}>
+                {item.drawing_url}
+              </a>
+              <a href={extUrl(item.drawing_url)} target="_blank" rel="noreferrer" className="btn ghost sm">Open ↗</a>
+            </div>
+          )}
+          {item.drive_folder_url && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+              <span className="label" style={{ minWidth: 96 }}>Drive folder</span>
+              <span style={{ flex: 1, color: "var(--ink-3)", fontSize: 12 }}>attachments</span>
+              <a href={extUrl(item.drive_folder_url)} target="_blank" rel="noreferrer" className="btn ghost sm">Open ↗</a>
+            </div>
+          )}
+          {item.supplier && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+              <span className="label" style={{ minWidth: 96 }}>Supplier</span>
+              <span style={{ flex: 1, color: "var(--ink-2)" }}>{item.supplier}{item.supplier_country ? ` · ${item.supplier_country}` : ""}</span>
+            </div>
+          )}
+          {item.comment && (
+            <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
+              <span className="label" style={{ minWidth: 96, paddingTop: 2 }}>Notes</span>
+              <span style={{ flex: 1, color: "var(--ink-2)", whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{item.comment}</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
