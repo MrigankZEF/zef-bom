@@ -440,7 +440,8 @@ def apply_incremental(
             record_change(db, entity_type="item", entity_id=num, change_type="create",
                           new_value=c.resolved_item_name, changed_by=user, change_reason=f"import {batch_id}")
             result["items_created"] += 1
-        elif normalize_item_name(existing.item_name) != normalize_item_name(c.resolved_item_name):
+            continue
+        if normalize_item_name(existing.item_name) != normalize_item_name(c.resolved_item_name):
             old = existing.item_name
             existing.item_name = c.resolved_item_name
             existing.updated_by = user
@@ -448,6 +449,14 @@ def apply_incremental(
                           field_changed="item_name", old_value=old, new_value=c.resolved_item_name,
                           changed_by=user, change_reason=f"import {batch_id}")
             result["items_renamed"] += 1
+        # A top-level import must flag its root(s) even when the item already exists (e.g.
+        # seeded from the catalog) — otherwise it never appears as a tree root.
+        if num in roots and not existing.is_top_level:
+            existing.is_top_level = True
+            existing.updated_by = user
+            record_change(db, entity_type="item", entity_id=num, change_type="update",
+                          field_changed="is_top_level", old_value="False", new_value="True",
+                          changed_by=user, change_reason=f"import {batch_id}")
     db.flush()
 
     opml_links = _opml_links(cells)
