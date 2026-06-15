@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # like Railway where you can't commit a key file). Takes precedence over the file.
     google_service_account_json: str = ""
     drive_attachments_root_id: str = ""
+    # Optional: explicit Drive folder for database backups. Blank = a "Backups" subfolder
+    # is created under the attachments root automatically.
+    drive_backups_folder_id: str = ""
 
     # "Sign in with Google" — the OAuth Web client ID; backend verifies ID tokens against it.
     google_oauth_client_id: str = ""

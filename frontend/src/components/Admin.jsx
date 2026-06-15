@@ -140,27 +140,66 @@ function Backup() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false);
-  const run = async () => {
+  const [drive, setDrive] = useState(null);   // { enabled, backups: [] }
+
+  const loadBackups = () => api.listBackups().then(setDrive).catch((e) => setError(e.message));
+  useEffect(() => { loadBackups(); }, []);
+
+  const download = async () => {
     setBusy(true); setError(null); setDone(false);
     try { await api.downloadBackup(); setDone(true); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
+  const toDrive = async () => {
+    setBusy(true); setError(null);
+    try { await api.backupToDrive(); await loadBackups(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  const fmtDate = (s) => { try { return new Date(s).toLocaleString(); } catch { return s; } };
+
   return (
-    <div className="card" style={{ maxWidth: 640, padding: 18 }}>
+    <div className="card" style={{ maxWidth: 680, padding: 18 }}>
       <div className="card-head"><span className="card-title">Backup — full database export</span></div>
       <p style={{ fontSize: 13, color: "var(--ink-2)", margin: "4px 0 12px" }}>
-        Download a complete snapshot of the database as a single <strong>.xlsx</strong> workbook — one sheet per table:
+        A complete snapshot of the database as one <strong>.xlsx</strong> workbook — a sheet per table:
         items, BOM links (the full hierarchy), decided costs, cost evidence, assembly labor, custom fields, reference lists,
-        uploads, change history and users. Open it in Excel, or keep it as a manual backup. File attachments live in Drive and
-        aren’t included here.
+        uploads, change history and users. File attachments live in Drive and aren’t included here.
       </p>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <button className="btn" onClick={run} disabled={busy}>
-          <Icon name="download" size={13} /> {busy ? "Preparing…" : "Backup now (.xlsx)"}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn" onClick={download} disabled={busy}>
+          <Icon name="download" size={13} /> {busy ? "Working…" : "Backup now (.xlsx)"}
         </button>
+        {drive?.enabled && (
+          <button className="btn ghost" onClick={toDrive} disabled={busy}>
+            <Icon name="box" size={13} /> Back up to Drive now
+          </button>
+        )}
         {done && <span style={{ fontSize: 12.5, color: "var(--ok)" }}>✓ Backup downloaded.</span>}
       </div>
       {error && <p className="err" style={{ marginTop: 10 }}>{error}</p>}
+
+      <div style={{ marginTop: 16, borderTop: "1px solid var(--hair)", paddingTop: 14 }}>
+        <div style={{ fontSize: 12.5, color: "var(--ink-2)", marginBottom: 8 }}>
+          {drive?.enabled
+            ? <>Snapshots on Google Drive (a monthly auto-backup runs on its own; the last 12 are kept). A copy is also saved automatically right before a catalog wipe.</>
+            : <>Google Drive isn’t configured, so server-side and scheduled backups are off. Use <strong>Backup now</strong> to keep manual copies.</>}
+        </div>
+        {drive?.enabled && (
+          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            {(drive.backups || []).length === 0 && (
+              <div style={{ padding: 12, fontSize: 12.5, color: "var(--ink-3)" }}>No Drive backups yet.</div>
+            )}
+            {(drive.backups || []).slice(0, 15).map((b) => (
+              <div key={b.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                borderBottom: "1px solid var(--hair-faint)", fontSize: 12.5 }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, flex: 1 }}>{b.name}</span>
+                <span style={{ color: "var(--ink-3)" }}>{fmtDate(b.created)}</span>
+                {b.url && <a className="btn ghost sm" href={b.url} target="_blank" rel="noreferrer">open</a>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -259,11 +298,18 @@ function CatalogImport({ onChanged }) {
       )}
 
       {result && (
-        <p style={{ marginTop: 10, fontSize: 13, color: "var(--ok)" }}>
-          ✓ Wiped and seeded <strong>{result.items_created}</strong> items ({result.with_10k_cost} with a 10k cost
-          {typeof result.skipped === "number" ? `, ${result.skipped} skipped` : ""}).
-          The catalog is fresh — Browse is empty until you import a BOM.
-        </p>
+        <div style={{ marginTop: 10, fontSize: 13 }}>
+          <p style={{ color: "var(--ok)", margin: 0 }}>
+            ✓ Wiped and seeded <strong>{result.items_created}</strong> items ({result.with_10k_cost} with a 10k cost
+            {typeof result.skipped === "number" ? `, ${result.skipped} skipped` : ""}).
+            The catalog is fresh — Browse is empty until you import a BOM.
+          </p>
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-3)" }}>
+            {result.backup?.saved
+              ? <>A pre-wipe backup was saved to Drive{result.backup.url ? <> — <a href={result.backup.url} target="_blank" rel="noreferrer">{result.backup.name}</a></> : ` (${result.backup.name})`}.</>
+              : <>⚠ No pre-wipe Drive backup was saved ({result.backup?.reason || "drive not configured"}). The previous data is gone — restore from an earlier backup if needed.</>}
+          </p>
+        </div>
       )}
     </div>
   );

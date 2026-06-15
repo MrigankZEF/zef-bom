@@ -66,6 +66,8 @@ export const api = {
   },
 
   // ── full database backup (every table → one .xlsx) ──
+  backupToDrive: () => request("/admin/backup-to-drive", { method: "POST" }),
+  listBackups: () => request("/admin/backups"),
   downloadBackup: async () => {
     const res = await fetch(`${BASE}/admin/export`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`Backup failed: ${res.status} — ${await res.text().catch(() => "")}`);

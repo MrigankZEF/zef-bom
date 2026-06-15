@@ -105,6 +105,63 @@ def list_files(item_id: str) -> dict:
     }
 
 
+# ── database backups (a "Backups" subfolder under the attachments root) ──────
+BACKUPS_FOLDER_NAME = "Backups"
+
+
+@lru_cache(maxsize=1)
+def ensure_backups_folder() -> str:
+    """Find (or create) the Backups folder and return its id. Uses an explicit
+    DRIVE_BACKUPS_FOLDER_ID if set, else a 'Backups' subfolder of the attachments root."""
+    if settings.drive_backups_folder_id:
+        return settings.drive_backups_folder_id
+    svc = _service()
+    root = settings.drive_attachments_root_id
+    q = (
+        f"name = '{BACKUPS_FOLDER_NAME}' and '{root}' in parents "
+        "and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    )
+    files = svc.files().list(q=q, fields="files(id)", **_SHARED).execute().get("files", [])
+    if files:
+        return files[0]["id"]
+    created = svc.files().create(
+        body={"name": BACKUPS_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder", "parents": [root]},
+        fields="id", **{"supportsAllDrives": True},
+    ).execute()
+    return created["id"]
+
+
+def upload_backup(filename: str, content: bytes, mimetype: str) -> dict:
+    """Upload a backup workbook into the Backups folder. Returns {id, name, url}."""
+    from googleapiclient.http import MediaIoBaseUpload
+
+    svc = _service()
+    folder = ensure_backups_folder()
+    media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mimetype, resumable=False)
+    created = svc.files().create(
+        body={"name": filename, "parents": [folder]},
+        media_body=media, fields="id, name, webViewLink", **{"supportsAllDrives": True},
+    ).execute()
+    return {"id": created["id"], "name": created["name"],
+            "url": created.get("webViewLink") or _file_url(created["id"])}
+
+
+def list_backups() -> list[dict]:
+    """List backup files in the Backups folder, newest first."""
+    svc = _service()
+    folder = ensure_backups_folder()
+    return svc.files().list(
+        q=f"'{folder}' in parents and trashed = false",
+        fields="files(id, name, webViewLink, createdTime, size)",
+        orderBy="createdTime desc", **_SHARED,
+    ).execute().get("files", [])
+
+
+def trash_file(file_id: str) -> None:
+    """Move a Drive file to trash (used by backup retention)."""
+    _service().files().update(fileId=file_id, body={"trashed": True}, **{"supportsAllDrives": True}).execute()
+
+
 def _folder_url(fid: str) -> str:
     return f"https://drive.google.com/drive/folders/{fid}"
 

@@ -1,6 +1,7 @@
 """FastAPI application entrypoint for the ZEF BOM backend."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -64,6 +65,37 @@ def _startup() -> None:
         print(f"[startup] admin seed error: {exc}")
     finally:
         db.close()
+
+
+def _monthly_backup_check() -> None:
+    """Create this month's Drive snapshot if it's due (no-op when Drive isn't configured
+    or one already exists for the month). Runs in a worker thread — blocking Drive I/O."""
+    from .backup import monthly_backup_if_due
+    from .db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        res = monthly_backup_if_due(db)
+        if res.get("saved"):
+            print(f"[backup] monthly snapshot saved: {res.get('name')} (trimmed {res.get('trimmed', 0)})")
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
+async def _start_scheduler() -> None:
+    """Daily heartbeat that takes the monthly Drive backup when due. In-process, so no
+    extra infra; idempotent and restart-safe (it checks Drive for the month's snapshot)."""
+    async def _loop() -> None:
+        await asyncio.sleep(30)  # let startup/migrations settle first
+        while True:
+            try:
+                await asyncio.to_thread(_monthly_backup_check)
+            except Exception as exc:  # noqa: BLE001 — never crash the heartbeat
+                print(f"[backup] scheduler error: {exc}")
+            await asyncio.sleep(24 * 3600)  # check daily
+
+    asyncio.create_task(_loop())
 
 
 # ── serve the built React app (single-service deploy) ────────────────────────
