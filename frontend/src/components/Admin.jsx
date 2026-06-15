@@ -137,16 +137,33 @@ function Reference() {
 function CatalogImport({ onChanged }) {
   const fileRef = useRef(null);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState(null);   // dry-run plan; null until "Check file"
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const run = async () => {
+
+  // Picking a new file invalidates any prior preview/result.
+  const onPick = () => { setPreview(null); setResult(null); setError(null); };
+
+  const check = async () => {
     const f = fileRef.current?.files?.[0];
     if (!f) { setError("Pick the ZEF BOM inventory .xlsx first."); return; }
-    if (!window.confirm("This DELETES all current items, BOMs and costs, then rebuilds the catalog from this Excel. Users and reference lists are kept. This cannot be undone. Continue?")) return;
-    setBusy(true); setError(null); setResult(null);
-    try { const r = await api.importCatalog(f); setResult(r); onChanged?.(); }
+    setBusy(true); setError(null); setResult(null); setPreview(null);
+    try { setPreview(await api.previewImportCatalog(f)); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
+
+  const run = async () => {
+    const f = fileRef.current?.files?.[0];
+    if (!f) { setError("Pick the file again."); return; }
+    if (!window.confirm(`This DELETES all ${preview?.current_item_count ?? "current"} items, BOMs and costs, then creates ${preview?.will_create} items from this Excel. Users and reference lists are kept. This cannot be undone. Continue?`)) return;
+    setBusy(true); setError(null);
+    try { const r = await api.importCatalog(f); setResult(r); setPreview(null); onChanged?.(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  const reasons = preview?.skipped_reasons || {};
+  const reasonLabel = { bad_or_missing_code: "bad/blank code", missing_name: "blank name", duplicate_in_file: "duplicate in file" };
+
   return (
     <div className="card" style={{ maxWidth: 640, padding: 18 }}>
       <div className="card-head"><span className="card-title">Wipe &amp; import catalog from Excel</span></div>
@@ -154,16 +171,66 @@ function CatalogImport({ onChanged }) {
         Upload the <strong>ZEF BOM inventory</strong> spreadsheet (Sheet1). This{" "}
         <strong style={{ color: "var(--accent)" }}>deletes all current items, BOMs and costs</strong> and rebuilds the catalog
         from the sheet — codes, names, and the 10k min/likely/max costs. Users, suppliers, materials and cost types are kept.
-        Then re-import your BOMs on top.
+        Then re-import your BOMs on top. <strong>Check the file first</strong> — nothing is wiped until you confirm the preview.
+      </p>
+      <p style={{ fontSize: 12, color: "var(--ink-3)", margin: "0 0 12px", lineHeight: 1.6 }}>
+        Reads these columns from <code style={{ fontSize: 11 }}>Sheet1</code>:{" "}
+        <code style={{ fontSize: 11 }}>partnumber</code>, <code style={{ fontSize: 11 }}>partname</code> (required);{" "}
+        <code style={{ fontSize: 11 }}>avg</code>, <code style={{ fontSize: 11 }}>Future_10k_min</code>,{" "}
+        <code style={{ fontSize: 11 }}>Future_10k_max</code> (optional 10k costs).
       </p>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input ref={fileRef} type="file" accept=".xlsx,.xls" className="input" style={{ paddingTop: 6, flex: 1 }} />
-        <button className="btn danger" onClick={run} disabled={busy}>{busy ? "Importing…" : "Wipe & import"}</button>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" className="input" style={{ paddingTop: 6, flex: 1 }} onChange={onPick} />
+        <button className="btn" onClick={check} disabled={busy}>{busy && !preview ? "Checking…" : "Check file"}</button>
       </div>
+
       {error && <p className="err" style={{ marginTop: 10 }}>{error}</p>}
+
+      {preview && (
+        <div className="card" style={{ marginTop: 12, padding: 14, background: "var(--surface-2, transparent)" }}>
+          {preview.missing_required?.length > 0 ? (
+            <p className="err" style={{ margin: 0, fontSize: 13 }}>
+              ✗ This file is <strong>missing required column(s): {preview.missing_required.join(", ")}</strong>.
+              <br />Columns found: <code style={{ fontSize: 11 }}>{preview.columns_found.join(", ") || "(none)"}</code>.
+              <br />Won’t import — the format doesn’t match the ZEF inventory sheet.
+            </p>
+          ) : (
+            <>
+              <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--ink-1)" }}>
+                Preview — <strong>nothing changed yet.</strong>
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.7 }}>
+                <li>Will create <strong>{preview.will_create}</strong> items
+                  ({preview.with_10k_cost} with a 10k cost).</li>
+                <li>Will skip <strong>{preview.skipped}</strong> rows
+                  {preview.skipped > 0 && (
+                    <> — {Object.entries(reasons).filter(([, n]) => n > 0)
+                      .map(([k, n]) => `${n} ${reasonLabel[k] || k}`).join(", ")}</>
+                  )}.</li>
+                <li style={{ color: "var(--accent)" }}>
+                  Will first <strong>delete all {preview.current_item_count}</strong> existing items (and their BOMs + costs).</li>
+              </ul>
+              {preview.will_create === 0 ? (
+                <p className="err" style={{ margin: "10px 0 0", fontSize: 12.5 }}>
+                  No valid rows — import is blocked so the database isn’t wiped for nothing.
+                </p>
+              ) : (
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
+                  <button className="btn danger" onClick={run} disabled={busy}>
+                    {busy ? "Importing…" : `Wipe & import ${preview.will_create} items`}
+                  </button>
+                  <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>This cannot be undone.</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {result && (
         <p style={{ marginTop: 10, fontSize: 13, color: "var(--ok)" }}>
-          ✓ Wiped and seeded <strong>{result.items_created}</strong> items ({result.with_10k_cost} with a 10k cost).
+          ✓ Wiped and seeded <strong>{result.items_created}</strong> items ({result.with_10k_cost} with a 10k cost
+          {typeof result.skipped === "number" ? `, ${result.skipped} skipped` : ""}).
           The catalog is fresh — Browse is empty until you import a BOM.
         </p>
       )}

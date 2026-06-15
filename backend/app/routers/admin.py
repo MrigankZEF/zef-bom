@@ -7,7 +7,7 @@ dropdowns and are managed here via '+ add'.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..auth import current_user, require_admin
@@ -241,6 +241,109 @@ def archive_reference(ref_id: int, db: Session = Depends(get_db), _: str = Depen
     return {"id": ref_id, "archived": True}
 
 
+# ── catalog import (ZEF inventory Excel → items + decided costs) ──────────────
+# Required columns the importer reads from a sheet literally named "Sheet1".
+CATALOG_REQUIRED_COLS = ("partnumber", "partname")
+
+
+def _read_catalog_sheet(raw: bytes):
+    """Open the uploaded workbook's 'Sheet1' as a DataFrame, or 400 with a clear reason."""
+    import io
+
+    import pandas as pd
+
+    try:
+        return pd.read_excel(io.BytesIO(raw), "Sheet1")
+    except Exception as exc:  # noqa: BLE001 — surface any openpyxl/pandas failure verbatim
+        raise HTTPException(400, f"Could not read the Excel (it must have a sheet named 'Sheet1'): {exc}") from exc
+
+
+def _plan_catalog(df) -> dict:
+    """Validate columns and parse rows WITHOUT touching the DB. Returns a plan with the
+    valid rows to create, per-reason skip counts, and a small sample — used by both the
+    dry-run preview and the real import (single source of truth, so they can't diverge)."""
+    import pandas as pd
+
+    from ..bom_ingest.miro_csv_fix import ITEM_NUMBER_RE, normalize_item_name
+
+    def _num(v):
+        return float(v) if pd.notna(v) else None
+
+    columns = [str(c) for c in df.columns]
+    missing = [c for c in CATALOG_REQUIRED_COLS if c not in df.columns]
+    plan = {
+        "columns_found": columns,
+        "missing_required": missing,
+        "rows": [],
+        "will_create": 0,
+        "with_10k_cost": 0,
+        "skipped": 0,
+        "skipped_reasons": {"bad_or_missing_code": 0, "missing_name": 0, "duplicate_in_file": 0},
+        "sample": [],
+    }
+    if missing:
+        return plan  # can't parse rows reliably without the key columns
+
+    seen: set[str] = set()
+    for _, row in df.iterrows():
+        code = str(row.get("partnumber") or "").strip()
+        m = ITEM_NUMBER_RE.match(code)
+        name = str(row.get("partname") or "").strip()
+        if not m:
+            plan["skipped"] += 1
+            plan["skipped_reasons"]["bad_or_missing_code"] += 1
+            continue
+        if not name:
+            plan["skipped"] += 1
+            plan["skipped_reasons"]["missing_name"] += 1
+            continue
+        if code in seen:
+            plan["skipped"] += 1
+            plan["skipped_reasons"]["duplicate_in_file"] += 1
+            continue
+        seen.add(code)
+        rec = {
+            "code": code,
+            "name": normalize_item_name(name),
+            "type": "assembly" if m.group("suffix") == "A" else "part",
+            "module": m.group("module"),
+            "avg": _num(row.get("avg")),
+            "fmin": _num(row.get("Future_10k_min")),
+            "fmax": _num(row.get("Future_10k_max")),
+        }
+        plan["rows"].append(rec)
+        plan["will_create"] += 1
+        if rec["avg"] is not None:
+            plan["with_10k_cost"] += 1
+        if len(plan["sample"]) < 8:
+            plan["sample"].append({"code": code, "name": rec["name"], "type": rec["type"]})
+    return plan
+
+
+@router.post("/admin/import-catalog/preview")
+async def import_catalog_preview(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    admin: str = Depends(require_admin),
+) -> dict:
+    """Dry-run (admin only): validate the Excel and report exactly what a real import would
+    do — how many items it would create, how many it would skip and why, and how many
+    existing items would be wiped. Touches nothing in the database."""
+    plan = _plan_catalog(_read_catalog_sheet(await file.read()))
+    current = db.scalar(select(func.count()).select_from(Item)) or 0
+    return {
+        "ok": not plan["missing_required"] and plan["will_create"] > 0,
+        "missing_required": plan["missing_required"],
+        "columns_found": plan["columns_found"],
+        "will_create": plan["will_create"],
+        "with_10k_cost": plan["with_10k_cost"],
+        "skipped": plan["skipped"],
+        "skipped_reasons": plan["skipped_reasons"],
+        "sample": plan["sample"],
+        "current_item_count": current,
+    }
+
+
 @router.post("/admin/import-catalog")
 async def import_catalog(
     file: UploadFile = File(...),
@@ -248,17 +351,24 @@ async def import_catalog(
     admin: str = Depends(require_admin),
 ) -> dict:
     """DESTRUCTIVE (admin only): wipe all BOM data and seed the catalog fresh from a ZEF
-    inventory Excel. Keeps users + reference lists (suppliers/materials/cost types)."""
-    import io
+    inventory Excel. Keeps users + reference lists (suppliers/materials/cost types).
+    Validates the sheet first and REFUSES to wipe if the format is wrong or nothing parses."""
+    plan = _plan_catalog(_read_catalog_sheet(await file.read()))
 
-    import pandas as pd
-
-    from ..bom_ingest.miro_csv_fix import ITEM_NUMBER_RE, normalize_item_name
-
-    try:
-        df = pd.read_excel(io.BytesIO(await file.read()), "Sheet1")
-    except Exception as exc:
-        raise HTTPException(400, f"Could not read the Excel (expects a 'Sheet1'): {exc}") from exc
+    # Guard: never wipe on a malformed/unrecognised sheet (e.g. renamed columns).
+    if plan["missing_required"]:
+        raise HTTPException(
+            400,
+            f"Excel is missing required column(s): {', '.join(plan['missing_required'])}. "
+            f"Columns found: {', '.join(plan['columns_found']) or '(none)'}. "
+            "Nothing was changed.",
+        )
+    if not plan["rows"]:
+        raise HTTPException(
+            400,
+            f"No valid rows found to import ({plan['skipped']} skipped) — refusing to wipe the "
+            "database. Check the sheet format and column names. Nothing was changed.",
+        )
 
     # wipe BOM data — keep users and reference values
     for model in (ChangeHistory, BomLink, DecidedCost, CostEvidence, AssemblyLabor, FieldValue, UploadBatch):
@@ -266,33 +376,19 @@ async def import_catalog(
     db.execute(delete(Item))
     db.flush()
 
-    def _num(v):
-        return float(v) if pd.notna(v) else None
-
     created = costed = 0
-    for _, row in df.iterrows():
-        code = str(row.get("partnumber") or "").strip()
-        m = ITEM_NUMBER_RE.match(code)
-        name = str(row.get("partname") or "").strip()
-        if not m or not name or db.get(Item, code) is not None:
-            continue
+    for rec in plan["rows"]:
         db.add(Item(
-            item_id=code, item_name=normalize_item_name(name),
-            item_type="assembly" if m.group("suffix") == "A" else "part",
-            module_code=m.group("module"), is_top_level=False,
+            item_id=rec["code"], item_name=rec["name"], item_type=rec["type"],
+            module_code=rec["module"], is_top_level=False,
             created_by=admin, updated_by=admin,
         ))
         created += 1
-        avg = _num(row.get("avg"))
-        if avg is not None:
+        if rec["avg"] is not None:
             db.add(DecidedCost(
-                item_id=code, volume_tier=10000, unit_cost_eur=avg,
-                cost_min=_num(row.get("Future_10k_min")), cost_max=_num(row.get("Future_10k_max")),
-                decided_by=admin,
+                item_id=rec["code"], volume_tier=10000, unit_cost_eur=rec["avg"],
+                cost_min=rec["fmin"], cost_max=rec["fmax"], decided_by=admin,
             ))
             costed += 1
-        proto = _num(row.get("current_cost_proto"))
-        if proto is not None:
-            db.add(DecidedCost(item_id=code, volume_tier=1, unit_cost_eur=proto, decided_by=admin))
     db.commit()
-    return {"wiped": True, "items_created": created, "with_10k_cost": costed}
+    return {"wiped": True, "items_created": created, "with_10k_cost": costed, "skipped": plan["skipped"]}
