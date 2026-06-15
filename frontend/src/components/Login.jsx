@@ -27,7 +27,7 @@ export default function Login({ clientId, onCredential, serverError }) {
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--bg)" }}>
       <div className="card" style={{ textAlign: "center", padding: 40, maxWidth: 360 }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
-          <span className="brand-mark" style={{ width: 32, height: 32 }} />
+          <img src="/zef-logo.png" alt="ZEF" style={{ height: 64, width: "auto" }} />
         </div>
         <h1 style={{ fontSize: 24 }}>ZEF · BOM</h1>
         <p className="muted" style={{ margin: "8px 0 20px" }}>Sign in with your ZEF Google account.</p>

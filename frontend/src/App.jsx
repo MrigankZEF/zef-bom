@@ -53,7 +53,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" />
+          <img src="/zef-logo.png" alt="ZEF" className="brand-logo" style={{ height: 32, width: "auto", display: "block" }} />
           <div>
             <div className="brand-title">ZEF · BOM</div>
             <div className="brand-sub">inventory · costing</div>
