@@ -1,7 +1,9 @@
 """Per-part Drive attachments (M6): list, ensure folder, upload files."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+import asyncio
+
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from .. import drive
@@ -55,13 +57,25 @@ def ensure_folder(item_id: str, db: Session = Depends(get_db), user: str = Depen
 async def upload_attachment(
     item_id: str,
     file: UploadFile = File(...),
+    rel_path: str = Form(default=""),  # sub-folder path for folder uploads, e.g. "membranes/typeA"
     db: Session = Depends(get_db),
     user: str = Depends(current_user),
 ) -> dict:
     _require_drive()
     item = _get_item(db, item_id)
     content = await file.read()
-    result = drive.upload_file(item_id, file.filename or "file", content, file.content_type)
+    name = file.filename or "file"
+    # Run the (blocking) Drive call OFF the event loop so one upload can't freeze the whole
+    # server — and turn any Drive failure into a clean 502 instead of risking the worker.
+    try:
+        if rel_path.strip():
+            result = await asyncio.to_thread(
+                drive.upload_file_nested, item_id, rel_path, name, content, file.content_type)
+        else:
+            result = await asyncio.to_thread(
+                drive.upload_file, item_id, name, content, file.content_type)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Drive upload failed for '{name}': {exc}") from exc
     if item.drive_folder_url != result.get("folder_url"):
         item.drive_folder_url = result.get("folder_url")
     record_change(db, entity_type="item", entity_id=item_id, change_type="update",

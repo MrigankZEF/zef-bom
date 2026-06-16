@@ -24,6 +24,9 @@ function CostCell({ c }) {
 export default function Catalog({ onOpenPart, version }) {
   const [rows, setRows] = useState(null);
   const [q, setQ] = useState("");
+  const [fMod, setFMod] = useState("all");
+  const [fType, setFType] = useState("all");
+  const [fCost, setFCost] = useState("all");
   const [error, setError] = useState(null);
   const [adding, setAdding] = useState(false);
   const [nm, setNm] = useState("");
@@ -36,7 +39,7 @@ export default function Catalog({ onOpenPart, version }) {
 
   // Module choices: UN first, then every system code in use + any admin-added module.
   const modules = useMemo(() => {
-    const s = new Set(["UN"]);
+    const s = new Set(["UN", "UNP"]);
     (rows || []).forEach((r) => r.module_code && s.add(r.module_code));
     refMods.forEach((m) => m && s.add(String(m).toUpperCase()));
     return [...s].sort((a, b) => (a === "UN" ? -1 : b === "UN" ? 1 : a.localeCompare(b)));
@@ -55,9 +58,15 @@ export default function Catalog({ onOpenPart, version }) {
   const filtered = useMemo(() => {
     if (!rows) return [];
     const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((r) => r.item_id.toLowerCase().includes(s) || (r.item_name || "").toLowerCase().includes(s));
-  }, [rows, q]);
+    return rows.filter((r) => {
+      if (s && !r.item_id.toLowerCase().includes(s) && !(r.item_name || "").toLowerCase().includes(s)) return false;
+      if (fMod !== "all" && r.module_code !== fMod) return false;
+      if (fType !== "all" && r.item_type !== fType) return false;
+      if (fCost === "costed" && !Object.keys(r.costs || {}).length) return false;
+      if (fCost === "uncosted" && Object.keys(r.costs || {}).length) return false;
+      return true;
+    });
+  }, [rows, q, fMod, fType, fCost]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
   if (!rows) return <div className="page"><p className="muted">Loading…</p></div>;
@@ -84,16 +93,27 @@ export default function Catalog({ onOpenPart, version }) {
           <div><span className="input-label">Module</span><select className="select" value={nmod} onChange={(e) => setNmod(e.target.value)}>{modules.map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
           <button className="btn" onClick={create}>create</button>
           <p style={{ width: "100%", fontSize: 11, color: "var(--ink-3)", margin: "2px 0 0" }}>
-            {nmod === "UN"
-              ? <><strong>UN</strong> = universal: it keeps the UN code wherever it's used.</>
+            {(nmod === "UN" || nmod === "UNP")
+              ? <><strong>{nmod}</strong> = universal: it keeps the {nmod} code wherever it's used.</>
               : <><strong>{nmod}</strong>: stays {nmod} while used only in {nmod}; becomes <strong>UN</strong> if it ends up shared across systems.</>}
             {" "}Add new module names in <strong>Admin → Reference data → Modules</strong>.
           </p>
         </div>
       )}
 
-      <div style={{ marginBottom: 14, maxWidth: 380 }}>
-        <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code or name…" />
+      <div style={{ marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code or name…" style={{ flex: 1, minWidth: 220, maxWidth: 380 }} />
+        <select className="select" value={fMod} onChange={(e) => setFMod(e.target.value)}>
+          <option value="all">All modules</option>
+          {modules.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <select className="select" value={fType} onChange={(e) => setFType(e.target.value)}>
+          <option value="all">All types</option><option value="part">parts</option><option value="assembly">assemblies</option>
+        </select>
+        <select className="select" value={fCost} onChange={(e) => setFCost(e.target.value)}>
+          <option value="all">All</option><option value="costed">Costed</option><option value="uncosted">Uncosted</option>
+        </select>
+        <span style={{ fontSize: 11.5, color: "var(--ink-3)", fontFamily: "var(--font-mono)" }}>{filtered.length}/{rows.length}</span>
       </div>
 
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>

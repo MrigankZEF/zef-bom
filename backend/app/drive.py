@@ -82,6 +82,41 @@ def upload_file(item_id: str, filename: str, content: bytes, mimetype: str | Non
             "url": created.get("webViewLink") or _file_url(created["id"]), "folder_url": folder["url"]}
 
 
+def _ensure_child_folder(name: str, parent_id: str) -> str:
+    """Find/create a sub-folder by name under parent_id; return its id."""
+    svc = _service()
+    safe = name.replace("'", "")
+    q = (f"name = '{safe}' and '{parent_id}' in parents "
+         "and mimeType = 'application/vnd.google-apps.folder' and trashed = false")
+    files = svc.files().list(q=q, fields="files(id)", **_SHARED).execute().get("files", [])
+    if files:
+        return files[0]["id"]
+    return svc.files().create(
+        body={"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]},
+        fields="id", **{"supportsAllDrives": True},
+    ).execute()["id"]
+
+
+def upload_file_nested(item_id: str, rel_dir: str, filename: str, content: bytes, mimetype: str | None) -> dict:
+    """Upload a file into the part's folder, re-creating a sub-folder path (e.g.
+    'membranes/typeA') so a whole folder structure can be uploaded at once."""
+    from googleapiclient.http import MediaIoBaseUpload
+
+    svc = _service()
+    folder = ensure_part_folder(item_id)
+    parent = folder["id"]
+    for seg in (s.strip() for s in (rel_dir or "").replace("\\", "/").split("/")):
+        if seg and seg not in (".", ".."):
+            parent = _ensure_child_folder(seg, parent)
+    media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mimetype or "application/octet-stream", resumable=False)
+    created = svc.files().create(
+        body={"name": filename, "parents": [parent]},
+        media_body=media, fields="id, name, webViewLink", **{"supportsAllDrives": True},
+    ).execute()
+    return {"id": created["id"], "name": created["name"],
+            "url": created.get("webViewLink") or _file_url(created["id"]), "folder_url": folder["url"]}
+
+
 def list_files(item_id: str) -> dict:
     """List files in the part's folder (empty if the folder doesn't exist yet)."""
     svc = _service()

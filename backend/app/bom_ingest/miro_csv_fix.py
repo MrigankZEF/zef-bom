@@ -27,7 +27,7 @@ MODULE_TYPED_CELL_RE = re.compile(
 TYPE_ONLY_CELL_RE = re.compile(r"^(?P<suffix>[PA])\s*:\s*(?P<name>.+)$")
 QUANTITY_RE = re.compile(r"#\s*(\d+)\s*$")
 
-DEFAULT_MODULE_CODES = {"PL", "DRY", "AEC", "DAC", "DS", "FM", "MS", "POW", "UN"}
+DEFAULT_MODULE_CODES = {"PL", "DRY", "AEC", "DAC", "DS", "FM", "MS", "POW", "UN", "UNP"}
 BLOCKER_STATUSES = {"needs_review", "conflict"}
 BLOCKER_REASONS = {"needs_review", "conflict", "missing_parent", "ambiguous_type", "ambiguous_module"}
 TRIMMED_INVENTORY_COLUMNS = {"partnumber", "partname", "Future_10k_min", "Future_10k_max", "avg", "current_cost_proto"}
@@ -694,7 +694,8 @@ def allocate_new_numbers(cells: list[ParsedCell], authority: InventoryAuthority)
     allocated_by_key: dict[tuple[str, str, str], str] = {}
     allocated_by_explicit_number: dict[str, tuple[str, str, str]] = {}
     used_numbers = set(authority.by_number)
-    next_numbers = {module: authority.max_sequence_for_module(module) + 1 for module in authority.module_codes}
+    # max(0, …): a brand-new module (no items yet) starts numbering at 001, not 000.
+    next_numbers = {module: max(0, authority.max_sequence_for_module(module)) + 1 for module in authority.module_codes}
 
     for cell in cells:
         if cell.resolution_status != "new_number_assigned":
@@ -732,7 +733,7 @@ def allocate_new_numbers(cells: list[ParsedCell], authority: InventoryAuthority)
             continue
 
         if key not in allocated_by_key:
-            next_number = next_numbers.setdefault(module_code, authority.max_sequence_for_module(module_code) + 1)
+            next_number = next_numbers.setdefault(module_code, max(0, authority.max_sequence_for_module(module_code)) + 1)
             partnumber = f"{module_code}{str(next_number).zfill(3)}{suffix}"
             while partnumber in used_numbers:
                 next_number += 1

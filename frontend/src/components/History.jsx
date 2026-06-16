@@ -16,12 +16,18 @@ export default function History({ onOpenPart, version }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
+  const [q, setQ] = useState("");
 
   useEffect(() => {
     api.history(filter || undefined).then(setRows).catch((e) => setError(e.message));
   }, [filter, version]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
+
+  const s = q.trim().toLowerCase();
+  const shown = !rows ? [] : !s ? rows : rows.filter((h) =>
+    [h.entity_id, h.field_changed, h.old_value, h.new_value, h.changed_by, h.entity_type, h.change_type]
+      .some((v) => String(v ?? "").toLowerCase().includes(s)));
 
   return (
     <div className="page">
@@ -33,17 +39,19 @@ export default function History({ onOpenPart, version }) {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
         {FILTERS.map((f) => (
           <button key={f.key} className="btn ghost sm"
             style={{ background: filter === f.key ? "var(--ink)" : "transparent", color: filter === f.key ? "var(--bg)" : "var(--ink)", borderColor: filter === f.key ? "var(--ink)" : "var(--hair-strong)" }}
             onClick={() => setFilter(f.key)}>{f.label}</button>
         ))}
+        <input className="input" value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Search code, field, value, user…" style={{ marginLeft: "auto", maxWidth: 320 }} />
       </div>
 
       {!rows ? <p className="muted">Loading…</p> : (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          {rows.map((h) => {
+          {shown.map((h) => {
             const isItem = h.entity_type === "item" || h.entity_type === "decided_cost" || h.entity_type === "cost_evidence" || h.entity_type === "field_value";
             return (
               <div key={h.id}
@@ -62,7 +70,7 @@ export default function History({ onOpenPart, version }) {
               </div>
             );
           })}
-          {rows.length === 0 && <div style={{ padding: 20, color: "var(--ink-3)" }}>No changes recorded.</div>}
+          {shown.length === 0 && <div style={{ padding: 20, color: "var(--ink-3)" }}>{rows.length ? "No matches." : "No changes recorded."}</div>}
         </div>
       )}
     </div>

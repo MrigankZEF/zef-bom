@@ -35,6 +35,13 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
+  const [modOpts, setModOpts] = useState({ current: null, options: [] });
+  const [pendingMod, setPendingMod] = useState(null);  // staged module; applied on Save
+  useEffect(() => {
+    api.moduleOptions(itemId)
+      .then((o) => { setModOpts(o); setPendingMod(o.current); })
+      .catch(() => { setModOpts({ current: null, options: [] }); setPendingMod(null); });
+  }, [itemId]);
 
   const load = () => {
     setError(null);
@@ -87,10 +94,18 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
     }
     const curMats = item.materials || (item.material ? [item.material] : []);
     if (JSON.stringify(form.materials || []) !== JSON.stringify(curMats)) { patch.materials = form.materials || []; dirty = true; }
-    if (!dirty) return;
-    setBusy(true);
-    try { await api.patchItem(itemId, patch); setReason(""); setSaved(true); load(); onChanged?.(); }
-    catch (e) { setError(e.message); } finally { setBusy(false); }
+    const modChanged = pendingMod && modOpts.current && pendingMod !== modOpts.current;
+    if (!dirty && !modChanged) return;
+    setBusy(true); setError(null);
+    try {
+      if (dirty) await api.patchItem(itemId, patch);   // field edits on the current code first
+      if (modChanged) {
+        const r = await api.setItemModule(itemId, pendingMod);  // then re-code (atomic)
+        setReason(""); setSaved(true); onChanged?.();
+        if (r.item_id && r.item_id !== itemId) { onOpenPart?.(r.item_id); return; }  // reopen under new code
+      }
+      setReason(""); setSaved(true); load(); onChanged?.();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
   const archive = async () => {
@@ -190,6 +205,25 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
             <Accordion title="Add / edit" meta="fill in item data">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, paddingTop: 14 }}>
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Name"><input className="input" value={form.item_name ?? ""} onChange={(e) => set("item_name", e.target.value)} /></Field></div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <Field label={`Module / code  ·  currently ${item.item_id}`}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <select className="select" value={pendingMod ?? modOpts.current ?? ""} disabled={busy || !modOpts.options.length}
+                        onChange={(e) => { setSaved(false); setPendingMod(e.target.value); }} style={{ width: 140 }}>
+                        {modOpts.options.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                      {pendingMod && modOpts.current && pendingMod !== modOpts.current ? (
+                        <span style={{ fontSize: 11.5, color: "var(--accent)" }}>
+                          will re-code <strong>{item.item_id} → {pendingMod}…</strong> on Save (everywhere it's used)
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                          <strong>UN/UNP</strong> stay universal; a system code follows usage
+                        </span>
+                      )}
+                    </div>
+                  </Field>
+                </div>
                 {!isAssembly && (
                   <>
                     <Field label="Weight (g)"><input className="input mono" type="number" value={form.weight_grams ?? ""} onChange={(e) => set("weight_grams", e.target.value)} /></Field>
@@ -445,18 +479,35 @@ function WhereUsed({ parents, onOpenPart }) {
 function FilesTab({ itemId }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
   const fileRef = useRef(null);
+  const folderRef = useRef(null);
   const load = () => { setError(null); api.attachments(itemId).then(setData).catch((e) => setError(e.message)); };
   useEffect(() => { setData(null); load(); /* eslint-disable-next-line */ }, [itemId]);
 
-  const upload = async () => {
-    const f = fileRef.current?.files?.[0];
-    if (!f) return;
-    setBusy(true);
-    try { await api.uploadAttachment(itemId, f); if (fileRef.current) fileRef.current.value = ""; load(); }
-    catch (e) { setError(e.message); } finally { setBusy(false); }
+  // Upload a list of files sequentially, each with an optional sub-folder path. Keeps going
+  // past a failed file (one bad file shouldn't abort the whole batch) and reports failures.
+  const uploadBatch = async (ref, withPaths) => {
+    const files = Array.from(ref.current?.files || []);
+    if (!files.length) return;
+    setBusy(true); setError(null);
+    const failed = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const rel = f.webkitRelativePath || f.name;
+      const dir = withPaths ? rel.split("/").slice(0, -1).join("/") : "";
+      setProgress(`${i + 1}/${files.length} · ${rel}`);
+      try { await api.uploadAttachment(itemId, f, dir); }
+      catch { failed.push(rel); }
+    }
+    if (ref.current) ref.current.value = "";
+    setBusy(false); setProgress(null);
+    if (failed.length) setError(`${failed.length}/${files.length} failed: ${failed.slice(0, 4).join(", ")}${failed.length > 4 ? "…" : ""}`);
+    load();
   };
+  const upload = () => uploadBatch(fileRef, false);
+  const uploadFolder = () => uploadBatch(folderRef, true);
 
   if (error) return <p className="err">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
@@ -484,9 +535,17 @@ function FilesTab({ itemId }) {
         </a>
       ))}
       {data.files.length === 0 && <div style={{ padding: 16, color: "var(--ink-3)", fontSize: 13 }}>No files yet.</div>}
-      <div style={{ display: "flex", gap: 8, padding: 14, borderTop: "1px solid var(--hair)", alignItems: "center" }}>
-        <input ref={fileRef} type="file" className="input" style={{ paddingTop: 6, flex: 1 }} />
-        <button className="btn sm" onClick={upload} disabled={busy}><Icon name="check" /> {busy ? "Uploading…" : "Upload"}</button>
+      <div style={{ padding: 14, borderTop: "1px solid var(--hair)", display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input ref={fileRef} type="file" multiple className="input" style={{ paddingTop: 6, flex: 1 }} />
+          <button className="btn sm" onClick={upload} disabled={busy} style={{ whiteSpace: "nowrap" }}><Icon name="check" /> Upload file(s)</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* webkitdirectory lets the user pick a whole folder; the structure is recreated in Drive */}
+          <input ref={folderRef} type="file" webkitdirectory="" directory="" multiple className="input" style={{ paddingTop: 6, flex: 1 }} />
+          <button className="btn sm" onClick={uploadFolder} disabled={busy} style={{ whiteSpace: "nowrap" }}><Icon name="box" size={12} /> Upload folder</button>
+        </div>
+        {busy && <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{progress || "Uploading…"}</span>}
       </div>
     </div>
   );

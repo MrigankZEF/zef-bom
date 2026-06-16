@@ -86,7 +86,7 @@ export default function Uploads({ onApplied }) {
     Promise.all([api.catalog().catch(() => []), api.reference("module").catch(() => [])])
       .then(([cat, ref]) => {
         setCatItems(cat);
-        const s = new Set(["UN"]);
+        const s = new Set(["UN", "UNP"]);
         cat.forEach((r) => r.module_code && s.add(r.module_code));
         ref.forEach((m) => m.value && s.add(String(m.value).toUpperCase()));
         setModules([...s].sort((a, b) => (a === "UN" ? -1 : b === "UN" ? 1 : a.localeCompare(b))));
@@ -169,9 +169,16 @@ export default function Uploads({ onApplied }) {
             </div>
             <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
               <input type="checkbox" checked={isTop} onChange={(e) => setIsTop(e.target.checked)} />
-              This is a top-level BOM (mark its root accordingly)
+              This is a top-level BOM (its root becomes a tree root)
             </label>
             {!isTop && <ParentPicker value={attachTo} onChange={setAttachTo} setError={setError} />}
+            {!isTop && !attachTo && (
+              <div style={{ fontSize: 12.5, color: "var(--warn)", background: "var(--surface-2, rgba(193,110,58,0.08))", border: "1px solid var(--warn)", borderRadius: 6, padding: "9px 12px", lineHeight: 1.5 }}>
+                ⚠ Not top-level and no parent picked — these parts go to the <strong>catalog</strong> but
+                {" "}<strong>won't appear in the BOM tree</strong>. Tick "top-level" above, or pick a parent
+                assembly, to place it in the tree.
+              </div>
+            )}
             <div>
               <span className="input-label">Notes</span>
               <textarea className="input" style={{ height: 56, padding: 8 }} value={notes}
@@ -198,6 +205,14 @@ export default function Uploads({ onApplied }) {
       {error && <p className="err">{error}</p>}
 
       <HowItWorks />
+
+      {pending && !diff.is_top_level_bom && !d.attach_to && (
+        <div className="card" style={{ borderColor: "var(--warn)", marginBottom: 16, fontSize: 13 }}>
+          <strong style={{ color: "var(--warn)" }}>⚠ Won't appear in the BOM tree.</strong>{" "}
+          This upload isn't top-level and isn't attached to a parent — after approving, its parts go to the
+          catalog but nothing in the tree points to them. To place it: re-upload it as a top-level BOM, or with a parent assembly.
+        </div>
+      )}
 
       <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(7,1fr)" }}>
         <KPI label="New parts" v={cn.new_parts} accent />

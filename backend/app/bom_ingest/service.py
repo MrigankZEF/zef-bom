@@ -65,6 +65,65 @@ def _augment_with_opml_numbers(
     return InventoryAuthority(authority.items + list(extra.values()), pd.DataFrame())
 
 
+# Module markers people write into Miro names: "<CODE>: Pow: Name" or "<CODE>: UN: Name".
+# POW is deprecated to UNP. A "Pow:" assembly is a power sub-tree: it AND its descendants
+# become UNP — EXCEPT (a) universals (UN/UNP) stay, and (b) a descendant whose name *starts
+# with a system word* (AEC/DAC/…) keeps its system, and stops the UNP from flowing deeper.
+# We rewrite each affected cell to the module-typed form "<MODULE> <SUFFIX>: Name" so the
+# normal parser assigns the module and drops any marker from the name.
+_NAME_MARKER_RE = re.compile(r"^(?:([A-Z]{2,5}\d{3}[PA])\s*:\s*)?(POW|UNP|UN)\s*:\s*(.+)$", re.IGNORECASE)
+_NAME_MARKER_MAP = {"POW": "UNP", "UNP": "UNP", "UN": "UN"}
+_CODE_RE = re.compile(r"^([A-Z]{2,5}\d{3}[PA])\s*:\s*(.+)$")
+_UNIVERSAL_CODES = {"UN", "UNP"}
+
+
+def _name_starts_with_system(name: str) -> bool:
+    from .miro_csv_fix import DEFAULT_MODULE_CODES
+    systems = sorted((m for m in DEFAULT_MODULE_CODES if m not in _UNIVERSAL_CODES and m != "POW"),
+                     key=len, reverse=True)
+    return bool(re.match(r"^(?:" + "|".join(systems) + r")\b", name.strip(), re.IGNORECASE))
+
+
+def _cell_module(text: str):
+    """(module, suffix, name) for a 'CODE: name' cell, else (None, None, name)."""
+    m = _CODE_RE.match(text.strip())
+    if not m:
+        return None, None, text.strip()
+    code = m.group(1)
+    from .miro_csv_fix import ITEM_NUMBER_RE
+    return ITEM_NUMBER_RE.match(code).group("module"), code[-1], m.group(2).strip()
+
+
+def _apply_name_markers(df):
+    cols = list(df.columns)
+    for ridx in df.index:
+        forced = None  # "UNP" while inside a Pow sub-tree (until a system-named node)
+        for cidx, col in enumerate(cols):
+            v = df.at[ridx, col]
+            if not isinstance(v, str) or not v.strip():
+                continue
+            has_child = (cidx + 1 < len(cols)) and isinstance(df.at[ridx, cols[cidx + 1]], str) and bool(str(df.at[ridx, cols[cidx + 1]]).strip())
+
+            mk = _NAME_MARKER_RE.match(v.strip())
+            if mk:  # explicit Pow:/UN: marker on this node
+                module = _NAME_MARKER_MAP[mk.group(2).upper()]
+                suffix = (mk.group(1)[-1].upper() if mk.group(1) else ("A" if has_child else "P"))
+                df.at[ridx, col] = f"{module} {suffix}: {mk.group(3).strip()}"
+                forced = "UNP" if module == "UNP" else None  # POW flows down; UN: does not
+                continue
+
+            mod, suffix, name = _cell_module(v)
+            if mod in _UNIVERSAL_CODES:
+                continue  # universal part stays; UNP keeps flowing past it
+            if forced == "UNP":
+                if _name_starts_with_system(name):
+                    forced = None  # system-named node keeps its system and halts the flow
+                    continue
+                sfx = suffix or ("A" if has_child else "P")
+                df.at[ridx, col] = f"UNP {sfx}: {name}"
+    return df
+
+
 def _name_match_overrides(
     cells: list[ParsedCell], catalog: InventoryAuthority
 ) -> tuple[dict[str, ReviewOverride], list[dict]]:
@@ -193,6 +252,7 @@ def parse_opml(
     reviews = reviews or {}
     df_raw, input_format = load_bom_input(path)
     df = df_raw if input_format == "opml" else repair_mindmap_tree(df_raw)
+    df = _apply_name_markers(df)  # Pow:/UN: name markers → universal module, marker stripped
     catalog = build_authority_from_db(db)
     cells = build_parsed_cells(df, catalog)
 

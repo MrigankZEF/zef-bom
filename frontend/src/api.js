@@ -99,6 +99,9 @@ export const api = {
   patchItem: (id, patch) =>
     request(`/items/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   promoteItem: (id) => request(`/items/${encodeURIComponent(id)}/promote`, { method: "POST" }),
+  moduleOptions: (id) => request(`/items/${encodeURIComponent(id)}/module-options`),
+  setItemModule: (id, module) =>
+    request(`/items/${encodeURIComponent(id)}/module`, { method: "POST", body: JSON.stringify({ module }) }),
   addChild: (parentId, body) =>
     request(`/items/${encodeURIComponent(parentId)}/children`, { method: "POST", body: JSON.stringify(body) }),
   costEvidence: (id) => request(`/items/${encodeURIComponent(id)}/cost-evidence`),
@@ -180,9 +183,10 @@ export const api = {
   // ── attachments (Drive) ──
   attachments: (id) => request(`/items/${encodeURIComponent(id)}/attachments`),
   ensureFolder: (id) => request(`/items/${encodeURIComponent(id)}/attachments/folder`, { method: "POST" }),
-  uploadAttachment: async (id, file) => {
+  uploadAttachment: async (id, file, relPath = "") => {
     const fd = new FormData();
     fd.append("file", file);
+    if (relPath) fd.append("rel_path", relPath);
     const res = await fetch(`${BASE}/items/${encodeURIComponent(id)}/attachments`, { method: "POST", body: fd, headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => res.statusText)}`);
     return res.json();

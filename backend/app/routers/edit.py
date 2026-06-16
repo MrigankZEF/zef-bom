@@ -6,9 +6,12 @@ Auth is deferred to M6; for now the editor identity comes from an optional
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from ..bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
+from ..operations import allowed_modules, set_module
 
 from ..auth import current_user
 from ..db import get_db
@@ -65,6 +68,33 @@ def patch_item(
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.get("/items/{item_id}/module-options")
+def module_options(item_id: str, db: Session = Depends(get_db)) -> dict:
+    """Modules this item may be set to in the add/edit dropdown (UN, UNP, its current
+    module, and its parent assemblies' modules)."""
+    _get_item(db, item_id)
+    m = ITEM_NUMBER_RE.match(item_id)
+    return {"current": m.group("module") if m else None, "options": allowed_modules(db, item_id)}
+
+
+@router.post("/items/{item_id}/module")
+def change_module(
+    item_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+) -> dict:
+    """Manually re-code an item to a new module (UN/UNP or a parent system). Atomic: every
+    reference is repointed and the catalog updates. A clashing number is auto-reallocated."""
+    _get_item(db, item_id)
+    try:
+        new_id = set_module(db, item_id, (body or {}).get("module", ""), user=user)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.commit()
+    return {"item_id": new_id}
 
 
 @router.post("/items/{item_id}/promote")

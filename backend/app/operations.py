@@ -14,7 +14,8 @@ from .bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
 from .history import record_change
 from .models import BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item
 
-UNIVERSAL = "UN"
+UNIVERSAL = "UN"            # the module a shared (multi-system) part collapses to
+UNIVERSALS = {"UN", "UNP"}  # "universal" modules — pinned; never auto-re-coded to a system
 
 
 def assembly_code(item_id: str) -> str:
@@ -142,6 +143,73 @@ def allocate_code(db: Session, module: str, suffix: str) -> str:
     return f"{module}{mx + 1:03d}{suffix}"
 
 
+def allowed_modules(db: Session, item_id: str) -> list[str]:
+    """Modules a user may manually assign to this item.
+
+    * A top-level BOM (root) is a *system* — it may be any system code (so you can switch
+      AEC ↔ DAC and never get locked in), plus its current code. Not UN/UNP.
+    * A non-root part/assembly may be UN, UNP, or its parent assembly's system — which is
+      what stops e.g. a DAC part landing inside an AEC assembly.
+    """
+    from .bom_ingest.miro_csv_fix import DEFAULT_MODULE_CODES
+
+    it = db.get(Item, item_id)
+    cur = it.module_code if it else None
+    if it and it.is_top_level:
+        skip = UNIVERSALS | {"POW"}  # POW is deprecated to UNP — don't offer it for a root
+        systems = {m for m in DEFAULT_MODULE_CODES if m not in skip}
+        for x in db.execute(select(Item.module_code)).scalars():
+            if x and x not in skip:
+                systems.add(x)
+        if cur:
+            systems.add(cur)
+        return sorted(systems)
+
+    mods = set(UNIVERSALS)
+    if cur:
+        mods.add(cur)
+    for bl in db.execute(
+        select(BomLink).where(BomLink.child_item_id == item_id, BomLink.archived.is_(False))
+    ).scalars():
+        p = db.get(Item, bl.parent_item_id)
+        if p and not p.archived and p.module_code:
+            mods.add(p.module_code)
+    return sorted(mods, key=lambda m: (m not in UNIVERSALS, m))
+
+
+def set_module(db: Session, item_id: str, module: str, *, user: str | None) -> str:
+    """Manually change an item's module (the code's letter part), atomically re-coding it.
+    Keeps the same number when free, else allocates a fresh one in the new module so there's
+    no overlap. Validates against `allowed_modules`. Returns the new id."""
+    it = db.get(Item, item_id)
+    if it is None:
+        raise ValueError(f"Item {item_id} not found")
+    module = (module or "").strip().upper()
+    m = ITEM_NUMBER_RE.match(item_id)
+    if not m:
+        raise ValueError(f"{item_id} isn't a standard code, so its module can't be changed here")
+    if module == m.group("module"):
+        return item_id  # no change
+    if module not in allowed_modules(db, item_id):
+        raise ValueError(
+            f"Module '{module}' isn't allowed here — choose from {allowed_modules(db, item_id)} "
+            "(a part may only take a universal code or its parent assembly's system)."
+        )
+    was_top_level = bool(it.is_top_level)
+    suffix = m.group("suffix")
+    same_number = f"{module}{m.group('number')}{suffix}"
+    new_id = same_number if db.get(Item, same_number) is None else allocate_code(db, module, suffix)
+    new_id = rename_item(
+        db, item_id, new_id, user=user,
+        reason=f"module {m.group('module')}→{module} (manual edit)",
+    )
+    # Changing a top-level BOM's system cascades to everything inside it: every part that
+    # belongs only to this system re-codes to the new one (UN/UNP stay universal).
+    if was_top_level:
+        recode_all(db, user=user)
+    return new_id
+
+
 def containing_root_modules(db: Session, item_id: str) -> set[str]:
     """The set of distinct top-level-BOM modules an item sits under (its 'systems').
     Walks up the bom_links to every reachable top-level root."""
@@ -197,9 +265,9 @@ def recode_item(db: Session, item_id: str, *, user: str | None) -> str:
     m = ITEM_NUMBER_RE.match(item_id)
     if not m:
         return item_id
-    # UN means "universal" — a deliberately shared part. Once UN, it stays UN regardless of
-    # where it's used (and a multi-system part that became UN never reverts to a single system).
-    if m.group("module") == UNIVERSAL:
+    # UN / UNP are "universal" — deliberately shared parts. Once universal, the code stays
+    # (a multi-system part that became UN never reverts; a manual/marker UNP is never moved).
+    if m.group("module") in UNIVERSALS:
         return item_id
     mods = containing_root_modules(db, item_id)
     if not mods:
