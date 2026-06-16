@@ -168,12 +168,16 @@ def allowed_modules(db: Session, item_id: str) -> list[str]:
     mods = set(UNIVERSALS)
     if cur:
         mods.add(cur)
+    # Immediate parent assembly's module(s)…
     for bl in db.execute(
         select(BomLink).where(BomLink.child_item_id == item_id, BomLink.archived.is_(False))
     ).scalars():
         p = db.get(Item, bl.parent_item_id)
         if p and not p.archived and p.module_code:
             mods.add(p.module_code)
+    # …plus the system(s) of the top-level BOM(s) the part lives under, so a part inside a
+    # UNP sub-assembly can still be set back to its own system (e.g. AEC), not just UN/UNP.
+    mods |= containing_root_modules(db, item_id)
     return sorted(mods, key=lambda m: (m not in UNIVERSALS, m))
 
 
