@@ -16,10 +16,13 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 
-# Module codes are 2–5 letters (AEC, UN, DRY, … and longer ones like MDAC) + 3 digits + P/A.
-ITEM_NUMBER_RE = re.compile(r"^(?P<module>[A-Z]{2,5})(?P<number>\d{3})(?P<suffix>[PA])$")
+# Module codes are 2–5 letters (AEC, UN, DRY, … and longer ones like MDAC) + a sequence
+# number + P/A. The number is normally 3 digits (001…999) but widens to 4+ once a module
+# crosses 999 (AEC1000A) — so the pattern is "3 or more digits", and allocation zero-pads to
+# a *minimum* of 3 (str.zfill(3) / :03d leave 1000 as "1000").
+ITEM_NUMBER_RE = re.compile(r"^(?P<module>[A-Z]{2,5})(?P<number>\d{3,})(?P<suffix>[PA])$")
 NUMBERED_CELL_RE = re.compile(
-    r"^(?P<item_number>[A-Z]{2,5}\d{3}[PA])\s*:\s*(?P<name>.+)$"
+    r"^(?P<item_number>[A-Z]{2,5}\d{3,}[PA])\s*:\s*(?P<name>.+)$"
 )
 MODULE_TYPED_CELL_RE = re.compile(
     r"^(?P<module>[A-Z]{2,5})\s+(?P<suffix>[PA])\s*:\s*(?P<name>.+)$"

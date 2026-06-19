@@ -33,10 +33,11 @@ def _get_item(db: Session, item_id: str) -> Item:
 
 @router.get("/items/{item_id}/attachments")
 def list_attachments(item_id: str, db: Session = Depends(get_db)) -> dict:
-    _get_item(db, item_id)
+    item = _get_item(db, item_id)
     if not drive.enabled():
         return {"configured": False, "folder_url": None, "files": []}
-    data = drive.list_files(item_id)
+    # Locate by the stored folder (stable id) so a re-coded item still finds its attachments.
+    data = drive.list_files(item_id, item.drive_folder_url)
     return {"configured": True, **data}
 
 
@@ -44,7 +45,7 @@ def list_attachments(item_id: str, db: Session = Depends(get_db)) -> dict:
 def ensure_folder(item_id: str, db: Session = Depends(get_db), user: str = Depends(current_user)) -> dict:
     _require_drive()
     item = _get_item(db, item_id)
-    folder = drive.ensure_part_folder(item_id)
+    folder = drive.ensure_part_folder(item_id, item.drive_folder_url)
     if item.drive_folder_url != folder["url"]:
         item.drive_folder_url = folder["url"]
         record_change(db, entity_type="item", entity_id=item_id, change_type="update",
@@ -70,10 +71,11 @@ async def upload_attachment(
     try:
         if rel_path.strip():
             result = await asyncio.to_thread(
-                drive.upload_file_nested, item_id, rel_path, name, content, file.content_type)
+                drive.upload_file_nested, item_id, rel_path, name, content, file.content_type,
+                item.drive_folder_url)
         else:
             result = await asyncio.to_thread(
-                drive.upload_file, item_id, name, content, file.content_type)
+                drive.upload_file, item_id, name, content, file.content_type, item.drive_folder_url)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"Drive upload failed for '{name}': {exc}") from exc
     if item.drive_folder_url != result.get("folder_url"):

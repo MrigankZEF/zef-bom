@@ -45,14 +45,27 @@ export default function Catalog({ onOpenPart, version }) {
     return [...s].sort((a, b) => (a === "UN" ? -1 : b === "UN" ? 1 : a.localeCompare(b)));
   }, [rows, refMods]);
 
-  const create = async () => {
+  const create = async (force = false) => {
     if (!nm.trim()) return;
     try {
-      const r = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype, module: nmod });
-      setNm(""); setAdding(false);
+      const r = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype, module: nmod, allow_duplicate: force });
+      setNm(""); setAdding(false); setError(null);
       api.catalog().then(setRows);
       onOpenPart?.(r.item_id);
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      // Duplicate-name guard: the backend rejects a name that already exists (409) unless we
+      // confirm it's a genuinely different part. Offer that choice rather than silently failing.
+      if (!force && /\b409\b/.test(e.message) && /allow_duplicate/.test(e.message)) {
+        const detail = (e.message.match(/"detail"\s*:\s*"([^"]+)"/) || [])[1] || "";
+        const codes = (detail.match(/\(([^)]+)\)/) || [])[1];
+        if (window.confirm(
+          `A part named “${nm.trim()}” already exists${codes ? ` (${codes})` : ""}.\n\n` +
+          `Add this as a separate part anyway? It will get its own new code.`
+        )) return create(true);
+        return;
+      }
+      setError(e.message);
+    }
   };
 
   const filtered = useMemo(() => {
@@ -91,7 +104,7 @@ export default function Catalog({ onOpenPart, version }) {
           <div style={{ flex: 1, minWidth: 200 }}><span className="input-label">Name (free text)</span><input className="input" value={nm} onChange={(e) => setNm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} autoFocus placeholder="e.g. Custom bracket" /></div>
           <div><span className="input-label">Type</span><select className="select" value={ntype} onChange={(e) => setNtype(e.target.value)}><option value="part">part</option><option value="assembly">assembly</option></select></div>
           <div><span className="input-label">Module</span><select className="select" value={nmod} onChange={(e) => setNmod(e.target.value)}>{modules.map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
-          <button className="btn" onClick={create}>create</button>
+          <button className="btn" onClick={() => create()}>create</button>
           <p style={{ width: "100%", fontSize: 11, color: "var(--ink-3)", margin: "2px 0 0" }}>
             {(nmod === "UN" || nmod === "UNP")
               ? <><strong>{nmod}</strong> = universal: it keeps the {nmod} code wherever it's used.</>

@@ -69,12 +69,14 @@ export default function Uploads({ onApplied }) {
   const [batches, setBatches] = useState([]);
   const [diff, setDiff] = useState(null);      // {id, status, diff, counts}
   const [notes, setNotes] = useState("");
+  const [mode, setMode] = useState("update");   // update | variant
   const [isTop, setIsTop] = useState(true);
   const [attachTo, setAttachTo] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [decisions, setDecisions] = useState({});  // {reusedNumber: "new"|"rename"|"skip"}
   const [reviews, setReviews] = useState({});       // {nodeText: {action, module, type, match}}
+  const [nameMatch, setNameMatch] = useState({});   // {miroNumber: "new"} — flips a name-match off merge
   const [modules, setModules] = useState(["UN"]);
   const [catItems, setCatItems] = useState([]);     // catalog, for "match existing" search
   const fileRef = useRef(null);
@@ -95,7 +97,7 @@ export default function Uploads({ onApplied }) {
 
   const openDiff = async (id) => {
     setError(null);
-    try { const b = await api.getUpload(id); setDiff(b); setDecisions({}); setReviews({}); setStep("diff"); }
+    try { const b = await api.getUpload(id); setDiff(b); setDecisions({}); setReviews({}); setNameMatch({}); setStep("diff"); }
     catch (e) { setError(e.message); }
   };
 
@@ -104,8 +106,13 @@ export default function Uploads({ onApplied }) {
     if (!file) { setError("Pick an OPML file first."); return; }
     setBusy(true); setError(null);
     try {
-      const res = await api.createUpload(file, { notes, isTopLevel: isTop, attachTo: isTop ? null : (attachTo || null) });
-      setDiff(res); setDecisions({}); setReviews({}); setStep("diff"); setNotes(""); loadList();
+      const isVariant = mode === "variant";
+      const res = await api.createUpload(file, {
+        notes, variant: isVariant,
+        isTopLevel: isVariant ? true : isTop,
+        attachTo: isVariant || isTop ? null : (attachTo || null),
+      });
+      setDiff(res); setDecisions({}); setReviews({}); setNameMatch({}); setStep("diff"); setNotes(""); loadList();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -114,7 +121,7 @@ export default function Uploads({ onApplied }) {
     // Default any number-collision the user didn't touch to "add as new".
     const eff = {};
     (diff?.diff?.conflicts || []).forEach((c) => { if (c.number) eff[c.number] = decisions[c.number] || "new"; });
-    try { await api.approveUpload(diff.id, eff, reviews); onApplied?.(); setStep("list"); loadList(); }
+    try { await api.approveUpload(diff.id, eff, reviews, nameMatch); onApplied?.(); setStep("list"); loadList(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   const reject = async () => {
@@ -167,17 +174,43 @@ export default function Uploads({ onApplied }) {
               <span className="input-label">OPML file</span>
               <input ref={fileRef} type="file" accept=".opml,.xml,text/xml" className="input" style={{ paddingTop: 6 }} />
             </div>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-              <input type="checkbox" checked={isTop} onChange={(e) => setIsTop(e.target.checked)} />
-              This is a top-level BOM (its root becomes a tree root)
-            </label>
-            {!isTop && <ParentPicker value={attachTo} onChange={setAttachTo} setError={setError} />}
-            {!isTop && !attachTo && (
-              <div style={{ fontSize: 12.5, color: "var(--warn)", background: "var(--surface-2, rgba(193,110,58,0.08))", border: "1px solid var(--warn)", borderRadius: 6, padding: "9px 12px", lineHeight: 1.5 }}>
-                ⚠ Not top-level and no parent picked — these parts go to the <strong>catalog</strong> but
-                {" "}<strong>won't appear in the BOM tree</strong>. Tick "top-level" above, or pick a parent
-                assembly, to place it in the tree.
+
+            <div>
+              <span className="input-label">What is this upload?</span>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {[["update", "Update / add to the BOM", "Match existing parts and apply changes (renames, qty, new parts) to the current BOM."],
+                  ["variant", "New variant (separate BOM)", "A distinct BOM that coexists, e.g. prototype v2. System parts get fresh codes (names kept); universals (UN/UNP) are shared."]].map(([v, title, sub]) => (
+                  <button key={v} type="button" onClick={() => setMode(v)}
+                    style={{ textAlign: "left", padding: "10px 12px", borderRadius: 6, cursor: "pointer",
+                      border: `1px solid ${mode === v ? "var(--accent)" : "var(--hair-strong)"}`,
+                      background: mode === v ? "rgba(228,0,43,0.05)" : "transparent" }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{title}</div>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 3, lineHeight: 1.4 }}>{sub}</div>
+                  </button>
+                ))}
               </div>
+            </div>
+
+            {mode === "variant" ? (
+              <div style={{ fontSize: 12.5, color: "var(--ink-2)", background: "rgba(228,0,43,0.04)", border: "1px solid var(--hair-strong)", borderRadius: 6, padding: "9px 12px", lineHeight: 1.5 }}>
+                This imports as a <strong>new top-level BOM</strong>. The original is left untouched. If the
+                top assembly has no system in its name or code, you’ll be asked which system it belongs to.
+              </div>
+            ) : (
+              <>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                  <input type="checkbox" checked={isTop} onChange={(e) => setIsTop(e.target.checked)} />
+                  This is a top-level BOM (its root becomes a tree root)
+                </label>
+                {!isTop && <ParentPicker value={attachTo} onChange={setAttachTo} setError={setError} />}
+                {!isTop && !attachTo && (
+                  <div style={{ fontSize: 12.5, color: "var(--warn)", background: "var(--surface-2, rgba(193,110,58,0.08))", border: "1px solid var(--warn)", borderRadius: 6, padding: "9px 12px", lineHeight: 1.5 }}>
+                    ⚠ Not top-level and no parent picked — these parts go to the <strong>catalog</strong> but
+                    {" "}<strong>won't appear in the BOM tree</strong>. Tick "top-level" above, or pick a parent
+                    assembly, to place it in the tree.
+                  </div>
+                )}
+              </>
             )}
             <div>
               <span className="input-label">Notes</span>
@@ -204,9 +237,17 @@ export default function Uploads({ onApplied }) {
         action={<button className="btn ghost" onClick={() => setStep("list")}><Icon name="chevL" /> Back</button>} />
       {error && <p className="err">{error}</p>}
 
+      {d.variant && (
+        <div className="card" style={{ marginBottom: 16, fontSize: 13, borderColor: "var(--accent)", background: "rgba(228,0,43,0.04)" }}>
+          <strong style={{ color: "var(--accent)" }}>New variant</strong> — importing as a separate top-level BOM.
+          System parts get fresh codes (names kept); universals (UN/UNP) are shared with existing BOMs. The
+          original BOM is untouched.
+        </div>
+      )}
+
       <HowItWorks />
 
-      {pending && !diff.is_top_level_bom && !d.attach_to && (
+      {pending && !diff.is_top_level_bom && !d.attach_to && !d.variant && (
         <div className="card" style={{ borderColor: "var(--warn)", marginBottom: 16, fontSize: 13 }}>
           <strong style={{ color: "var(--warn)" }}>⚠ Won't appear in the BOM tree.</strong>{" "}
           This upload isn't top-level and isn't attached to a parent — after approving, its parts go to the
@@ -242,14 +283,35 @@ export default function Uploads({ onApplied }) {
         {cn.name_matched > 0 && (
           <Row><span style={{ flex: 1, color: "var(--ink-3)", fontSize: 11.5 }}>
             These Miro nodes carried a part number that didn’t match the catalog, but their
-            name did — so they were linked to the existing catalog item (numbering reconciled,
-            no duplicates created).
+            name did. Default is <strong>Merge</strong> — link to the existing catalog item so no
+            duplicate is created. Choose <strong>Create new</strong> if this is genuinely a
+            different part that happens to share the name (it gets a fresh code).
           </span></Row>
         )}
-        {d.name_matched?.map((m, i) => (
-          <Row key={i}><Mono>{m.from}</Mono><span style={{ color: "var(--ink-3)" }}>→</span>
-            <Mono>{m.to}</Mono><span style={{ flex: 1 }}>{m.name}</span></Row>
-        ))}
+        {d.name_matched?.map((m, i) => {
+          const choice = pending ? (nameMatch[m.from] || "merge") : "merge";
+          const set = (v) => setNameMatch((p) => ({ ...p, [m.from]: v }));
+          return (
+            <Row key={i}>
+              <Mono>{m.from}</Mono>
+              <span style={{ flex: 1 }}>
+                {m.name}
+                {choice === "merge"
+                  ? <span style={{ color: "var(--ink-3)" }}> · merges into <Mono>{m.to}</Mono></span>
+                  : <span style={{ color: "var(--warn)" }}> · new code allocated (kept separate from {m.to})</span>}
+              </span>
+              {pending && (
+                <div style={{ display: "inline-flex", gap: 4 }}>
+                  {[["merge", "Merge"], ["new", "Create new"]].map(([v, label]) => (
+                    <button key={v} className={`btn sm ${choice === v ? "" : "ghost"}`} onClick={() => set(v)}
+                      title={v === "merge" ? `Link this node to the existing catalog part ${m.to} — no duplicate`
+                        : `Create a brand-new part named “${m.name}” with a fresh code; ${m.to} is left untouched`}>{label}</button>
+                  ))}
+                </div>
+              )}
+            </Row>
+          );
+        })}
       </Section>
       <Section title="Renamed" count={cn.renamed}>
         {d.renamed?.map((r) => (
@@ -308,26 +370,36 @@ export default function Uploads({ onApplied }) {
             <div key={c.key} style={{ padding: "10px 16px", borderBottom: "1px solid var(--hair-faint)", fontSize: 13 }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ flex: 1, minWidth: 220 }}><strong>{c.name || c.cell}</strong>
-                  <span style={{ color: "var(--ink-3)", fontSize: 11.5 }}> · {c.issue}</span></span>
+                  {c.is_root
+                    ? <span style={{ color: "var(--warn)", fontSize: 11.5 }}> · top-level BOM — pick its system{c.inherits ? `; ${c.inherits} sub-item${c.inherits === 1 ? "" : "s"} will inherit it` : ""}</span>
+                    : <span style={{ color: "var(--ink-3)", fontSize: 11.5 }}> · {c.issue}</span>}</span>
                 <div style={{ display: "inline-flex", gap: 4 }}>
-                  {[["create", "Create new"], ["match", "Match existing"], ["skip", "Skip"]].map(([v, label]) => (
+                  {(c.is_root ? [["create", "Set system"], ["skip", "Skip"]] : [["create", "Create new"], ["match", "Match existing"], ["skip", "Skip"]]).map(([v, label]) => (
                     <button key={v} className={`btn sm ${act === v ? "" : "ghost"}`}
-                      onClick={() => upd({ action: v, module: r.module || c.module_guess || "UN", type: r.type || c.type_guess || "part" })}>{label}</button>
+                      onClick={() => upd({ action: v, module: r.module || (c.is_root ? (c.module_guess || "") : (c.module_guess || "UN")), type: r.type || c.type_guess || (c.is_root ? "assembly" : "part") })}>{label}</button>
                   ))}
                 </div>
               </div>
-              {act === "create" && (
+              {act === "create" && (() => {
+                // A top-level root must be given a real system (no silent UN default); an empty
+                // pick safely keeps it blocked until chosen. Ordinary nodes default to UN.
+                const modVal = r.module ?? (c.is_root ? "" : (c.module_guess || "UN"));
+                return (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, paddingLeft: 4 }}>
-                  <span style={{ color: "var(--ink-3)", fontSize: 12 }}>as</span>
-                  <select className="select" style={{ height: 30 }} value={r.module || c.module_guess || "UN"} onChange={(e) => upd({ module: e.target.value })}>
-                    {modules.map((m) => <option key={m} value={m}>{m}</option>)}
+                  <span style={{ color: "var(--ink-3)", fontSize: 12 }}>{c.is_root ? "system" : "as"}</span>
+                  <select className="select" style={{ height: 30 }} value={modVal} onChange={(e) => upd({ module: e.target.value })}>
+                    {c.is_root && <option value="">— pick system —</option>}
+                    {modules.filter((m) => !c.is_root || (m !== "UN" && m !== "UNP")).map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
-                  <select className="select" style={{ height: 30 }} value={r.type || c.type_guess || "part"} onChange={(e) => upd({ type: e.target.value })}>
+                  <select className="select" style={{ height: 30 }} value={r.type || c.type_guess || (c.is_root ? "assembly" : "part")} onChange={(e) => upd({ type: e.target.value })}>
                     <option value="part">part</option><option value="assembly">assembly</option>
                   </select>
-                  <span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>→ a new {(r.module || c.module_guess || "UN")} code is allocated</span>
+                  <span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>
+                    {modVal ? `→ a new ${modVal} code is allocated${c.is_root && c.inherits ? `, and ${c.inherits} sub-item${c.inherits === 1 ? "" : "s"} inherit ${modVal}` : ""}` : "→ choose the system this BOM belongs to"}
+                  </span>
                 </div>
-              )}
+                );
+              })()}
               {act === "match" && (() => {
                 const sel = catItems.find((it) => it.item_id === r.match);
                 if (sel) return (

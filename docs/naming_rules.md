@@ -12,20 +12,25 @@ Every code is **MODULE + 3 digits + TYPE**, e.g. `AEC066A`.
   `DRY`, `FM`, `MS`, … or a longer one like `MDAC`), **or a universal**: `UN` (shared
   across systems) or `UNP` (universal power; replaces the deprecated `POW`). Both
   universals are *sticky* — see §6.
-- **3 digits** — a sequence number, zero-padded (`001`, `066`).
+- **3+ digits** — a sequence number, zero-padded to **at least** three (`001`, `066`). A
+  module normally stays at three digits, but once it crosses 999 the number simply widens —
+  `AEC999A` → `AEC1000A` → `AEC1001A` … There is no upper limit; the width grows as needed.
 - **TYPE** — `P` (a **part** = a leaf, no children) or `A` (an **assembly** = has children).
 - **New number allocation** — the next free number in a module = (highest existing number
-  in that module) + 1.
+  in that module) + 1, padded to a minimum of three digits.
 
 ## 2. Importing an OPML (Miro) file — how each node is classified
 When you upload, every node is resolved against the catalog in this order:
 
 1. **Known part** — the node's number exists in the catalog *and* the name matches → **use
    the existing item** (just links it into the tree). No change.
-2. **Number drifted (auto-reconciled)** — the node's number doesn't line up, but its
-   **name uniquely matches one catalog item** → it is silently re-pointed to that catalog
-   item, adopting the catalog's number. This untangles a Miro-vs-catalog numbering drift
-   without creating duplicates.
+2. **Number drifted (name match — your choice)** — the node's number doesn't line up, but
+   its **name uniquely matches one catalog item**. The review screen lists these under
+   **"Matched by name"** with a per-row toggle, defaulting to **Merge** — re-point the node to
+   that catalog item (adopt its number, no duplicate). Flip to **Create new** if it's
+   genuinely a *different* part that happens to share the name (it gets a fresh code in its
+   own module; the catalog item is left untouched). This untangles a Miro-vs-catalog numbering
+   drift while keeping you in control of every merge.
 3. **New part** — the number and name are both new → created, taking the number Miro gave
    it (or an allocated one if it was unnumbered).
 4. **Number collision (needs your choice)** — the number already belongs to a *different*
@@ -51,13 +56,43 @@ descendants, with two stops:
   (no system word) become **UNP**; `AEC Power ECU` / `AEC Solar Through Panel` (start with
   "AEC") stay **AEC**; the shared `UN…` fasteners stay **UN**.
 
+**Anchor on the top-most assembly (the key rule for an un-coded BOM).** The importer reads
+the system from the *top-level* node and flows it down — it does **not** ask about every node:
+1. The top assembly's system = its code if it has one → else a **known system word at the
+   start of its name** (`Mdac Inimini system` → `MDAC`; any module in the catalog or in
+   *Admin → Modules* counts) → else it's the **one** thing you're asked: *"which system is
+   this BOM?"* (a dropdown of system codes).
+2. Every bare-named descendant **inherits** that system (`stripper`, `absorber`, `sump` →
+   `MDAC…`). Universals still win (`POW …`/`UN …` → `UNP`/`UN`), and a descendant that itself
+   starts with a *different* system word keeps that system.
+3. While the top system is still unknown, the descendants are held as **"will inherit"** (not
+   asked about one-by-one); once you pick the system, they all resolve. Only genuine **name/
+   code discrepancies** (a reused number, etc.) are surfaced for you to resolve alongside it.
+
 For **unnumbered** nodes specifically:
-- **Module** is inferred as: an explicit prefix if present → otherwise a "type-only" node
-  like `P: Bracket` **inherits its parent's module** → otherwise it is ambiguous (needs
-  review).
+- **Module** is inferred as: an explicit prefix if present → otherwise it **inherits the
+  system of the assembly above it** (per the anchoring rule) → otherwise, only if even the
+  top assembly is undetermined, it waits on that one "which system?" choice.
 - **Type** is: explicit if given → otherwise has-children = `A`, leaf = `P`.
 
+## 2b. Update vs. new variant (what kind of upload this is)
+Every upload is one of two kinds, chosen on the upload form:
+- **Update / add to the BOM** (default) — the OPML is matched against the live BOM and applied
+  in place: existing parts are reused, renames/qty/new parts flow in (sections 2 & 4).
+- **New variant (a separate BOM)** — the OPML becomes a **distinct top-level BOM that coexists**
+  with the original (e.g. *prototype v2* alongside *v1*). The original is left completely
+  untouched. Specifically:
+  - **System parts get fresh codes**, keeping their names (v2's `Pump` is a new `AEC…`, not v1's).
+  - **Universals are shared** — a `UN`/`UNP` part (a screw, a wire) is the *same* commodity across
+    variants, so it's reused by name, never duplicated.
+  - The variant's **system** is read from the top assembly exactly as in §2 (its code → a system
+    word in its name → else the one *"which system?"* question), and that system codes the
+    whole variant.
+  - A variant is always top-level (it is its own tree root); it is never attached under a parent.
+
 ## 3. The review screen — what you resolve, and the options
+- **Matched by name** → **Merge** (default — link to the existing catalog item, no duplicate)
+  · **Create new** (this is a different part that shares a name — allocate a fresh code).
 - **Number collision** → **Add as new** (a fresh number is allocated; the existing catalog
   item keeps its name) · **Rename existing** (update that catalog item's name to Miro's) ·
   **Skip**. *Default = Add as new.*
@@ -74,6 +109,9 @@ already existed) · then run the **naming engine** (section 6) to make everythin
 
 ## 5. Catalog — adding & editing
 - **Add a new item** — free-text name + type (part/assembly) + **module** (default **UN**).
+  - **No accidental duplicates** — if a live item already has that name (compared after
+    normalization, so `O ring` = `O-Ring`), the app blocks the add and tells you which code
+    already holds it. You can confirm "add anyway" to create a deliberately separate part.
   - **UN** = universal → it **keeps the UN code wherever it's used**.
   - A specific module (e.g. `AEC`) → follows the usage rule below (stays `AEC` while only
     in AEC; becomes `UN` if shared).
@@ -118,8 +156,12 @@ Collapses extra spaces, applies smart Title Case, and fixes known tokens — e.g
 
 ## 8. Safety rules
 - **Atomic re-code** — when a code changes, every reference is repointed in one go: BOM
-  links (both parent and child sides), decided costs, cost evidence, custom field values,
-  change history, and the Drive folder link — and the rename is logged. Nothing dangles.
+  links (both parent and child sides), decided costs, cost evidence, **assembly labour
+  times**, custom field values, and change history — and the rename is logged. Nothing dangles.
+- **Attachments survive a re-code** — a part's Drive folder is located by its **stable folder
+  id** (carried on the item), not by a folder named after the code, so re-coding an item keeps
+  it pointed at the same attachments. The folder's name is re-synced to the new code the next
+  time attachments are opened or uploaded.
 - **No loops** — a link that would make an item contain itself (directly or indirectly) is
   rejected.
 - **Archived items** are ignored for "has children", usage, and the tree.

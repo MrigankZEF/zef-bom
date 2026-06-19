@@ -62,7 +62,13 @@ def _augment_with_opml_numbers(
         )
     if not extra:
         return authority
-    return InventoryAuthority(authority.items + list(extra.values()), pd.DataFrame())
+    augmented = InventoryAuthority(authority.items + list(extra.values()), pd.DataFrame())
+    # Carry the known-module set forward (a fresh InventoryAuthority resets it to the seed set),
+    # plus any module the OPML's own numbers introduced, so name-anchoring stays consistent.
+    augmented.module_codes = set(authority.module_codes) | {
+        it.module_code for it in extra.values() if it.module_code
+    }
+    return augmented
 
 
 # Module markers people write into Miro names: "<CODE>: Pow: Name" or "<CODE>: UN: Name".
@@ -71,10 +77,25 @@ def _augment_with_opml_numbers(
 # with a system word* (AEC/DAC/…) keeps its system, and stops the UNP from flowing deeper.
 # We rewrite each affected cell to the module-typed form "<MODULE> <SUFFIX>: Name" so the
 # normal parser assigns the module and drops any marker from the name.
-_NAME_MARKER_RE = re.compile(r"^(?:([A-Z]{2,5}\d{3}[PA])\s*:\s*)?(POW|UNP|UN)\s*:\s*(.+)$", re.IGNORECASE)
+_NAME_MARKER_RE = re.compile(r"^(?:([A-Z]{2,5}\d{3,}[PA])\s*:\s*)?(POW|UNP|UN)\s*:\s*(.+)$", re.IGNORECASE)
 _NAME_MARKER_MAP = {"POW": "UNP", "UNP": "UNP", "UN": "UN"}
-_CODE_RE = re.compile(r"^([A-Z]{2,5}\d{3}[PA])\s*:\s*(.+)$")
+_CODE_RE = re.compile(r"^([A-Z]{2,5}\d{3,}[PA])\s*:\s*(.+)$")
 _UNIVERSAL_CODES = {"UN", "UNP"}
+
+
+def _add_admin_modules(db: Session, authority: InventoryAuthority) -> None:
+    """Fold admin-registered module codes (Admin → Reference data → Modules) into the known
+    set, so a brand-new system word (added before any part uses it) still anchors a BOM."""
+    from ..models import ReferenceValue
+    rows = db.execute(
+        select(ReferenceValue.value).where(
+            ReferenceValue.category == "module", ReferenceValue.archived.is_(False)
+        )
+    ).scalars()
+    for v in rows:
+        code = (v or "").strip().upper()
+        if re.fullmatch(r"[A-Z]{2,5}", code):
+            authority.module_codes.add(code)
 
 
 def _name_starts_with_system(name: str) -> bool:
@@ -112,6 +133,15 @@ def _apply_name_markers(df):
                 forced = "UNP" if module == "UNP" else None  # POW flows down; UN: does not
                 continue
 
+            # Bare space-prefix power marker, e.g. "POW wire" (no colon). POW is deprecated to
+            # UNP and, like the colon form, opens a power sub-tree that flows UNP downward.
+            pw = re.match(r"^POW\s+(.+)$", v.strip(), re.IGNORECASE)
+            if pw:
+                sfx = "A" if has_child else "P"
+                df.at[ridx, col] = f"UNP {sfx}: {pw.group(1).strip()}"
+                forced = "UNP"
+                continue
+
             mod, suffix, name = _cell_module(v)
             if mod in _UNIVERSAL_CODES:
                 continue  # universal part stays; UNP keeps flowing past it
@@ -125,7 +155,8 @@ def _apply_name_markers(df):
 
 
 def _name_match_overrides(
-    cells: list[ParsedCell], catalog: InventoryAuthority
+    cells: list[ParsedCell], catalog: InventoryAuthority,
+    name_match_decisions: dict[str, str] | None = None,
 ) -> tuple[dict[str, ReviewOverride], list[dict]]:
     """Re-point numbered nodes whose number is wrong but whose NAME uniquely identifies
     an existing catalog item — untangling a catalog↔Miro numbering drift.
@@ -134,12 +165,20 @@ def _name_match_overrides(
     numbers). A numbered node that the catalog can't cleanly match by number is either:
       * a conflict — its number exists under a different name, or
       * unknown    — its number isn't in the catalog at all.
-    In both cases, if the node's name uniquely matches one catalog item, we adopt that
-    item's number (the name is the stable identity). Nodes whose name matches nothing (or
-    matches ambiguously) are left alone — they flow through as genuinely new / needs-review.
+    In both cases, if the node's name uniquely matches one catalog item, the DEFAULT is to
+    adopt that item's number (merge — the name is the stable identity, no duplicate created).
+    Nodes whose name matches nothing (or matches ambiguously) are left alone — they flow
+    through as genuinely new / needs-review.
 
-    Returns (overrides keyed by cell_key, deduped list of {from, to, name} matches).
+    Per-row override: `name_match_decisions` is {miro_number: "merge"|"new"}. "new" means the
+    user has decided this is genuinely a *different* part that merely shares a name, so it is
+    created fresh (its Miro module's next free code) instead of merging. Default is "merge".
+
+    Returns (overrides keyed by cell_key, deduped list of {from, to, name} matches) — the
+    matches list always carries every name-match (regardless of decision) so the review UI
+    can show each with a merge/create-new toggle.
     """
+    name_match_decisions = name_match_decisions or {}
     overrides: dict[str, ReviewOverride] = {}
     matches: dict[tuple[str, str], dict] = {}
     for c in cells:
@@ -160,9 +199,15 @@ def _name_match_overrides(
         if len(cand) != 1 or cand[0].partnumber == c.explicit_item_number:
             continue
         target = cand[0]
-        overrides[c.cell_key] = ReviewOverride(
-            review_decision="match_existing", approved_item_number=target.partnumber
-        )
+        decision = str(name_match_decisions.get(c.explicit_item_number, "merge")).strip().lower()
+        if decision == "new":
+            # Create a brand-new part: keep the Miro name, allocate a fresh code in the Miro
+            # module (the catalog item that shares the name is left untouched).
+            overrides[c.cell_key] = ReviewOverride(review_decision="create_new")
+        else:
+            overrides[c.cell_key] = ReviewOverride(
+                review_decision="match_existing", approved_item_number=target.partnumber
+            )
         matches.setdefault(
             (c.explicit_item_number, target.partnumber),
             {"from": c.explicit_item_number, "to": target.partnumber, "name": target.partname},
@@ -233,17 +278,94 @@ def _review_overrides(
     return extra
 
 
+def _defer_undetermined_subtrees(cells: list[ParsedCell]) -> None:
+    """When a tree's ROOT can't be anchored to a system (no code, no recognised system word in
+    its name), ask about the root alone — not every node beneath it.
+
+    The naming rule is "anchor on the top-most assembly, then flow its system down". So if the
+    root is undetermined, its bare-named descendants have nothing to inherit *yet* and the
+    engine would otherwise flag each one. Instead we keep the root as the single
+    needs-review item ("which system is this?") and mark its bare descendants `deferred`
+    (non-blocking) — once the user picks the root's system, a re-parse flows it down and they
+    all resolve. Determined-root trees are untouched; a descendant blocked for a *real* reason
+    (its own number collides, ambiguous type, …) still surfaces.
+    """
+    by_row: dict[int, list[ParsedCell]] = defaultdict(list)
+    for c in cells:
+        by_row[c.row_index].append(c)
+    for row_cells in by_row.values():
+        root = next((c for c in row_cells if c.parent_key is None), None)
+        if root is None or root.blocker_reason != "ambiguous_module":
+            continue
+        for c in row_cells:
+            if c is root:
+                continue  # the root stays the one thing we ask about
+            # Defer everything that is blocked *only because the root is undetermined*: bare
+            # nodes with no module (ambiguous_module) and anything orphaned by a deferred parent
+            # (missing_parent cascades down). A genuine catalog discrepancy (conflict) is left
+            # visible so it can still be resolved alongside the root question. Null the resolved
+            # fields so deferred cells are ignored by the diff/apply until the system is chosen.
+            if c.blocker_reason in ("ambiguous_module", "missing_parent"):
+                c.resolution_status = "deferred"
+                c.blocker_reason = None
+                c.action = "defer"
+                c.resolved_item_number = None
+                c.resolved_item_name = None
+
+
+def _strip_numbers_for_variant(df):
+    """For a *variant* import, drop the explicit part numbers from every coded cell, keeping the
+    module + type — `AEC066A: Pump` → `AEC A: Pump`. A variant is a separate BOM that must get
+    its *own* fresh codes (it must not match the original by number), but the system (module) is
+    still needed to anchor and code the variant, so we keep that and the part/assembly type."""
+    for ridx in df.index:
+        for col in df.columns:
+            v = df.at[ridx, col]
+            if not isinstance(v, str) or not v.strip():
+                continue
+            mod, sfx, name = _cell_module(v)
+            if mod and sfx:
+                df.at[ridx, col] = f"{mod} {sfx}: {name}"
+    return df
+
+
+def _variant_overrides(
+    cells: list[ParsedCell], already: dict[str, ReviewOverride]
+) -> dict[str, ReviewOverride]:
+    """Force every *system* node of a variant to be created fresh (a new code, same name), so the
+    variant coexists as a distinct BOM instead of merging into the original. Universals (UN/UNP)
+    are deliberately left to match by name — a universal screw is the *same* screw across BOMs and
+    variants, so it's shared, never duplicated. Cells the user already decided (a review/decision)
+    keep that decision."""
+    extra = dict(already)
+    for c in cells:
+        if c.cell_key in extra:
+            continue
+        module = (c.explicit_module or c.inferred_module or "").upper()
+        if module in _UNIVERSAL_CODES:
+            continue  # shared commodity — match/reuse by name
+        extra[c.cell_key] = ReviewOverride(review_decision="create_new")
+    return extra
+
+
 def parse_opml(
     db: Session, path: Path,
     decisions: dict[str, str] | None = None,
     reviews: dict[str, dict] | None = None,
+    name_match_decisions: dict[str, str] | None = None,
+    variant: bool = False,
 ) -> tuple[list[ParsedCell], InventoryAuthority, list[dict]]:
     """Load + repair an OPML/CSV and resolve every cell against the live items table.
 
     (1) Resolve against the pure catalog. (2) Reconcile numbering drift by name — re-point
-    numbered nodes whose number is wrong but whose name matches a catalog item. (3) Apply any
+    numbered nodes whose number is wrong but whose name matches a catalog item (per-row the
+    user may flip a match from merge to create-new via `name_match_decisions`). (3) Apply any
     per-conflict user `decisions` (new / rename / skip). (4) Seed genuinely-new OPML numbers
     so they resolve as new rather than blocking.
+
+    `variant=True` imports the OPML as a *new, separate BOM* (e.g. prototype v2): system parts
+    get fresh codes (keeping names), universals are shared, and the root becomes a new top-level
+    tree — the original BOM is left completely untouched.
 
     Returns (cells, authority, name_matches) where name_matches lists {from, to, name} for
     nodes re-pointed to an existing catalog item by name.
@@ -253,14 +375,20 @@ def parse_opml(
     df_raw, input_format = load_bom_input(path)
     df = df_raw if input_format == "opml" else repair_mindmap_tree(df_raw)
     df = _apply_name_markers(df)  # Pow:/UN: name markers → universal module, marker stripped
+    if variant:
+        df = _strip_numbers_for_variant(df)  # a variant must take its own fresh codes
     catalog = build_authority_from_db(db)
+    _add_admin_modules(db, catalog)  # admin-registered modules also count as known system words
     cells = build_parsed_cells(df, catalog)
 
-    overrides, name_matches = _name_match_overrides(cells, catalog)
+    overrides, name_matches = _name_match_overrides(cells, catalog, name_match_decisions)
     if decisions:
         overrides = _decision_overrides(cells, overrides, decisions)
     if reviews:
         overrides = _review_overrides(cells, overrides, reviews)
+    if variant:
+        # Fork system parts last, so any explicit user review/decision still wins.
+        overrides = _variant_overrides(cells, overrides)
     if overrides:
         cells = build_parsed_cells(df, catalog, overrides)
 
@@ -275,6 +403,10 @@ def parse_opml(
         num = c.explicit_item_number
         if num and decisions.get(num) == "rename" and c.resolved_item_number == num:
             c.resolved_item_name = c.normalized_item_name
+
+    # Anchor-on-the-top-assembly: if a tree root has no determinable system, ask about the root
+    # alone and let its bare children inherit the choice (instead of flagging every node).
+    _defer_undetermined_subtrees(cells)
     return cells, authority, name_matches
 
 
@@ -488,17 +620,28 @@ def build_incremental_diff(
             "raw": c.cleaned_text,
         })
     conflicts = list(conflict_map.values())
+    # Deferred = bare nodes waiting on an undetermined top-level system (see
+    # _defer_undetermined_subtrees). They aren't asked about individually; they inherit the
+    # system the user picks for their root. Count distinct ones to hint in the UI.
+    deferred_names = {c.cleaned_text for c in cells if c.resolution_status == "deferred"}
+    is_root_text = {c.cleaned_text for c in cells if c.parent_key is None}
+
     # Items the engine couldn't resolve — surfaced with a stable key (the node text) so the
-    # user can resolve each inline (create / match / skip). Deduped by that key.
+    # user can resolve each inline (create / match / skip). Deduped by that key. A top-level
+    # root with an undetermined system becomes the single "which system?" question whose answer
+    # flows down to its deferred children.
     review_map: dict[str, dict] = {}
     for c in cells:
         if c.resolution_status != "needs_review":
             continue
+        root_undetermined = c.cleaned_text in is_root_text and c.blocker_reason == "ambiguous_module"
         review_map.setdefault(c.cleaned_text, {
             "key": c.cleaned_text,
             "cell": c.cleaned_text,
             "name": c.normalized_item_name,
-            "issue": c.blocker_reason,
+            "issue": "which_system" if root_undetermined else c.blocker_reason,
+            "is_root": root_undetermined,
+            "inherits": len(deferred_names) if root_undetermined else 0,
             "module_guess": c.explicit_module or c.inferred_module,
             "type_guess": "assembly" if (c.explicit_suffix or c.inferred_suffix) == "A" else "part",
         })
@@ -515,11 +658,13 @@ def build_incremental_diff(
         "conflicts": conflicts,
         "needs_review": needs_review,
         "merges": merges,
+        "deferred": sorted(deferred_names),
         "counts": {
             "new_parts": len(new_parts), "renamed": len(renamed), "unchanged": unchanged_items,
             "name_matched": len(name_matched_list),
             "added": len(added), "removed": len(removed), "qty_changed": len(qty_changed),
             "conflicts": len(conflicts), "needs_review": len(needs_review), "merges": len(merges),
+            "deferred": len(deferred_names),
         },
     }
 

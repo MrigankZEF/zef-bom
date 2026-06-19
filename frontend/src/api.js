@@ -127,18 +127,20 @@ export const api = {
   // ── M5: uploads ──
   listUploads: () => request("/uploads"),
   getUpload: (id) => request(`/uploads/${encodeURIComponent(id)}`),
-  createUpload: async (file, { notes, isTopLevel, attachTo } = {}) => {
+  createUpload: async (file, { notes, isTopLevel, attachTo, variant } = {}) => {
     const fd = new FormData();
     fd.append("file", file);
     if (notes) fd.append("notes", notes);
     fd.append("is_top_level", isTopLevel ? "true" : "false");
     if (attachTo) fd.append("attach_to", attachTo);
+    if (variant) fd.append("variant", "true");
     const res = await fetch(`${BASE}/uploads`, { method: "POST", body: fd, headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} — ${await res.text().catch(() => res.statusText)}`);
     return res.json();
   },
-  approveUpload: (id, decisions, reviews) =>
-    request(`/uploads/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({ decisions: decisions || {}, reviews: reviews || {} }) }),
+  approveUpload: (id, decisions, reviews, nameMatchDecisions) =>
+    request(`/uploads/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({
+      decisions: decisions || {}, reviews: reviews || {}, name_match_decisions: nameMatchDecisions || {} }) }),
   rejectUpload: (id) => request(`/uploads/${encodeURIComponent(id)}/reject`, { method: "POST" }),
 
   // ── reference data (admin-managed dropdowns) ──

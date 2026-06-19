@@ -65,6 +65,7 @@ async def create_upload(
     notes: str | None = Form(default=None),
     is_top_level: bool = Form(default=False),
     attach_to: str | None = Form(default=None),
+    variant: bool = Form(default=False),
     db: Session = Depends(get_db),
     user: str = Depends(current_user),
 ) -> dict:
@@ -72,13 +73,19 @@ async def create_upload(
     path = _saved_path(batch_id)
     path.write_bytes(await file.read())
 
+    # A variant is, by definition, a new separate BOM → it's always top-level and never attached.
+    if variant:
+        is_top_level = True
+        attach_to = None
+
     try:
-        cells, _authority, name_matches = parse_opml(db, path)
+        cells, _authority, name_matches = parse_opml(db, path, variant=variant)
     except Exception as exc:  # malformed OPML, etc.
         path.unlink(missing_ok=True)
         raise HTTPException(400, f"Could not parse OPML: {exc}") from exc
 
     diff = build_incremental_diff(db, cells, opml_path=path, name_matches=name_matches)
+    diff["variant"] = variant  # remembered so Approve re-parses the same way
     if attach_to and not is_top_level:  # remember where this sub-BOM should hang
         diff["attach_to"] = attach_to.strip()
     blockers = sum(1 for c in cells if c.resolution_status in BLOCKER_STATUSES)
@@ -114,11 +121,15 @@ def approve_upload(
         raise HTTPException(410, "Uploaded file no longer available; re-upload to approve")
 
     # Per-row choices from the review screen:
-    #   decisions = {reused_number: "new"|"rename"|"skip"}  (number collisions)
-    #   reviews   = {node_text: {action, module, type, match}}  (needs-review items)
+    #   decisions            = {reused_number: "new"|"rename"|"skip"}  (number collisions)
+    #   reviews              = {node_text: {action, module, type, match}}  (needs-review items)
+    #   name_match_decisions = {miro_number: "merge"|"new"}  (numbering-drift name matches)
     decisions = (body or {}).get("decisions") or {}
     reviews = (body or {}).get("reviews") or {}
-    cells, _authority, _name_matches = parse_opml(db, path, decisions, reviews)
+    name_match_decisions = (body or {}).get("name_match_decisions") or {}
+    variant = bool((b.summary_json or {}).get("variant"))
+    cells, _authority, _name_matches = parse_opml(
+        db, path, decisions, reviews, name_match_decisions, variant=variant)
     blockers = [c for c in cells if c.resolution_status in BLOCKER_STATUSES]
     if blockers:
         nums = ", ".join(sorted({c.explicit_item_number or c.cleaned_text for c in blockers})[:8])

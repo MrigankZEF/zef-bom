@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
 from .history import record_change
-from .models import BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item
+from .models import AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item
 
 UNIVERSAL = "UN"            # the module a shared (multi-system) part collapses to
 UNIVERSALS = {"UN", "UNP"}  # "universal" modules — pinned; never auto-re-coded to a system
@@ -60,6 +60,7 @@ def rename_item(
     db.execute(update(BomLink).where(BomLink.child_item_id == old_id).values(child_item_id=new_id))
     db.execute(update(CostEvidence).where(CostEvidence.item_id == old_id).values(item_id=new_id))
     db.execute(update(DecidedCost).where(DecidedCost.item_id == old_id).values(item_id=new_id))
+    db.execute(update(AssemblyLabor).where(AssemblyLabor.item_id == old_id).values(item_id=new_id))
     db.execute(update(FieldValue).where(FieldValue.item_id == old_id).values(item_id=new_id))
     db.execute(
         update(ChangeHistory)

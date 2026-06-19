@@ -38,4 +38,10 @@ def build_authority_from_db(db: Session) -> InventoryAuthority:
             )
         )
     # source_df is only used by the engine's Excel write-back path, which we don't use.
-    return InventoryAuthority(items, pd.DataFrame())
+    authority = InventoryAuthority(items, pd.DataFrame())
+    # Teach the resolver every module actually in use (e.g. MDAC), not just the seed set — so a
+    # top assembly whose name *starts with a system word* ("Mdac Inimini system") is anchored to
+    # that system and its bare-named children inherit it, instead of the whole tree asking for a
+    # module. New/admin modules are added on top of this in parse_opml.
+    authority.module_codes |= {it.module_code for it in items if it.module_code}
+    return authority

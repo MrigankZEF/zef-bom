@@ -56,6 +56,7 @@ def create_catalog_item(body: NewItemIn, db: Session = Depends(get_db), user: st
     system code (AEC / DAC / MDAC / …) follows usage — it stays that code while used in only
     that system, and becomes UN if it ends up shared across two or more systems."""
     from ..operations import allocate_code
+    from ..bom_ingest.miro_csv_fix import normalize_item_name
 
     name = (body.item_name or "").strip()
     if not name:
@@ -63,6 +64,26 @@ def create_catalog_item(body: NewItemIn, db: Session = Depends(get_db), user: st
     module = (body.module or "UN").strip().upper()
     if not re.fullmatch(r"[A-Z]{2,5}", module):
         raise HTTPException(400, f"Invalid module code '{module}' — use 2–5 letters (e.g. UN, AEC, MDAC).")
+
+    # No accidental duplicates: if a live item already carries this name, block unless the
+    # user explicitly confirms (allow_duplicate) it's a genuinely different part. Compared on
+    # the normalized name so "O ring" and "O-Ring" count as the same.
+    if not body.allow_duplicate:
+        target = normalize_item_name(name)
+        dupes = [
+            it.item_id for it in db.execute(
+                select(Item).where(Item.archived.is_(False))
+            ).scalars()
+            if it.item_name and normalize_item_name(it.item_name) == target
+        ]
+        if dupes:
+            raise HTTPException(
+                409,
+                f"A part named “{name}” already exists ({', '.join(sorted(dupes)[:5])}"
+                f"{'…' if len(dupes) > 5 else ''}). Re-submit with allow_duplicate to add it "
+                "as a separate part.",
+            )
+
     suffix = "A" if body.item_type == "assembly" else "P"
     code = allocate_code(db, module, suffix)
     db.add(Item(

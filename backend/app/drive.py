@@ -10,6 +10,7 @@ If Drive isn't configured, `enabled()` is False and the endpoints return a clear
 from __future__ import annotations
 
 import io
+import re
 from functools import lru_cache
 
 from .config import settings
@@ -44,9 +45,51 @@ def _service():
 _SHARED = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
 
 
-def ensure_part_folder(item_id: str) -> dict:
-    """Find the part's subfolder under the root, creating it if missing. Returns {id, url}."""
+def _folder_id_from_url(url: str | None) -> str | None:
+    """Pull the Drive folder id out of a stored folder URL (…/drive/folders/<id>)."""
+    if not url:
+        return None
+    m = re.search(r"/folders/([A-Za-z0-9_-]+)", url)
+    return m.group(1) if m else None
+
+
+def _get_folder(fid: str | None) -> dict | None:
+    """Fetch a live folder by id ({id, name, webViewLink}), or None if missing/trashed."""
+    if not fid:
+        return None
+    try:
+        f = _service().files().get(
+            fileId=fid, fields="id, name, webViewLink, trashed, mimeType",
+            **{"supportsAllDrives": True},
+        ).execute()
+    except Exception:  # noqa: BLE001 — a stale/deleted id just falls back to a name lookup
+        return None
+    if f.get("trashed") or f.get("mimeType") != "application/vnd.google-apps.folder":
+        return None
+    return f
+
+
+def ensure_part_folder(item_id: str, folder_url: str | None = None) -> dict:
+    """Find the part's folder, creating it if missing. Returns {id, url}.
+
+    Prefer the item's *stored* folder, located by its stable id — so re-coding an item
+    (AEC050A → UN050A) keeps it pointed at the same folder instead of hunting for one named
+    after the new code (which would orphan the attachments). If the folder's name has drifted
+    from the current code, rename it to match (best-effort) so Drive browsing stays tidy.
+    Falls back to the original by-name find/create when there's no usable stored folder.
+    """
     svc = _service()
+    f = _get_folder(_folder_id_from_url(folder_url))
+    if f:
+        if f.get("name") != item_id:  # self-heal: keep the folder name in step with the code
+            try:
+                svc.files().update(
+                    fileId=f["id"], body={"name": item_id}, **{"supportsAllDrives": True}
+                ).execute()
+            except Exception:  # noqa: BLE001 — cosmetic only; never block on it
+                pass
+        return {"id": f["id"], "url": f.get("webViewLink") or _folder_url(f["id"])}
+
     root = settings.drive_attachments_root_id
     safe = item_id.replace("'", "")
     q = (
@@ -56,8 +99,8 @@ def ensure_part_folder(item_id: str) -> dict:
     res = svc.files().list(q=q, fields="files(id, webViewLink)", **_SHARED).execute()
     files = res.get("files", [])
     if files:
-        f = files[0]
-        return {"id": f["id"], "url": f.get("webViewLink") or _folder_url(f["id"])}
+        hit = files[0]
+        return {"id": hit["id"], "url": hit.get("webViewLink") or _folder_url(hit["id"])}
     created = svc.files().create(
         body={"name": item_id, "mimeType": "application/vnd.google-apps.folder", "parents": [root]},
         fields="id, webViewLink",
@@ -66,12 +109,13 @@ def ensure_part_folder(item_id: str) -> dict:
     return {"id": created["id"], "url": created.get("webViewLink") or _folder_url(created["id"])}
 
 
-def upload_file(item_id: str, filename: str, content: bytes, mimetype: str | None) -> dict:
+def upload_file(item_id: str, filename: str, content: bytes, mimetype: str | None,
+                folder_url: str | None = None) -> dict:
     """Upload a file into the part's folder. Returns {id, name, url}."""
     from googleapiclient.http import MediaIoBaseUpload
 
     svc = _service()
-    folder = ensure_part_folder(item_id)
+    folder = ensure_part_folder(item_id, folder_url)
     media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mimetype or "application/octet-stream", resumable=False)
     created = svc.files().create(
         body={"name": filename, "parents": [folder["id"]]},
@@ -97,13 +141,14 @@ def _ensure_child_folder(name: str, parent_id: str) -> str:
     ).execute()["id"]
 
 
-def upload_file_nested(item_id: str, rel_dir: str, filename: str, content: bytes, mimetype: str | None) -> dict:
+def upload_file_nested(item_id: str, rel_dir: str, filename: str, content: bytes, mimetype: str | None,
+                       folder_url: str | None = None) -> dict:
     """Upload a file into the part's folder, re-creating a sub-folder path (e.g.
     'membranes/typeA') so a whole folder structure can be uploaded at once."""
     from googleapiclient.http import MediaIoBaseUpload
 
     svc = _service()
-    folder = ensure_part_folder(item_id)
+    folder = ensure_part_folder(item_id, folder_url)
     parent = folder["id"]
     for seg in (s.strip() for s in (rel_dir or "").replace("\\", "/").split("/")):
         if seg and seg not in (".", ".."):
@@ -117,24 +162,30 @@ def upload_file_nested(item_id: str, rel_dir: str, filename: str, content: bytes
             "url": created.get("webViewLink") or _file_url(created["id"]), "folder_url": folder["url"]}
 
 
-def list_files(item_id: str) -> dict:
-    """List files in the part's folder (empty if the folder doesn't exist yet)."""
+def list_files(item_id: str, folder_url: str | None = None) -> dict:
+    """List files in the part's folder (empty if the folder doesn't exist yet).
+
+    Located by the stored folder id when available — so it survives re-codes — otherwise by a
+    name lookup on the current code."""
     svc = _service()
-    root = settings.drive_attachments_root_id
-    safe = item_id.replace("'", "")
-    q = f"name = '{safe}' and '{root}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    res = svc.files().list(q=q, fields="files(id, webViewLink)", **_SHARED).execute()
-    folders = res.get("files", [])
-    if not folders:
-        return {"folder_url": None, "files": []}
-    fid = folders[0]["id"]
+    folder = _get_folder(_folder_id_from_url(folder_url))
+    if folder is None:
+        root = settings.drive_attachments_root_id
+        safe = item_id.replace("'", "")
+        q = f"name = '{safe}' and '{root}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        res = svc.files().list(q=q, fields="files(id, webViewLink)", **_SHARED).execute()
+        folders = res.get("files", [])
+        if not folders:
+            return {"folder_url": None, "files": []}
+        folder = folders[0]
+    fid = folder["id"]
     files = svc.files().list(
         q=f"'{fid}' in parents and trashed = false",
         fields="files(id, name, webViewLink, mimeType, modifiedTime, size)",
         orderBy="modifiedTime desc", **_SHARED,
     ).execute().get("files", [])
     return {
-        "folder_url": folders[0].get("webViewLink") or _folder_url(fid),
+        "folder_url": folder.get("webViewLink") or _folder_url(fid),
         "files": [{"id": f["id"], "name": f["name"], "url": f.get("webViewLink"),
                    "mime": f.get("mimeType"), "modified": f.get("modifiedTime")} for f in files],
     }

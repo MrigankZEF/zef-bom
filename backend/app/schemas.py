@@ -106,6 +106,7 @@ class NewItemIn(BaseModel):
     item_name: str
     item_type: str = "part"  # part | assembly
     module: str = "UN"  # UN (universal, stays UN) or a system code like AEC / DAC / MDAC
+    allow_duplicate: bool = False  # true → add even though a part with this name already exists
 
 
 class FieldValueIn(BaseModel):
