@@ -102,6 +102,17 @@ class AddChildIn(BaseModel):
     quantity: float = 1
 
 
+class CreateBomIn(BaseModel):
+    item_name: str
+    module: str  # the system this BOM belongs to (AEC, DAC, MDAC, …) — not a universal
+
+
+class MoveLinkIn(BaseModel):
+    from_parent: str          # the assembly the part is currently under
+    to_parent: str            # the assembly to move it to (must be in the same BOM)
+    quantity: float | None = None  # keep the existing quantity unless overridden
+
+
 class NewItemIn(BaseModel):
     item_name: str
     item_type: str = "part"  # part | assembly

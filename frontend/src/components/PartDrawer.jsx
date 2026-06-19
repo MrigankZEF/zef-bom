@@ -275,9 +275,10 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
                 setError={setError}
               />
             ) : (
-              <button className="btn ghost sm" onClick={() => setAddingChild(true)} style={{ alignSelf: "flex-start" }}>+ Add child from catalog</button>
+              <button className="btn ghost sm" onClick={() => setAddingChild(true)} style={{ alignSelf: "flex-start" }}>+ Add child</button>
             ))}
-            <WhereUsed parents={parents} onOpenPart={onOpenPart} />
+            <WhereUsed itemId={itemId} parents={parents} onOpenPart={onOpenPart}
+              onMoved={(r) => { onChanged?.(); onOpenPart(r.child_id); }} setError={setError} />
           </div>
         )}
 
@@ -417,61 +418,162 @@ function Readout({ label, value, sub }) {
 }
 
 function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
+  const [mode, setMode] = useState("catalog");   // catalog | new
   const [cat, setCat] = useState(null);
+  const [refMods, setRefMods] = useState([]);
   const [q, setQ] = useState("");
   const [qty, setQty] = useState(1);
   const [busy, setBusy] = useState(false);
+  // new-item fields
+  const [nm, setNm] = useState("");
+  const [ntype, setNtype] = useState("part");
+  const [nmod, setNmod] = useState("UN");
   useEffect(() => { api.catalog().then(setCat).catch((e) => setError(e.message)); }, []);
+  useEffect(() => { api.reference("module").then((r) => setRefMods(r.map((x) => String(x.value).toUpperCase()))).catch(() => {}); }, []);
+
   const s = q.trim().toLowerCase();
   const results = !s ? [] : (cat || [])
     .filter((r) => r.item_id !== parentId && (r.item_id.toLowerCase().includes(s) || (r.item_name || "").toLowerCase().includes(s)))
     .slice(0, 40);
-  const add = async (childId) => {
+  const modOptions = [...new Set(["UN", "UNP", ...((cat || []).map((r) => r.module_code).filter(Boolean)), ...refMods])].sort(
+    (a, b) => (a === "UN" ? -1 : b === "UN" ? 1 : a.localeCompare(b)));
+
+  const addExisting = async (childId) => {
     setBusy(true);
     try { const r = await api.addChild(parentId, { child_id: childId, quantity: Number(qty) || 1 }); onAdded(r); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
+
+  const createAndAdd = async (force = false) => {
+    if (!nm.trim()) { setError("Give the new item a name."); return; }
+    setBusy(true); setError(null);
+    try {
+      const created = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype, module: nmod, allow_duplicate: force });
+      const r = await api.addChild(parentId, { child_id: created.item_id, quantity: Number(qty) || 1 });
+      onAdded(r);
+    } catch (e) {
+      // Same duplicate-name guard as the catalog: confirm to add a genuinely separate part.
+      if (!force && /\b409\b/.test(e.message) && /allow_duplicate/.test(e.message)) {
+        const codes = (e.message.match(/\(([^)]+)\)/) || [])[1];
+        setBusy(false);
+        if (window.confirm(`A part named “${nm.trim()}” already exists${codes ? ` (${codes})` : ""}.\n\nCreate a separate new part anyway?`)) return createAndAdd(true);
+        return;
+      }
+      setError(e.message);
+    } finally { setBusy(false); }
+  };
+
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-        <span className="card-title" style={{ flex: 1 }}>Add child from catalog</span>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+        <span className="card-title" style={{ flex: 1 }}>Add child</span>
+        <div style={{ display: "inline-flex", gap: 4 }}>
+          {[["catalog", "From catalog"], ["new", "Create new"]].map(([v, label]) => (
+            <button key={v} className={`btn sm ${mode === v ? "" : "ghost"}`} onClick={() => setMode(v)}>{label}</button>
+          ))}
+        </div>
         <button className="btn ghost sm" onClick={onCancel}>cancel</button>
       </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <input className="input" placeholder="Search catalog by code or name…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus style={{ flex: 1 }} />
-        <input className="input mono" type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: 64 }} title="quantity" />
-      </div>
-      <div style={{ maxHeight: 240, overflowY: "auto" }}>
-        {!cat && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>Loading catalog…</div>}
-        {cat && !s && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>Type to search the {cat.length} catalog items…</div>}
-        {results.map((r) => (
-          <div key={r.item_id} style={{ display: "grid", gridTemplateColumns: "100px 1fr 50px", gap: 8, padding: "6px 4px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
-            <span className="mono" style={{ fontSize: 12 }}>{r.item_id}</span>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.item_name}</span>
-            <button className="btn sm" onClick={() => add(r.item_id)} disabled={busy}>add</button>
+
+      {mode === "catalog" ? (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <input className="input" placeholder="Search catalog by code or name…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus style={{ flex: 1 }} />
+            <input className="input mono" type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: 64 }} title="quantity" />
           </div>
-        ))}
-        {cat && s && results.length === 0 && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>No matches.</div>}
-      </div>
-      <p style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>
-        Adding makes this an assembly; the part's code may change to match its usage (system code, or UN if used across systems).
+          <div style={{ maxHeight: 240, overflowY: "auto" }}>
+            {!cat && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>Loading catalog…</div>}
+            {cat && !s && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>Type to search the {cat.length} catalog items…</div>}
+            {results.map((r) => (
+              <div key={r.item_id} style={{ display: "grid", gridTemplateColumns: "100px 1fr 50px", gap: 8, padding: "6px 4px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+                <span className="mono" style={{ fontSize: 12 }}>{r.item_id}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.item_name}</span>
+                <button className="btn sm" onClick={() => addExisting(r.item_id)} disabled={busy}>add</button>
+              </div>
+            ))}
+            {cat && s && results.length === 0 && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>No matches — switch to <strong>Create new</strong> to add it.</div>}
+          </div>
+        </>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 110px 64px", gap: 8, alignItems: "end" }}>
+          <Field label="Name"><input className="input" value={nm} autoFocus placeholder="e.g. Bracket" onChange={(e) => setNm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createAndAdd()} /></Field>
+          <Field label="Type"><select className="select" value={ntype} onChange={(e) => setNtype(e.target.value)}><option value="part">part</option><option value="assembly">assembly</option></select></Field>
+          <Field label="Module"><select className="select" value={nmod} onChange={(e) => setNmod(e.target.value)}>{modOptions.map((m) => <option key={m} value={m}>{m}</option>)}</select></Field>
+          <Field label="Qty"><input className="input mono" type="number" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
+          <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end" }}>
+            <button className="btn sm" onClick={() => createAndAdd()} disabled={busy}><Icon name="check" size={12} /> {busy ? "Adding…" : "Create & add"}</button>
+          </div>
+        </div>
+      )}
+      <p style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8 }}>
+        Adding makes this an assembly; the child's code may change to match its usage (system code, or UN if used across systems).
       </p>
     </div>
   );
 }
 
-function WhereUsed({ parents, onOpenPart }) {
+function WhereUsed({ itemId, parents, onOpenPart, onMoved, setError }) {
+  const [moveFrom, setMoveFrom] = useState(null);  // parent id whose move-picker is open
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div className="card-head" style={{ padding: "14px 18px 10px" }}><span className="card-title">Where used · {parents.length}</span></div>
       {parents.length === 0 ? (
         <div style={{ padding: 18, color: "var(--ink-3)", fontSize: 13 }}>Top-level — not used inside another assembly.</div>
       ) : parents.map((p) => (
-        <div key={p.parent} onClick={() => onOpenPart(p.parent)} style={{ display: "grid", gridTemplateColumns: "90px 1fr 60px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", cursor: "pointer", fontSize: 13 }}>
-          <span className="mono" style={{ fontSize: 12 }}>{p.parent}</span><span>{p.name}</span>
-          <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {p.quantity}</span>
+        <div key={p.parent} style={{ borderTop: "1px solid var(--hair-faint)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "90px 1fr 54px 64px", gap: 10, padding: "8px 18px", alignItems: "center", fontSize: 13 }}>
+            <span className="mono" style={{ fontSize: 12, cursor: "pointer" }} onClick={() => onOpenPart(p.parent)}>{p.parent}</span>
+            <span style={{ cursor: "pointer" }} onClick={() => onOpenPart(p.parent)}>{p.name}</span>
+            <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {p.quantity}</span>
+            <button className="btn ghost sm" title="Move to another assembly in this BOM"
+              onClick={() => setMoveFrom(moveFrom === p.parent ? null : p.parent)}>Move</button>
+          </div>
+          {moveFrom === p.parent && (
+            <MovePicker itemId={itemId} fromParent={p.parent}
+              onCancel={() => setMoveFrom(null)}
+              onMoved={(r) => { setMoveFrom(null); onMoved(r); }} setError={setError} />
+          )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// Pick a new assembly to move THIS placement under. Searches the catalog for assemblies; the
+// backend enforces same-BOM (a cross-BOM target returns a clear "add it there instead" message).
+function MovePicker({ itemId, fromParent, onCancel, onMoved, setError }) {
+  const [cat, setCat] = useState(null);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.catalog().then(setCat).catch((e) => setError(e.message)); }, []);
+  const s = q.trim().toLowerCase();
+  const results = !s ? [] : (cat || [])
+    .filter((r) => r.item_type === "assembly" && r.item_id !== itemId && r.item_id !== fromParent
+      && (r.item_id.toLowerCase().includes(s) || (r.item_name || "").toLowerCase().includes(s)))
+    .slice(0, 30);
+  const move = async (toParent) => {
+    setBusy(true); setError(null);
+    try { const r = await api.moveItem(itemId, { from_parent: fromParent, to_parent: toParent }); onMoved(r); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ padding: "4px 18px 14px", background: "var(--bg-sunk, rgba(0,0,0,0.02))" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Move from <span className="mono">{fromParent}</span> to:</span>
+        <input className="input" placeholder="search an assembly in this BOM…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus style={{ flex: 1 }} />
+        <button className="btn ghost sm" onClick={onCancel}>cancel</button>
+      </div>
+      <div style={{ maxHeight: 200, overflowY: "auto" }}>
+        {cat && !s && <div style={{ padding: 6, color: "var(--ink-3)", fontSize: 12 }}>Type to find the target assembly…</div>}
+        {results.map((r) => (
+          <div key={r.item_id} style={{ display: "grid", gridTemplateColumns: "100px 1fr 56px", gap: 8, padding: "5px 4px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+            <span className="mono" style={{ fontSize: 12 }}>{r.item_id}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.item_name}</span>
+            <button className="btn sm" onClick={() => move(r.item_id)} disabled={busy}>move</button>
+          </div>
+        ))}
+        {cat && s && results.length === 0 && <div style={{ padding: 6, color: "var(--ink-3)", fontSize: 12 }}>No assembly matches.</div>}
+      </div>
     </div>
   );
 }

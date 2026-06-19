@@ -55,7 +55,7 @@ def create_catalog_item(body: NewItemIn, db: Session = Depends(get_db), user: st
     UN (default) = a universal part: it keeps the UN code wherever it's used. A specific
     system code (AEC / DAC / MDAC / …) follows usage — it stays that code while used in only
     that system, and becomes UN if it ends up shared across two or more systems."""
-    from ..operations import allocate_code
+    from ..operations import allocate_code, clear_item_refs
     from ..bom_ingest.miro_csv_fix import normalize_item_name
 
     name = (body.item_name or "").strip()
@@ -86,6 +86,7 @@ def create_catalog_item(body: NewItemIn, db: Session = Depends(get_db), user: st
 
     suffix = "A" if body.item_type == "assembly" else "P"
     code = allocate_code(db, module, suffix)
+    clear_item_refs(db, code)  # a fresh code must not inherit stale cost/link rows
     db.add(Item(
         item_id=code, item_name=name, item_type=body.item_type, module_code=module,
         is_top_level=False, created_by=user, updated_by=user,

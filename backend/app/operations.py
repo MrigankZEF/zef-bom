@@ -7,12 +7,28 @@ the old id, so nothing breaks.
 """
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from .bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
 from .history import record_change
 from .models import AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item
+
+
+def clear_item_refs(db: Session, item_id: str) -> None:
+    """Delete any cost / labour / evidence / field-value / link rows referencing `item_id`.
+
+    Called right before an item is (re)created at a code, so a *freshly allocated* code can
+    never inherit 'orphan' data left at that code by an earlier deletion. On Postgres the FK
+    constraints already prevent such orphans; on local SQLite (FK enforcement off) they can
+    accumulate, so this makes both behave the same. Safe because the caller has just confirmed
+    no live item owns this id."""
+    db.execute(delete(DecidedCost).where(DecidedCost.item_id == item_id))
+    db.execute(delete(CostEvidence).where(CostEvidence.item_id == item_id))
+    db.execute(delete(AssemblyLabor).where(AssemblyLabor.item_id == item_id))
+    db.execute(delete(FieldValue).where(FieldValue.item_id == item_id))
+    db.execute(delete(BomLink).where(
+        (BomLink.parent_item_id == item_id) | (BomLink.child_item_id == item_id)))
 
 UNIVERSAL = "UN"            # the module a shared (multi-system) part collapses to
 UNIVERSALS = {"UN", "UNP"}  # "universal" modules — pinned; never auto-re-coded to a system
@@ -42,6 +58,10 @@ def rename_item(
 
     if db.get(Item, new_id) is not None:
         raise ValueError(f"{new_id} already exists — cannot rename {old_id}")
+
+    # new_id has no live item, but could carry orphan cost/link rows on a messy DB — clear them
+    # so repointing old_id's data in can't collide and the re-coded item starts clean.
+    clear_item_refs(db, new_id)
 
     # 1) clone the row under the new id (copy every column), then flush so FKs resolve
     data = {c.name: getattr(old, c.name) for c in Item.__table__.columns}
@@ -237,6 +257,30 @@ def containing_root_modules(db: Session, item_id: str) -> set[str]:
             mods.add(it.module_code)
         stack.extend(parents.get(cur, []))
     return mods
+
+
+def containing_roots(db: Session, item_id: str) -> set[str]:
+    """The top-level-BOM root *ids* an item sits under (itself, if it is a root). Walks up the
+    bom_links. Used to tell whether two items belong to the same BOM."""
+    items = {it.item_id: it for it in db.execute(select(Item).where(Item.archived.is_(False))).scalars()}
+    parents: dict[str, list[str]] = {}
+    for bl in db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars():
+        parents.setdefault(bl.child_item_id, []).append(bl.parent_item_id)
+    roots: set[str] = set()
+    seen: set[str] = set()
+    stack = [item_id]
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        it = items.get(cur)
+        if it is None:
+            continue
+        if it.is_top_level:
+            roots.add(cur)
+        stack.extend(parents.get(cur, []))
+    return roots
 
 
 def would_cycle(db: Session, parent_id: str, child_id: str) -> bool:

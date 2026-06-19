@@ -146,8 +146,9 @@ Two passes, in order:
 - **Roots** (top-level BOMs) and **catalog-only** items (not used in any BOM) are never
   re-coded.
 
-**When the engine runs:** after approving an upload, adding a child, attaching a sub-BOM,
-and archiving / restoring / purging an item or link.
+**When the engine runs:** after approving an upload, adding a child, **moving a placement to
+another assembly**, attaching a sub-BOM, and archiving / restoring / purging an item or link.
+(Creating a new top-level BOM root just makes the root; the engine kicks in once you add to it.)
 
 ## 7. Name text normalization (applied to every name)
 Collapses extra spaces, applies smart Title Case, and fixes known tokens — e.g.
@@ -162,6 +163,10 @@ Collapses extra spaces, applies smart Title Case, and fixes known tokens — e.g
   id** (carried on the item), not by a folder named after the code, so re-coding an item keeps
   it pointed at the same attachments. The folder's name is re-synced to the new code the next
   time attachments are opened or uploaded.
+- **Fresh codes start clean** — when a new part/assembly is created at a code (manually, via a
+  new BOM, or on import), any stale cost / labour / link rows left at that code are cleared
+  first, so a re-used number can never inherit another part's old cost. (Postgres enforces this
+  with foreign keys; the app does it too so local SQLite behaves the same.)
 - **No loops** — a link that would make an item contain itself (directly or indirectly) is
   rejected.
 - **Archived items** are ignored for "has children", usage, and the tree.

@@ -226,6 +226,57 @@ def test_reimport_is_idempotent():
     assert n1 == n2 and all(v == 0 for v in r2.values()), f"re-import should be a no-op, got {r2}"
 
 
+def test_fresh_code_does_not_inherit_orphan_cost():
+    # A decided cost left orphaned at a code (no item) must NOT attach to a new item that later
+    # gets allocated that code. (Caused phantom 10k costs on new parts in the local SQLite DB.)
+    from app.schemas import NewItemIn
+    from app.routers.catalog import create_catalog_item
+    db = _db()
+    db.add(DecidedCost(item_id="UN001P", volume_tier=10000, unit_cost_eur=99.0)); db.commit()
+    r = create_catalog_item(NewItemIn(item_name="Brand New Thing", module="UN"), db=db, user="t")
+    assert r["item_id"] == "UN001P"
+    assert not db.execute(select(DecidedCost).where(DecidedCost.item_id == "UN001P")).scalars().all()
+
+
+def test_cleanup_orphans_keeps_valid():
+    from app.routers.admin import cleanup_orphans
+    db = _db()
+    db.add(Item(item_id="AEC100A", item_name="R", item_type="assembly", module_code="AEC")); db.commit()
+    db.add(DecidedCost(item_id="GHOST9P", volume_tier=10000, unit_cost_eur=1))   # orphan
+    db.add(DecidedCost(item_id="AEC100A", volume_tier=100, unit_cost_eur=2))     # valid
+    db.add(BomLink(parent_item_id="AEC100A", child_item_id="NOPE9P", quantity=1)); db.commit()  # orphan link
+    res = cleanup_orphans(db=db, user="t", _="admin")
+    assert res["removed"]["decided_costs"] == 1 and res["removed"]["bom_links"] == 1
+    assert db.execute(select(DecidedCost).where(DecidedCost.item_id == "AEC100A")).scalars().all()
+
+
+def test_move_create_bom():
+    from app.schemas import CreateBomIn, MoveLinkIn
+    from app.routers.edit import create_bom, move_item
+    from fastapi import HTTPException
+    db = _db()
+    root = create_bom(CreateBomIn(item_name="Plant", module="AEC"), db=db, user="t")["item_id"]
+    assert root.startswith("AEC") and root.endswith("A") and db.get(Item, root).is_top_level
+    db.add(Item(item_id="AEC101A", item_name="SubA", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC102A", item_name="SubB", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC050P", item_name="Widget", item_type="part", module_code="AEC")); db.commit()
+    db.add(BomLink(parent_item_id=root, child_item_id="AEC101A", quantity=1))
+    db.add(BomLink(parent_item_id=root, child_item_id="AEC102A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC101A", child_item_id="AEC050P", quantity=2)); db.commit()
+    res = move_item("AEC050P", MoveLinkIn(from_parent="AEC101A", to_parent="AEC102A"), db=db, user="t")
+    active = [l.parent_item_id for l in db.execute(select(BomLink)).scalars() if l.child_item_id == "AEC050P" and not l.archived]
+    assert active == ["AEC102A"] and res["quantity"] == 2 and res["from_parent"] == "AEC101P"
+    # cross-BOM is refused
+    dr = create_bom(CreateBomIn(item_name="D", module="DAC"), db=db, user="t")["item_id"]
+    db.add(Item(item_id="DAC900A", item_name="DSub", item_type="assembly", module_code="DAC")); db.commit()
+    db.add(BomLink(parent_item_id=dr, child_item_id="DAC900A", quantity=1)); db.commit()
+    try:
+        move_item("AEC050P", MoveLinkIn(from_parent="AEC102A", to_parent="DAC900A"), db=db, user="t")
+        assert False, "cross-BOM move should be refused"
+    except HTTPException as e:
+        assert e.status_code == 409
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed, failed = 0, 0

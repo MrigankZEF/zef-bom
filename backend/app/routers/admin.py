@@ -189,6 +189,30 @@ def purge_link(parent_id: str, child_id: str, db: Session = Depends(get_db), use
     return {"parent": parent_id, "child": child_id, "deleted": True}
 
 
+@router.post("/admin/cleanup-orphans")
+def cleanup_orphans(db: Session = Depends(get_db), user: str = Depends(current_user),
+                    _: str = Depends(require_admin)) -> dict:
+    """Delete dangling rows that reference an item id which no longer exists — cost / labour /
+    evidence / field-value rows, and bom_links whose parent or child is gone. These 'orphans'
+    can only accumulate on a DB without enforced foreign keys (local SQLite); on Postgres the
+    constraints already prevent them. Harmless to run anytime; reports what it removed."""
+    item_ids = {r for (r,) in db.execute(select(Item.item_id))}
+    removed: dict[str, int] = {}
+    for label, model in (("decided_costs", DecidedCost), ("cost_evidence", CostEvidence),
+                          ("assembly_labor", AssemblyLabor), ("field_values", FieldValue)):
+        ids = [r for (r,) in db.execute(select(model.item_id).distinct()) if r not in item_ids]
+        if ids:
+            db.execute(delete(model).where(model.item_id.in_(ids)))
+        removed[label] = len(ids)
+    bad_links = [bl.id for bl in db.execute(select(BomLink)).scalars()
+                 if bl.parent_item_id not in item_ids or bl.child_item_id not in item_ids]
+    if bad_links:
+        db.execute(delete(BomLink).where(BomLink.id.in_(bad_links)))
+    removed["bom_links"] = len(bad_links)
+    db.commit()
+    return {"cleaned": True, "removed": removed}
+
+
 # ── archive listing ──────────────────────────────────────────────────────────
 @router.get("/archive")
 def list_archive(db: Session = Depends(get_db)) -> dict:

@@ -62,9 +62,11 @@ def apply_cells(
         if cell.resolved_item_number and cell.resolved_item_name:
             unique.setdefault(cell.resolved_item_number, cell)
 
+    from ..operations import clear_item_refs
     for number, cell in unique.items():
         if db.get(Item, number) is not None:
             continue
+        clear_item_refs(db, number)  # a fresh code must not inherit stale cost/link rows
         item = Item(
             item_id=number,
             item_name=cell.resolved_item_name,

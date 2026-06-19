@@ -12,9 +12,10 @@ export default function Tree({ onOpenPart, focus, version }) {
   const [moduleF, setModuleF] = useState("all");
   const [coverageF, setCoverageF] = useState("all");
   const [tier, setTier] = useState(100);
+  const [newBom, setNewBom] = useState(false);
   const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
-  useEffect(() => {
+  const loadTree = () =>
     api
       .tree(null, tier)
       .then((data) => {
@@ -22,7 +23,7 @@ export default function Tree({ onOpenPart, focus, version }) {
         setExpanded((prev) => (prev.size ? prev : new Set(data[0] ? [data[0].item_id] : [])));
       })
       .catch((e) => setError(e.message));
-  }, [version, tier]);
+  useEffect(() => { loadTree(); /* eslint-disable-next-line */ }, [version, tier]);
 
   const modules = useMemo(() => {
     const set = new Set();
@@ -108,8 +109,18 @@ export default function Tree({ onOpenPart, focus, version }) {
           </span>
           <button className="btn ghost sm" onClick={expandAll}><Icon name="chevD" size={12} /> Expand all</button>
           <button className="btn ghost sm" onClick={collapseAll}><Icon name="chevR" size={12} /> Collapse all</button>
+          <button className="btn sm" onClick={() => setNewBom((v) => !v)}><Icon name="box" size={12} /> New BOM</button>
         </div>
       </div>
+
+      {newBom && (
+        <NewBomPanel
+          systems={modules}
+          onCancel={() => setNewBom(false)}
+          onCreated={(root) => { setNewBom(false); loadTree().then(() => onOpenPart(root.item_id)); }}
+          setError={setError}
+        />
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 12, marginBottom: 16, alignItems: "center" }}>
         <div className="search">
@@ -192,6 +203,47 @@ export default function Tree({ onOpenPart, focus, version }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Create a brand-new top-level BOM (no Miro import): a name + the system it belongs to.
+// The root is an assembly; children are added afterwards from the part drawer.
+function NewBomPanel({ systems, onCancel, onCreated, setError }) {
+  const [name, setName] = useState("");
+  const [mod, setMod] = useState("");
+  const [refMods, setRefMods] = useState([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.reference("module").then((r) => setRefMods(r.map((x) => String(x.value).toUpperCase()))).catch(() => {}); }, []);
+  const options = [...new Set([...(systems || []), ...refMods])]
+    .filter((m) => m && m !== "UN" && m !== "UNP").sort();
+
+  const create = async () => {
+    const system = mod.trim().toUpperCase();
+    if (!name.trim() || !system) { setError("Give the BOM a name and a system (e.g. AEC)."); return; }
+    setBusy(true); setError(null);
+    try { const r = await api.createBom({ item_name: name.trim(), module: system }); onCreated(r); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16, padding: 14, display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap", borderColor: "var(--accent)" }}>
+      <div style={{ flex: 1, minWidth: 220 }}>
+        <span className="input-label">New BOM name</span>
+        <input className="input" value={name} autoFocus placeholder="e.g. DAC 18 — Standalone"
+          onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} />
+      </div>
+      <div style={{ width: 160 }}>
+        <span className="input-label">System</span>
+        <input className="input mono" list="bom-systems" value={mod} placeholder="AEC"
+          onChange={(e) => setMod(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && create()} />
+        <datalist id="bom-systems">{options.map((m) => <option key={m} value={m} />)}</datalist>
+      </div>
+      <button className="btn" onClick={create} disabled={busy}><Icon name="check" size={12} /> {busy ? "Creating…" : "Create BOM"}</button>
+      <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+      <p style={{ width: "100%", margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-3)" }}>
+        Creates an empty top-level assembly in this system. Add parts &amp; sub-assemblies from the item drawer; all the naming rules apply automatically.
+      </p>
     </div>
   );
 }

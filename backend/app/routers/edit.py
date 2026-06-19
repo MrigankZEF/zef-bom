@@ -26,11 +26,13 @@ from ..schemas import (
     ChangeHistoryOut,
     CostEvidenceIn,
     CostEvidenceOut,
+    CreateBomIn,
     DecidedCostIn,
     DecidedCostOut,
     FieldValueIn,
     ItemOut,
     ItemPatch,
+    MoveLinkIn,
 )
 
 router = APIRouter(tags=["edit"])
@@ -144,6 +146,100 @@ def add_child(
         "parent_id": resolve_rename(changes, parent_id),
         "child_id": resolve_rename(changes, body.child_id),
         "quantity": body.quantity,
+    }
+
+
+@router.post("/bom")
+def create_bom(body: CreateBomIn, db: Session = Depends(get_db), user: str = Depends(current_user)) -> dict:
+    """Start a new top-level BOM from scratch (no Miro import): a fresh assembly root in the
+    chosen system. Children are then added with the normal add-child flow, so all the naming
+    rules apply. A BOM root is a *system*, so a universal (UN/UNP) isn't allowed here."""
+    import re
+    from ..operations import allocate_code, clear_item_refs
+
+    name = (body.item_name or "").strip()
+    if not name:
+        raise HTTPException(400, "Name is required")
+    module = (body.module or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{2,5}", module):
+        raise HTTPException(400, f"Invalid system code '{module}' — use 2–5 letters (e.g. AEC, DAC, MDAC).")
+    if module in ("UN", "UNP"):
+        raise HTTPException(400, "A BOM root must be a system (e.g. AEC, DAC), not a universal (UN/UNP).")
+
+    code = allocate_code(db, module, "A")  # a BOM root is an assembly
+    clear_item_refs(db, code)  # a fresh code must not inherit stale cost/link rows
+    db.add(Item(
+        item_id=code, item_name=name, item_type="assembly", module_code=module,
+        is_top_level=True, created_by=user, updated_by=user,
+    ))
+    record_change(db, entity_type="item", entity_id=code, change_type="create",
+                  new_value=name, changed_by=user, change_reason=f"new top-level BOM ({module})")
+    db.commit()
+    return {"item_id": code, "item_name": name, "item_type": "assembly", "module_code": module, "is_top_level": True}
+
+
+@router.post("/items/{child_id}/move")
+def move_item(
+    child_id: str, body: MoveLinkIn, db: Session = Depends(get_db), user: str = Depends(current_user)
+) -> dict:
+    """Move ONE placement of a part: detach it from `from_parent` and attach it under
+    `to_parent`, within the same BOM. Other usages of the part are untouched. Cycle-checked;
+    the naming engine then re-codes everything to its new usage."""
+    from ..operations import containing_roots, normalize_structure, resolve_rename, would_cycle
+
+    _get_item(db, child_id)
+    from_parent = (body.from_parent or "").strip()
+    to_parent = (body.to_parent or "").strip()
+    _get_item(db, from_parent)
+    _get_item(db, to_parent)
+    if to_parent == from_parent:
+        raise HTTPException(400, "Pick a different assembly to move it to.")
+    if to_parent == child_id:
+        raise HTTPException(409, "An item can't be moved into itself.")
+
+    # The live link we're moving must exist.
+    link = db.execute(
+        select(BomLink).where(BomLink.parent_item_id == from_parent,
+                              BomLink.child_item_id == child_id, BomLink.archived.is_(False))
+    ).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(404, f"{child_id} isn't currently under {from_parent}.")
+
+    # Same BOM only — a cross-BOM move is just an "add it there" (keeps this simple/safe).
+    if not (containing_roots(db, from_parent) & containing_roots(db, to_parent)):
+        raise HTTPException(409, f"{to_parent} is in a different BOM — add {child_id} there instead of moving it.")
+    if would_cycle(db, to_parent, child_id):
+        raise HTTPException(409, f"Can't move {child_id} under {to_parent} — it would create a loop.")
+
+    qty = body.quantity if body.quantity is not None else link.quantity
+
+    # Detach from the old parent (soft, recoverable), attach to the new one.
+    link.archived = True
+    record_change(db, entity_type="bom_link", entity_id=f"{from_parent}>{child_id}", change_type="remove",
+                  field_changed="archived", old_value=f"qty={link.quantity}", new_value=True,
+                  changed_by=user, change_reason=f"moved to {to_parent}")
+    existing = db.execute(
+        select(BomLink).where(BomLink.parent_item_id == to_parent, BomLink.child_item_id == child_id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.archived = False
+        existing.quantity = qty
+    else:
+        db.add(BomLink(parent_item_id=to_parent, child_item_id=child_id, quantity=qty))
+    record_change(db, entity_type="bom_link", entity_id=f"{to_parent}>{child_id}", change_type="create",
+                  new_value=f"qty={qty}", changed_by=user, change_reason=f"moved from {from_parent}")
+    db.flush()
+
+    # Types + codes follow the new structure: to_parent gains a child (→ assembly), from_parent
+    # may lose its last child (→ part), and the moved subtree re-codes to its new system/UN.
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    return {
+        "child_id": resolve_rename(changes, child_id),
+        "from_parent": resolve_rename(changes, from_parent),
+        "to_parent": resolve_rename(changes, to_parent),
+        "quantity": qty,
+        "recodes": changes,
     }
 
 

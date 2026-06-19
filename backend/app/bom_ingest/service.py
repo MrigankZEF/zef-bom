@@ -682,9 +682,11 @@ def apply_incremental(
         if c.resolved_item_number and c.resolved_item_name:
             items.setdefault(c.resolved_item_number, c)
 
+    from ..operations import clear_item_refs
     for num, c in items.items():
         existing = db.get(Item, num)
         if existing is None:
+            clear_item_refs(db, num)  # a fresh code must not inherit stale cost/link rows
             db.add(Item(
                 item_id=num, item_name=c.resolved_item_name, item_type=_item_type_of(c),
                 module_code=_module_of(c), is_top_level=num in roots,
