@@ -13,6 +13,10 @@ export default function Tree({ onOpenPart, focus, version }) {
   const [coverageF, setCoverageF] = useState("all");
   const [tier, setTier] = useState(100);
   const [newBom, setNewBom] = useState(false);
+  const [drag, setDrag] = useState(null);      // { child, fromParent, root, key, name }
+  const [dropKey, setDropKey] = useState(null);
+  const [undo, setUndo] = useState(null);      // { child, from, to, name }
+  const [moving, setMoving] = useState(false);
   const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
   const loadTree = () =>
@@ -46,6 +50,41 @@ export default function Tree({ onOpenPart, focus, version }) {
     setExpanded(ids);
   };
   const collapseAll = () => setExpanded(new Set());
+
+  // ── drag & drop: move a placement to another assembly in the SAME BOM ──────
+  // A row's pathKey ("root/.../parent/child") gives us the part, its current parent and its BOM.
+  const rowInfo = (key, node) => {
+    const segs = String(key).split("/");
+    return { child: node.item_id, fromParent: segs[segs.length - 2] || null, root: segs[0], key, name: node.item_name };
+  };
+  const validTarget = (key, node) => {
+    if (!drag) return false;
+    if (node.item_type !== "assembly") return false;        // drop only onto assemblies
+    const segs = String(key).split("/");
+    if (segs[0] !== drag.root) return false;                // same BOM only
+    if (node.item_id === drag.child || node.item_id === drag.fromParent) return false;  // itself / already there
+    if (segs.includes(drag.child)) return false;            // can't drop into its own subtree (loop)
+    return true;
+  };
+  const doMove = async (toParent) => {
+    if (!drag) return;
+    const { child, fromParent } = drag;
+    const name = drag.name;
+    setMoving(true); setError(null);
+    try {
+      const r = await api.moveItem(child, { from_parent: fromParent, to_parent: toParent });
+      setExpanded((p) => new Set(p).add(toParent));         // reveal the result
+      await loadTree();
+      setUndo({ child: r.child_id, from: r.to_parent, to: r.from_parent, name });
+    } catch (e) { setError(e.message); }
+    finally { setMoving(false); setDrag(null); setDropKey(null); }
+  };
+  const doUndo = async () => {
+    if (!undo) return;
+    const u = undo; setUndo(null); setError(null);
+    try { await api.moveItem(u.child, { from_parent: u.from, to_parent: u.to }); await loadTree(); }
+    catch (e) { setError(e.message); }
+  };
 
   const matches = (n) => {
     if (moduleF !== "all" && n.module_code !== moduleF) return false;
@@ -93,7 +132,8 @@ export default function Tree({ onOpenPart, focus, version }) {
           <div className="page-eyebrow">Browse</div>
           <h1 className="page-title">BOM tree</h1>
           <p className="page-sub">
-            The microplant hierarchy. Expand assemblies, filter, and click any item to inspect.
+            The microplant hierarchy. Expand assemblies, <strong>drag a part onto another assembly</strong> to
+            move it (same BOM), and click any item to inspect.
           </p>
         </div>
         <div className="page-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -153,12 +193,30 @@ export default function Tree({ onOpenPart, focus, version }) {
         <div className="tree">
           {rows.map(({ n, depth, open, key }) => {
             const expandable = n.has_children && (n.children?.length ?? 0) > 0;  // false when a loop cut its children
+            const isDragging = drag?.key === key;
+            const isValid = validTarget(key, n);
+            const isDrop = dropKey === key && isValid;
             return (
             <div
               key={key}
               className={`tree-row ${focus === n.item_id ? "on" : ""}`}
-              style={{ "--indent": `${12 + depth * 22}px` }}
-              title={expandable ? "Click to expand · arrow opens details" : (n.has_children ? "In a loop — click to open details" : "Click to open details")}
+              style={{
+                "--indent": `${12 + depth * 22}px`,
+                cursor: depth > 0 ? "grab" : undefined,
+                opacity: isDragging ? 0.4 : 1,
+                ...(isDrop
+                  ? { background: "rgba(228,0,43,0.10)", outline: "2px solid var(--accent)", outlineOffset: "-2px" }
+                  : isValid ? { background: "rgba(228,0,43,0.035)" } : {}),
+              }}
+              draggable={depth > 0}
+              onDragStart={(e) => { setDrag(rowInfo(key, n)); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", n.item_id); }}
+              onDragEnd={() => { setDrag(null); setDropKey(null); }}
+              onDragOver={(e) => { if (isValid) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dropKey !== key) setDropKey(key); } }}
+              onDragLeave={() => setDropKey((d) => (d === key ? null : d))}
+              onDrop={(e) => { if (isValid) { e.preventDefault(); doMove(n.item_id); } }}
+              title={drag ? (isValid ? `Move ${drag.name} into ${n.item_name}` : "")
+                : expandable ? "Click to expand · drag to move · arrow opens details"
+                : (n.has_children ? "In a loop — click to open details" : "Drag to move · click to open details")}
               onClick={() => (expandable ? toggle(n.item_id) : onOpenPart(n.item_id))}
             >
               <div className="tree-name">
@@ -203,6 +261,20 @@ export default function Tree({ onOpenPart, focus, version }) {
           )}
         </div>
       </div>
+
+      {(undo || moving) && (
+        <div style={{ position: "sticky", bottom: 16, marginTop: 12, display: "flex", justifyContent: "center", pointerEvents: "none" }}>
+          <div style={{ display: "inline-flex", gap: 12, alignItems: "center", background: "var(--bg-raised)", border: "1px solid var(--hair-strong)", borderRadius: 8, padding: "8px 14px", boxShadow: "var(--shadow-2)", fontSize: 13, pointerEvents: "auto" }}>
+            {moving ? <span style={{ color: "var(--ink-3)" }}>Moving…</span> : (
+              <>
+                <span>Moved <strong>{undo.name}</strong> → <span className="mono">{undo.from}</span></span>
+                <button className="btn ghost sm" onClick={doUndo}>Undo</button>
+                <button className="btn ghost sm" title="dismiss" onClick={() => setUndo(null)}><Icon name="close" size={11} /></button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
