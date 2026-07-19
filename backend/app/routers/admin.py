@@ -276,15 +276,34 @@ CATALOG_REQUIRED_COLS = ("partnumber", "partname")
 
 
 def _read_catalog_sheet(raw: bytes):
-    """Open the uploaded workbook's 'Sheet1' as a DataFrame, or 400 with a clear reason."""
+    """Open the uploaded workbook's 'Sheet1' as a DataFrame, or 400 with a clear reason.
+    If the file is actually a full backup (multi-sheet, has an 'Items' sheet), point the user
+    to Restore instead of the catalog importer — a common mix-up that used to give a cryptic
+    'Sheet1 not found' error."""
     import io
 
+    import openpyxl
     import pandas as pd
 
     try:
+        names = openpyxl.load_workbook(io.BytesIO(raw), read_only=True).sheetnames
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Could not open the Excel file: {exc}") from exc
+    if "Sheet1" not in names:
+        if "Items" in names:
+            raise HTTPException(
+                400,
+                "This looks like a full database backup (it has an 'Items' sheet), not the "
+                "single-sheet 'Sheet1' inventory this importer expects. To load a backup — e.g. "
+                "one you edited to add weights — use the 'Restore from backup' section below, "
+                "not 'Wipe & import catalog'.",
+            )
+        raise HTTPException(
+            400, f"The Excel must have a sheet named 'Sheet1' (found: {', '.join(names) or 'none'}).")
+    try:
         return pd.read_excel(io.BytesIO(raw), "Sheet1")
     except Exception as exc:  # noqa: BLE001 — surface any openpyxl/pandas failure verbatim
-        raise HTTPException(400, f"Could not read the Excel (it must have a sheet named 'Sheet1'): {exc}") from exc
+        raise HTTPException(400, f"Could not read 'Sheet1': {exc}") from exc
 
 
 def _plan_catalog(df) -> dict:
@@ -504,8 +523,18 @@ async def restore_backup(
 
     # Snapshot the current data BEFORE replacing it, so this is reversible too.
     pre_backup = run_drive_backup(db, reason="prerestore")
+    # Never replace live data without a safety net actually saved. If Drive is configured (i.e.
+    # this is the real deployment) but the snapshot did NOT save, refuse — a successful restore
+    # of the wrong file is otherwise unrecoverable. Nothing has been touched at this point.
+    if drive.enabled() and not pre_backup.get("saved"):
+        raise HTTPException(
+            503,
+            "Stopped before restoring: couldn't save the automatic safety backup first, so "
+            "nothing was changed. Reason: "
+            f"{pre_backup.get('error') or pre_backup.get('reason')}. Please try again in a moment.",
+        )
     try:
         result = restore_from_workbook(db, sheets)
     except Exception as exc:  # noqa: BLE001 — restore rolled back; report clearly
         raise HTTPException(500, f"Restore failed and was rolled back — nothing changed: {exc}") from exc
-    return {**result, "backup": pre_backup}
+    return {**result, "backup": pre_backup, "safety_backup_saved": bool(pre_backup.get("saved"))}

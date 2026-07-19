@@ -48,8 +48,15 @@ SCHEDULED_RETENTION = 12  # keep the last N monthly snapshots
 
 
 def _backup_cell(v):
-    """Make any column value safe for an .xlsx cell: JSON for dict/list (JSON columns),
-    ISO strings for datetimes (avoids openpyxl's no-timezone error)."""
+    """Make any column value safe for an .xlsx cell — and safe to *round-trip through Excel*:
+    JSON text for dict/list (JSON columns), ISO strings for datetimes (avoids openpyxl's
+    no-timezone error), and TRUE/FALSE *text* for booleans. Booleans are written as text on
+    purpose: a real boolean cell gets rewritten by Excel as an `=TRUE()`/`=FALSE()` formula when
+    the file is edited and re-saved, which then reads back as blank — so a user who edits a
+    backup (e.g. to bulk-fill weights) and restores it would wipe every is_top_level/archived
+    flag. Text survives untouched. (Restore reads both forms — see `_coerce`.)"""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
     if isinstance(v, (dict, list)):
         return json.dumps(v, ensure_ascii=False)
     if isinstance(v, (_dt.datetime, _dt.date)):
@@ -191,9 +198,14 @@ def _coerce(value, column):
                 return value.date()
             return value
         if isinstance(t, Boolean):
-            if isinstance(value, str):
-                return value.strip().lower() in ("true", "1", "yes", "t")
-            return bool(value)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            # Text form — including Excel's `=TRUE()`/`=FALSE()` (booleans edited & re-saved in
+            # Excel come back as those formulas) and plain "TRUE"/"FALSE"/"1"/"0"/"yes".
+            s = str(value).strip().lower().replace("=", "").replace("()", "")
+            return s in ("true", "1", "1.0", "yes", "t", "y")
         if isinstance(t, Integer):
             return int(float(value))
         if isinstance(t, (Numeric, Float)):
@@ -204,13 +216,30 @@ def _coerce(value, column):
 
 
 def read_backup_workbook(raw: bytes) -> dict:
-    """Open every sheet of a backup .xlsx into {sheet_name: DataFrame}."""
+    """Open every sheet of a backup .xlsx into {sheet_name: DataFrame}.
+
+    Read with openpyxl (data_only=False) rather than pandas.read_excel: pandas reads formula
+    cells with data_only=True and hands back blanks, but a boolean edited & re-saved in Excel
+    becomes an `=TRUE()`/`=FALSE()` *formula*. Preserving the formula text lets `_coerce` recover
+    the real value instead of nulling every is_top_level/archived flag on restore."""
+    import openpyxl
     import pandas as pd
 
     try:
-        return pd.read_excel(io.BytesIO(raw), sheet_name=None)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=False, read_only=True)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Could not read the backup .xlsx: {exc}") from exc
+    sheets: dict = {}
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            sheets[ws.title] = pd.DataFrame()
+            continue
+        header = ["" if h is None else str(h) for h in rows[0]]
+        body = [r for r in rows[1:] if any(c is not None for c in r)]  # drop fully-blank rows
+        sheets[ws.title] = pd.DataFrame(body, columns=header)
+    wb.close()
+    return sheets
 
 
 def plan_restore(sheets: dict) -> dict:

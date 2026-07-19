@@ -277,6 +277,45 @@ def test_move_create_bom():
         assert e.status_code == 409
 
 
+def test_restore_survives_excel_boolean_formulas():
+    # A boolean edited & re-saved in Excel comes back as an =TRUE()/=FALSE() formula. Restore
+    # must still recover is_top_level/archived — otherwise every flag nulls out and the restore
+    # crashes on NOT NULL (the "colleague added weights in Excel, restore failed" bug).
+    import io
+    import openpyxl
+    from app.backup import build_backup_workbook, read_backup_workbook, restore_from_workbook
+    db = _db()
+    db.add(Item(item_id="AEC100A", item_name="Root", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC050P", item_name="Part", item_type="part", module_code="AEC", is_top_level=False))
+    db.commit()
+    raw = build_backup_workbook(db)
+    # booleans are now written as TRUE/FALSE text; simulate Excel turning them into formulas
+    wb = openpyxl.load_workbook(io.BytesIO(raw))
+    ws = wb["Items"]
+    col = [c.value for c in ws[1]].index("is_top_level") + 1
+    for r in range(2, ws.max_row + 1):
+        cur = str(ws.cell(row=r, column=col).value).strip().upper()
+        ws.cell(row=r, column=col).value = "=TRUE()" if cur in ("TRUE", "1") else "=FALSE()"
+    buf = io.BytesIO(); wb.save(buf)
+    db2 = _db()
+    restore_from_workbook(db2, read_backup_workbook(buf.getvalue()))
+    roots = sorted(i.item_id for i in db2.execute(select(Item)).scalars() if i.is_top_level)
+    assert roots == ["AEC100A"], f"top-level flag not recovered from Excel formulas: {roots}"
+
+
+def test_new_backup_writes_boolean_text():
+    # Backups store booleans as TRUE/FALSE text so they survive an Excel edit/re-save untouched.
+    import io
+    import openpyxl
+    from app.backup import build_backup_workbook
+    db = _db()
+    db.add(Item(item_id="AEC100A", item_name="Root", item_type="assembly", module_code="AEC", is_top_level=True)); db.commit()
+    wb = openpyxl.load_workbook(io.BytesIO(build_backup_workbook(db)))
+    ws = wb["Items"]
+    col = [c.value for c in ws[1]].index("is_top_level") + 1
+    assert str(ws.cell(row=2, column=col).value) in ("TRUE", "FALSE")
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed, failed = 0, 0
