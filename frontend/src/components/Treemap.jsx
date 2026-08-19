@@ -6,7 +6,7 @@ export const colorFor = (key) => {
   return PALETTE[h % PALETTE.length];
 };
 
-function squarify(items, x, y, w, h) {
+export function squarify(items, x, y, w, h) {
   const total = items.reduce((s, i) => s + i.value, 0) || 1;
   const scaled = items.map((i) => ({ ...i, area: (i.value / total) * (w * h) }));
   const out = [];

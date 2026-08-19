@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { fmtEURcompact, fmtPct, fmtWeight } from "./ui";
-import Treemap, { colorFor } from "./Treemap.jsx";
+import CostTreemap from "./CostTreemap.jsx";
 
 const TIERS = [1, 100, 10000];
 const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
@@ -11,7 +11,11 @@ export default function Costing({ onOpenPart }) {
   const [root, setRoot] = useState("");
   const [volume, setVolume] = useState(100);
   const [metric, setMetric] = useState("cost"); // cost | weight
+  const [colorMode, setColorMode] = useState("cost"); // cost (heat) | module
+  const [expanded, setExpanded] = useState(false);    // full-width treemap
+  const [scenario, setScenario] = useState("likely"); // min | likely | max (cost only)
   const [data, setData] = useState(null);
+  const [tree, setTree] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -23,8 +27,9 @@ export default function Costing({ onOpenPart }) {
 
   useEffect(() => {
     if (!root) return;
-    setData(null);
+    setData(null); setTree(null);
     api.costingBreakdown(root, volume).then(setData).catch((e) => setError(e.message));
+    api.tree(root, volume).then(setTree).catch((e) => setError(e.message));
   }, [root, volume]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
@@ -32,26 +37,6 @@ export default function Costing({ onOpenPart }) {
   if (roots.length === 0) return <div className="page"><p className="muted">No top-level BOMs yet — mark one via an upload, then come back.</p></div>;
 
   const fmt = metric === "cost" ? fmtEURcompact : fmtWeight;
-  const tmItems = [
-    ...(data?.parts || [])
-      .map((p) => ({ id: p.item_id, label: p.item_name, value: metric === "cost" ? p.cost : p.weight_grams, colorKey: p.module_code }))
-      .filter((i) => i.value > 0),
-    ...(metric === "cost"
-      ? (data?.assemblies || [])
-          .filter((a) => a.cost > 0)
-          .map((a) => ({ id: a.item_id, label: `${a.item_name} · assembly cost`, value: a.cost, color: "#1C1B1A", colorKey: "__asm__" }))
-      : []),
-  ];
-  const legend = (() => {
-    const seen = new Map();
-    (data?.parts || []).forEach((p) => {
-      const v = metric === "cost" ? p.cost : p.weight_grams;
-      if (p.module_code && v > 0 && !seen.has(p.module_code)) seen.set(p.module_code, colorFor(p.module_code));
-    });
-    const arr = [...seen.entries()].map(([label, color]) => ({ label, color }));
-    if (metric === "cost" && (data?.assemblies || []).some((a) => a.cost > 0)) arr.push({ label: "Assembly cost", color: "#1C1B1A" });
-    return arr;
-  })();
   const topPart = data?.parts?.[0];
   const sortedByWeight = [...(data?.parts || [])].sort((a, b) => b.weight_grams - a.weight_grams);
   const topWeight = sortedByWeight[0];
@@ -109,8 +94,8 @@ export default function Costing({ onOpenPart }) {
             </div>
           </div>
 
-          <div className="row-2" style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 16 }}>
-            <div className="card">
+          <div className="row-2" style={{ display: "grid", gridTemplateColumns: expanded ? "1fr" : "1fr 2.3fr", gap: 16 }}>
+            <div className="card" style={expanded ? { maxWidth: 520 } : undefined}>
               <div className="card-head"><span className="card-title">Cost vs volume</span><span className="card-meta">{data.root_name}</span></div>
               <VolumeChart tiers={data.tiers} selected={volume} />
               <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>Line = most-likely · shaded = min–max range.</div>
@@ -118,25 +103,45 @@ export default function Costing({ onOpenPart }) {
 
             <div className="card">
               <div className="card-head" style={{ alignItems: "center" }}>
-                <span className="card-title">Breakdown treemap</span>
-                <div className="segmented-mini">
-                  <button className={metric === "cost" ? "on" : ""} onClick={() => setMetric("cost")}>Cost</button>
-                  <button className={metric === "weight" ? "on" : ""} onClick={() => setMetric("weight")}>Weight</button>
+                <span className="card-title">Cost breakdown — drill down</span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div className="segmented-mini">
+                    <button className={metric === "cost" ? "on" : ""} onClick={() => setMetric("cost")}>Cost</button>
+                    <button className={metric === "weight" ? "on" : ""} onClick={() => setMetric("weight")}>Weight</button>
+                  </div>
+                  <div className="segmented-mini">
+                    <button className={colorMode === "cost" ? "on" : ""} onClick={() => setColorMode("cost")}>Heat</button>
+                    <button className={colorMode === "module" ? "on" : ""} onClick={() => setColorMode("module")}>Module</button>
+                  </div>
+                  {metric === "cost" && (
+                    <div className="segmented-mini" title="Which cost estimate sizes the tiles">
+                      {["min", "likely", "max"].map((s) => (
+                        <button key={s} className={scenario === s ? "on" : ""} onClick={() => setScenario(s)}>
+                          {s[0].toUpperCase() + s.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button className="btn ghost sm" onClick={() => setExpanded((v) => !v)}
+                    title={expanded ? "Back to side-by-side" : "Expand the treemap to full width"}>
+                    {expanded ? "⤡ Collapse" : "⤢ Expand"}
+                  </button>
                 </div>
               </div>
-              <Treemap items={tmItems} format={fmt} onSelect={onOpenPart} />
-              {legend.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 10 }}>
-                  {legend.map((l) => (
-                    <span key={l.label} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--ink-3)" }}>
-                      <span style={{ width: 11, height: 11, borderRadius: 2, background: l.color, display: "inline-block" }} /> {l.label}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--ink-3)" }}>
-                Each tile is a part (sized by {metric === "cost" ? "total cost" : "total weight"}), coloured by module{metric === "cost" ? "; the dark tile is assembly cost" : ""}. Click a part to open it.
-                {metric === "weight" && topWeight && topWeight.weight_grams > 0 && <> Heaviest: <strong>{topWeight.item_name}</strong> ({fmtWeight(topWeight.weight_grams)}).</>}
+              {tree
+                ? <CostTreemap node={tree} metric={metric} colorMode={colorMode} scenario={scenario} format={fmt} onOpenPart={onOpenPart} />
+                : <p className="muted" style={{ padding: 20 }}>Loading structure…</p>}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
+                {colorMode === "cost" && metric === "cost" && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ink-3)" }}>
+                    <span style={{ width: 70, height: 10, borderRadius: 2, background: "linear-gradient(90deg, rgb(239,227,214), rgb(184,0,31))", display: "inline-block" }} />
+                    cheaper → pricier
+                  </span>
+                )}
+                <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                  Tiles sized by rolled-up {metric === "cost" ? "cost" : "weight"}. Click an assembly (⤢) to drill in, a part to open it.
+                  {metric === "weight" && topWeight && topWeight.weight_grams > 0 && <> Heaviest: <strong>{topWeight.item_name}</strong> ({fmtWeight(topWeight.weight_grams)}).</>}
+                </span>
               </div>
             </div>
           </div>

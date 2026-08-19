@@ -218,6 +218,8 @@ class BomGraph:
             "quantity": qty,
             "has_children": bool(self.children.get(item_id)),
             "rollup_cost": round(r.cost, 2),
+            "rollup_cost_min": round(r.cost_min, 2),
+            "rollup_cost_max": round(r.cost_max, 2),
             "coverage": round(r.coverage, 4),
             "rollup_weight_grams": round(r.weight_grams, 2) if r.weight_grams is not None else None,
             "children": children,
