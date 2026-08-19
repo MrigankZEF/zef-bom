@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { fmtEURcompact, fmtPct, fmtWeight } from "./ui";
 import CostTreemap from "./CostTreemap.jsx";
@@ -14,9 +14,11 @@ export default function Costing({ onOpenPart }) {
   const [colorMode, setColorMode] = useState("cost"); // cost (heat) | module
   const [expanded, setExpanded] = useState(false);    // full-width treemap
   const [scenario, setScenario] = useState("likely"); // min | likely | max (cost only)
+  const [depth, setDepth] = useState(1);              // 1 = drill-down; >1 = nested overview
   const [data, setData] = useState(null);
   const [tree, setTree] = useState(null);
   const [error, setError] = useState(null);
+  const svgRef = useRef(null);
 
   useEffect(() => {
     api.listItems({ top_level_only: true }).then((rs) => {
@@ -37,6 +39,7 @@ export default function Costing({ onOpenPart }) {
   if (roots.length === 0) return <div className="page"><p className="muted">No top-level BOMs yet — mark one via an upload, then come back.</p></div>;
 
   const fmt = metric === "cost" ? fmtEURcompact : fmtWeight;
+  const exportPng = () => svgRef.current && exportSvgToPng(svgRef.current, `${(data?.root_name || root || "bom")}-cost-treemap.png`);
   const topPart = data?.parts?.[0];
   const sortedByWeight = [...(data?.parts || [])].sort((a, b) => b.weight_grams - a.weight_grams);
   const topWeight = sortedByWeight[0];
@@ -103,8 +106,8 @@ export default function Costing({ onOpenPart }) {
 
             <div className="card">
               <div className="card-head" style={{ alignItems: "center" }}>
-                <span className="card-title">Cost breakdown — drill down</span>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span className="card-title">Cost breakdown</span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
                   <div className="segmented-mini">
                     <button className={metric === "cost" ? "on" : ""} onClick={() => setMetric("cost")}>Cost</button>
                     <button className={metric === "weight" ? "on" : ""} onClick={() => setMetric("weight")}>Weight</button>
@@ -122,22 +125,27 @@ export default function Costing({ onOpenPart }) {
                       ))}
                     </div>
                   )}
+                  <select className="select" value={depth}
+                    style={{ height: 30, fontSize: 12, padding: "0 26px 0 9px",
+                      backgroundPosition: "calc(100% - 14px) 13px, calc(100% - 10px) 13px" }}
+                    onChange={(e) => setDepth(Number(e.target.value))} title="How many BOM levels to show at once">
+                    <option value={1}>Drill-down</option>
+                    <option value={2}>2 levels</option>
+                    <option value={3}>3 levels</option>
+                    <option value={9}>Overview</option>
+                  </select>
                   <button className="btn ghost sm" onClick={() => setExpanded((v) => !v)}
                     title={expanded ? "Back to side-by-side" : "Expand the treemap to full width"}>
                     {expanded ? "⤡ Collapse" : "⤢ Expand"}
                   </button>
+                  <button className="btn ghost sm" onClick={exportPng} title="Save the treemap as a PNG image">Save PNG</button>
                 </div>
               </div>
               {tree
-                ? <CostTreemap node={tree} metric={metric} colorMode={colorMode} scenario={scenario} format={fmt} onOpenPart={onOpenPart} />
+                ? <CostTreemap node={tree} metric={metric} colorMode={colorMode} scenario={scenario}
+                    depth={depth} svgRef={svgRef} format={fmt} onOpenPart={onOpenPart} />
                 : <p className="muted" style={{ padding: 20 }}>Loading structure…</p>}
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
-                {colorMode === "cost" && metric === "cost" && (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ink-3)" }}>
-                    <span style={{ width: 70, height: 10, borderRadius: 2, background: "linear-gradient(90deg, rgb(239,227,214), rgb(184,0,31))", display: "inline-block" }} />
-                    cheaper → pricier
-                  </span>
-                )}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
                   Tiles sized by rolled-up {metric === "cost" ? "cost" : "weight"}. Click an assembly (⤢) to drill in, a part to open it.
                   {metric === "weight" && topWeight && topWeight.weight_grams > 0 && <> Heaviest: <strong>{topWeight.item_name}</strong> ({fmtWeight(topWeight.weight_grams)}).</>}
@@ -185,4 +193,41 @@ function VolumeChart({ tiers, selected }) {
       ))}
     </svg>
   );
+}
+
+// Rasterise the treemap SVG to a PNG and download it (for decks/emails). CSS-var colours don't
+// exist in an isolated SVG, so they're swapped to white; concrete rgb/hex colours are kept.
+async function exportSvgToPng(svg, filename) {
+  try {
+    const vb = svg.viewBox?.baseVal;
+    const w = Math.round((vb && vb.width) || svg.clientWidth || 820);
+    const h = Math.round((vb && vb.height) || svg.clientHeight || 440);
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", w);
+    clone.setAttribute("height", h);
+    clone.style.fontFamily = "Inter, Arial, Helvetica, sans-serif";
+    clone.querySelectorAll("[stroke]").forEach((el) => { if ((el.getAttribute("stroke") || "").includes("var(")) el.setAttribute("stroke", "#ffffff"); });
+    clone.querySelectorAll("[fill]").forEach((el) => { if ((el.getAttribute("fill") || "").includes("var(")) el.setAttribute("fill", "#ffffff"); });
+    const str = new XMLSerializer().serializeToString(clone);
+    const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(str);
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error("render failed")); img.src = url; });
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = w * scale; canvas.height = h * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.drawImage(img, 0, 0, w, h);
+    canvas.toBlob((blob) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }, "image/png");
+  } catch (e) {
+    alert("Couldn't export the image: " + e.message);
+  }
 }
