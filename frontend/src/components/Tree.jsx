@@ -110,14 +110,24 @@ export default function Tree({ onOpenPart, focus, version }) {
     roots.forEach((r) => visit(r, []));
   }
 
+  // `anc[i]` = the ancestor occupying rail column i still has siblings below this row, so
+  // its guide line runs straight through. The last column is always the elbow into this
+  // row, shaped by `isLast`. Both are computed over the *visible* children, so the rails
+  // stay honest when a filter hides siblings.
   const rows = [];
-  const walk = (n, depth, pathKey) => {
-    if (filtering && !subtreeMatches(n)) return;
+  const walk = (n, depth, pathKey, anc, isLast) => {
     const open = expanded.has(n.item_id) || (filtering && forceOpen.has(n.item_id));
-    rows.push({ n, depth, open, key: pathKey });
-    if (open) n.children.forEach((c) => walk(c, depth + 1, `${pathKey}/${c.item_id}`));
+    rows.push({ n, depth, open, key: pathKey, anc, isLast });
+    if (!open) return;
+    const kids = filtering ? n.children.filter(subtreeMatches) : n.children;
+    // A root sits flush left with no rail column of its own, so its children start on a
+    // bare elbow rather than inheriting a line.
+    const childAnc = depth === 0 ? [] : [...anc, !isLast];
+    kids.forEach((c, i) =>
+      walk(c, depth + 1, `${pathKey}/${c.item_id}`, childAnc, i === kids.length - 1));
   };
-  (roots || []).forEach((r) => walk(r, 0, r.item_id));
+  const visibleRoots = filtering ? (roots || []).filter(subtreeMatches) : (roots || []);
+  visibleRoots.forEach((r, i) => walk(r, 0, r.item_id, [], i === visibleRoots.length - 1));
 
   const partCount = rows.filter((r) => r.n.item_type === "part").length;
   const asmCount = rows.filter((r) => r.n.item_type === "assembly").length;
@@ -191,7 +201,7 @@ export default function Tree({ onOpenPart, focus, version }) {
           <div></div>
         </div>
         <div className="tree">
-          {rows.map(({ n, depth, open, key }) => {
+          {rows.map(({ n, depth, open, key, anc, isLast }) => {
             const expandable = n.has_children && (n.children?.length ?? 0) > 0;  // false when a loop cut its children
             const isDragging = drag?.key === key;
             const isValid = validTarget(key, n);
@@ -202,6 +212,9 @@ export default function Tree({ onOpenPart, focus, version }) {
               className={`tree-row ${focus === n.item_id ? "on" : ""}`}
               style={{
                 "--indent": `${12 + depth * 22}px`,
+                // Only the custom property is set — never `background` itself — so the
+                // :hover and .on rules still win in the cascade.
+                "--tint": depth ? `rgba(28,27,26,${(Math.min(depth, 5) * 0.014).toFixed(3)})` : "transparent",
                 cursor: depth > 0 ? "grab" : undefined,
                 opacity: isDragging ? 0.4 : 1,
                 ...(isDrop
@@ -219,6 +232,15 @@ export default function Tree({ onOpenPart, focus, version }) {
                 : (n.has_children ? "In a loop — click to open details" : "Drag to move · click to open details")}
               onClick={() => (expandable ? toggle(n.item_id) : onOpenPart(n.item_id))}
             >
+              {depth > 0 && (
+                <span className="tree-rails" aria-hidden="true">
+                  {Array.from({ length: depth }, (_, i) => (
+                    <span key={i} className={i === depth - 1
+                      ? `tree-rail elbow${isLast ? " last" : ""}`
+                      : `tree-rail${anc[i] ? " line" : ""}`} />
+                  ))}
+                </span>
+              )}
               <div className="tree-name">
                 <button
                   className={`tree-toggle ${expandable ? "" : "is-leaf"}`}
@@ -314,7 +336,7 @@ function NewBomPanel({ systems, onCancel, onCreated, setError }) {
       <button className="btn" onClick={create} disabled={busy}><Icon name="check" size={12} /> {busy ? "Creating…" : "Create BOM"}</button>
       <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
       <p style={{ width: "100%", margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-3)" }}>
-        Creates an empty top-level assembly in this system. Add parts &amp; sub-assemblies from the item drawer; all the naming rules apply automatically.
+        Creates an empty top-level assembly in this system. Add components from the item drawer; all the naming rules apply automatically.
       </p>
     </div>
   );

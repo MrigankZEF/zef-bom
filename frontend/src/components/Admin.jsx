@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { Icon, ModulePill } from "./ui";
+import { Icon, ModulePill, NumInput, toNum } from "./ui";
 
 const CATEGORIES = [
   { key: "supplier", label: "Suppliers" },
@@ -105,7 +105,7 @@ function Reference() {
   const add = async () => {
     if (!val.trim()) return;
     const body = { category: cat, value: val.trim(), label: label.trim() || null };
-    if (cat === "assembly_cost_type") { if (rate === "") return; body.meta = { rate_eur_h: Number(rate) }; }
+    if (cat === "assembly_cost_type") { if (rate === "") return; body.meta = { rate_eur_h: toNum(rate) }; }
     try { await api.addReference(body); setVal(""); setLabel(""); setRate(""); load(); }
     catch (e) { setError(e.message); }
   };
@@ -121,7 +121,7 @@ function Reference() {
         <div style={{ display: "flex", gap: 8, padding: 14, borderBottom: "1px solid var(--hair)", alignItems: "end" }}>
           <div style={{ flex: 1 }}><span className="input-label">New {catLabel}</span><input className="input" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} /></div>
           {cat === "module" && <div style={{ flex: 1 }}><span className="input-label">Label (optional)</span><input className="input" value={label} onChange={(e) => setLabel(e.target.value)} /></div>}
-          {cat === "assembly_cost_type" && <div style={{ width: 110 }}><span className="input-label">Rate €/hour</span><input className="input mono" type="number" value={rate} onChange={(e) => setRate(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} /></div>}
+          {cat === "assembly_cost_type" && <div style={{ width: 110 }}><span className="input-label">Rate €/hour</span><NumInput value={rate} onChange={setRate} onKeyDown={(e) => e.key === "Enter" && add()} /></div>}
           <button className="btn" onClick={add}><Icon name="check" /> add</button>
         </div>
         {rows.map((r) => (

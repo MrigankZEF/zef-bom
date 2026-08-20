@@ -15,6 +15,33 @@ from sqlalchemy.orm import Session
 from .models import AssemblyLabor, BomLink, DecidedCost, Item, ReferenceValue
 
 
+def top_level_reachable(db: Session) -> set[str]:
+    """Every item reachable by walking down from a live top-level root.
+
+    "In the BOM tree" is stricter than "appears in some link": an orphaned sub-tree — links
+    left over after its root was archived — is NOT in the tree any more, even though its
+    rows still exist. Deliberately not built on `BomGraph`, which also loads all decided
+    costs; callers here only need structure.
+    """
+    live = {
+        it.item_id: it
+        for it in db.execute(select(Item).where(Item.archived.is_(False))).scalars()
+    }
+    kids: dict[str, list[str]] = {}
+    for bl in db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars():
+        kids.setdefault(bl.parent_item_id, []).append(bl.child_item_id)
+
+    seen: set[str] = set()
+    stack = [iid for iid, it in live.items() if it.is_top_level]
+    while stack:
+        cur = stack.pop()
+        if cur in seen or cur not in live:
+            continue
+        seen.add(cur)
+        stack.extend(kids.get(cur, []))
+    return seen
+
+
 @dataclass
 class Rollup:
     cost: float = 0.0         # most-likely: children parts + this assembly's process cost

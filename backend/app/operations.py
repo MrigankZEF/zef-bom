@@ -107,7 +107,7 @@ def promote_to_assembly(db: Session, item_id: str, *, user: str | None) -> str:
         target = item_id  # A-code already used → keep the id, just retype
     return rename_item(
         db, item_id, target, user=user,
-        reason="part → assembly (has children)", new_type="assembly",
+        reason="part → assembly (has components)", new_type="assembly",
     )
 
 
@@ -125,7 +125,7 @@ def demote_to_part(db: Session, item_id: str, *, user: str | None) -> str:
         target = item_id  # P-code taken → keep id, just retype
     return rename_item(
         db, item_id, target, user=user,
-        reason="assembly → part (no children)", new_type="part",
+        reason="assembly → part (no components)", new_type="part",
     )
 
 

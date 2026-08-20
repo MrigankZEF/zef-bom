@@ -104,6 +104,9 @@ export const api = {
     request(`/items/${encodeURIComponent(id)}/module`, { method: "POST", body: JSON.stringify({ module }) }),
   addChild: (parentId, body) =>
     request(`/items/${encodeURIComponent(parentId)}/children`, { method: "POST", body: JSON.stringify(body) }),
+  setChildQuantity: (parentId, childId, quantity) =>
+    request(`/items/${encodeURIComponent(parentId)}/children/${encodeURIComponent(childId)}`,
+      { method: "PATCH", body: JSON.stringify({ quantity }) }),
   createBom: (body) => request("/bom", { method: "POST", body: JSON.stringify(body) }),
   moveItem: (childId, body) =>
     request(`/items/${encodeURIComponent(childId)}/move`, { method: "POST", body: JSON.stringify(body) }),

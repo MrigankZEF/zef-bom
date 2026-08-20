@@ -681,6 +681,28 @@ body { background: var(--bg); }
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease);
   position: relative;
+  background: var(--tint, transparent);   /* deepens with nesting; :hover/.on override */
+}
+
+/* Branch rails. Absolutely positioned over the row rather than laid out inside
+   .tree-name, so the vertical lines span the row's padding too and meet the rails of
+   the rows above and below without a break. The indent that makes room for them is
+   still .tree-row's padding-left. */
+.tree-rails {
+  position: absolute; left: 12px; top: 0; bottom: 0;
+  display: flex; pointer-events: none;
+}
+.tree-rail { position: relative; flex: 0 0 22px; }
+.tree-rail.line::before,
+.tree-rail.elbow::before {
+  content: ""; position: absolute; left: 10px; top: 0; bottom: 0;
+  width: 1px; background: var(--hair);
+}
+/* the last child's line stops at the elbow instead of running on */
+.tree-rail.elbow.last::before { bottom: auto; height: 50%; }
+.tree-rail.elbow::after {
+  content: ""; position: absolute; left: 10px; top: 50%;
+  width: 9px; height: 1px; background: var(--hair);
 }
 .tree-row:hover { background: var(--bg-sunk); }
 .tree-row.on { background: var(--accent-soft); }
@@ -695,7 +717,8 @@ body { background: var(--bg); }
   color: var(--ink-3);
   font-family: var(--font-mono); font-size: 10px;
 }
-.tree-toggle.empty { visibility: hidden; }
+.tree-toggle.empty,
+.tree-toggle.is-leaf { visibility: hidden; }
 .tree-name {
   display: flex; align-items: center; gap: 8px;
   font-family: var(--font-body); font-size: 13px;

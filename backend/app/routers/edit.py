@@ -33,6 +33,7 @@ from ..schemas import (
     ItemOut,
     ItemPatch,
     MoveLinkIn,
+    UpdateLinkIn,
 )
 
 router = APIRouter(tags=["edit"])
@@ -147,6 +148,36 @@ def add_child(
         "child_id": resolve_rename(changes, body.child_id),
         "quantity": body.quantity,
     }
+
+
+@router.patch("/items/{parent_id}/children/{child_id}")
+def set_child_quantity(
+    parent_id: str, child_id: str, body: UpdateLinkIn,
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Change how many of `child_id` sit in `parent_id`.
+
+    Deliberately does NOT run `normalize_structure`: quantity changes no structure, so no
+    re-code or P<->A promotion can be triggered. That is the whole point of this endpoint —
+    the old workaround (remove the child, re-add it with a new quantity) went through the
+    naming engine twice and could hand the part a different code on the way back."""
+    link = db.execute(
+        select(BomLink).where(BomLink.parent_item_id == parent_id, BomLink.child_item_id == child_id)
+    ).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(404, f"{child_id} is not under {parent_id}")
+    if link.archived:
+        raise HTTPException(409, f"{child_id} was removed from {parent_id} — restore it before setting a quantity")
+    old = link.quantity
+    if old != body.quantity:
+        link.quantity = body.quantity
+        record_change(
+            db, entity_type="bom_link", entity_id=f"{parent_id}>{child_id}", change_type="update",
+            field_changed="quantity", old_value=old, new_value=body.quantity,
+            changed_by=user, change_reason="quantity edited",
+        )
+        db.commit()
+    return {"parent_id": parent_id, "child_id": child_id, "quantity": body.quantity}
 
 
 @router.post("/bom")

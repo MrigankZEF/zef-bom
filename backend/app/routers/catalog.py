@@ -14,6 +14,7 @@ from ..auth import current_user
 from ..db import get_db
 from ..history import record_change
 from ..models import BomLink, DecidedCost, Item
+from ..rollups import top_level_reachable
 from ..schemas import NewItemIn
 
 router = APIRouter(tags=["catalog"])
@@ -33,6 +34,9 @@ def catalog(db: Session = Depends(get_db)) -> list[dict]:
     for bl in db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars():
         linked.add(bl.parent_item_id)
         linked.add(bl.child_item_id)
+    # Stricter than `in_bom`: actually reachable from a live top-level root, so an orphaned
+    # sub-tree left behind by an archived root doesn't count as "in use".
+    in_use = top_level_reachable(db)
     return [
         {
             "item_id": it.item_id,
@@ -40,6 +44,7 @@ def catalog(db: Session = Depends(get_db)) -> list[dict]:
             "item_type": it.item_type,
             "module_code": it.module_code,
             "in_bom": it.item_id in linked,
+            "in_top_level_bom": it.item_id in in_use,
             "costs": costs.get(it.item_id, {}),
         }
         for it in db.execute(

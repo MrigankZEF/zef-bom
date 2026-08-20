@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ItemOut(BaseModel):
@@ -100,6 +100,11 @@ class AssemblyLaborOut(BaseModel):
 class AddChildIn(BaseModel):
     child_id: str
     quantity: float = 1
+
+
+class UpdateLinkIn(BaseModel):
+    # A zero-quantity link is a data bug, not a valid state — remove the child instead.
+    quantity: float = Field(gt=0)
 
 
 class CreateBomIn(BaseModel):

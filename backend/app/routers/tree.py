@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from ..db import get_db
 from ..models import AssemblyLabor, BomLink, DecidedCost, Item
-from ..rollups import BomGraph
+from ..rollups import BomGraph, top_level_reachable
 
 router = APIRouter(tags=["bom"])
 
@@ -184,16 +184,7 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
     for bl in links:
         children_map.setdefault(bl.parent_item_id, []).append(bl.child_item_id)
     parents = set(children_map)
-    # "In the BOM tree" = reachable from a live top-level root. An orphaned sub-tree (links
-    # left over after a root is archived) is NOT pending — it's not in the tree any more.
-    linked: set[str] = set()
-    stack = [iid for iid, it in items.items() if it.is_top_level]
-    while stack:
-        cur = stack.pop()
-        if cur in linked or cur not in items:
-            continue
-        linked.add(cur)
-        stack.extend(children_map.get(cur, []))
+    linked = top_level_reachable(db)
     costed_tiers: dict[str, set] = {}
     for dc in db.execute(select(DecidedCost)).scalars():
         costed_tiers.setdefault(dc.item_id, set()).add(dc.volume_tier)
