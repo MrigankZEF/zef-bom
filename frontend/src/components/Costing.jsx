@@ -15,6 +15,7 @@ export default function Costing({ onOpenPart }) {
   const [expanded, setExpanded] = useState(false);    // full-width treemap
   const [scenario, setScenario] = useState("likely"); // min | likely | max (cost only)
   const [depth, setDepth] = useState(1);              // 1 = drill-down; >1 = nested overview
+  const [split, setSplit] = useState(true);           // draw a ×26 part as 26 numbered tiles, not one
   const [data, setData] = useState(null);
   const [tree, setTree] = useState(null);
   const [error, setError] = useState(null);
@@ -125,6 +126,10 @@ export default function Costing({ onOpenPart }) {
                       ))}
                     </div>
                   )}
+                  <div className="segmented-mini" title="Draw a part used ×26 as one tile, or as 26 individual tiles">
+                    <button className={!split ? "on" : ""} onClick={() => setSplit(false)}>Grouped</button>
+                    <button className={split ? "on" : ""} onClick={() => setSplit(true)}>Each</button>
+                  </div>
                   <select className="select" value={depth}
                     style={{ height: 30, fontSize: 12, padding: "0 26px 0 9px",
                       backgroundPosition: "calc(100% - 14px) 13px, calc(100% - 10px) 13px" }}
@@ -143,11 +148,12 @@ export default function Costing({ onOpenPart }) {
               </div>
               {tree
                 ? <CostTreemap node={tree} metric={metric} colorMode={colorMode} scenario={scenario}
-                    depth={depth} svgRef={svgRef} format={fmt} onOpenPart={onOpenPart} />
+                    depth={depth} split={split} svgRef={svgRef} format={fmt} onOpenPart={onOpenPart} />
                 : <p className="muted" style={{ padding: 20 }}>Loading structure…</p>}
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
-                  Tiles sized by rolled-up {metric === "cost" ? "cost" : "weight"}. Click an assembly (⤢) to drill in, a part to open it.
+                  Tiles sized by rolled-up {metric === "cost" ? "cost" : "weight"}, biggest first. Click an assembly (⤢) to drill in, a part to open it.
+                  {split && " Each shows every unit separately (up to 48 per part)."}
                   {metric === "weight" && topWeight && topWeight.weight_grams > 0 && <> Heaviest: <strong>{topWeight.item_name}</strong> ({fmtWeight(topWeight.weight_grams)}).</>}
                 </span>
               </div>

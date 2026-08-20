@@ -21,6 +21,8 @@ class Rollup:
     cost_min: float = 0.0     # 3-point estimate, summed independently up the tree
     cost_max: float = 0.0
     assembly_cost: float = 0.0  # just the process cost added at this node (for breakdown)
+    assembly_cost_min: float = 0.0
+    assembly_cost_max: float = 0.0
     covered: int = 0          # leaf instances with a decided cost
     total: int = 0            # leaf instances in total
     missing: list[str] = field(default_factory=list)
@@ -95,6 +97,16 @@ class BomGraph:
             (tmax if tmax is not None else tlikely) * per_min,
         )
 
+    def assembly_priced(self, item) -> bool:
+        """True when this assembly's process cost is actually derived from data, rather than
+        silently defaulting to 0 because nobody set a cost type or a time at this tier."""
+        return (
+            item is not None
+            and item.cost_type_id is not None
+            and bool(self.rates.get(item.cost_type_id))
+            and item.item_id in self.labor
+        )
+
     # ── structure ────────────────────────────────────────────────────────────
     def roots(self) -> list[Item]:
         return [it for it in self.items.values() if it.is_top_level]
@@ -142,6 +154,8 @@ class BomGraph:
         # An assembly's own process cost (time × rate) is added ON TOP of the children.
         amin, alikely, amax = self.assembly_cost(item)
         r.assembly_cost = alikely
+        r.assembly_cost_min = amin
+        r.assembly_cost_max = amax
         r.cost += alikely
         r.cost_min += amin
         r.cost_max += amax
@@ -220,6 +234,12 @@ class BomGraph:
             "rollup_cost": round(r.cost, 2),
             "rollup_cost_min": round(r.cost_min, 2),
             "rollup_cost_max": round(r.cost_max, 2),
+            # Sent explicitly: the client used to derive it as parent - sum(children x qty), which
+            # drifts by cents once every term has been rounded to 2dp (worst case seen: 2.66 vs 2.50).
+            "assembly_cost": round(r.assembly_cost, 2),
+            "assembly_cost_min": round(r.assembly_cost_min, 2),
+            "assembly_cost_max": round(r.assembly_cost_max, 2),
+            "assembly_priced": self.assembly_priced(item) if self.children.get(item_id) else None,
             "coverage": round(r.coverage, 4),
             "rollup_weight_grams": round(r.weight_grams, 2) if r.weight_grams is not None else None,
             "children": children,
