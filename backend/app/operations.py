@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from .bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
 from .history import record_change
-from .models import AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item
+from .models import (
+    AssemblyLabor, BomLink, ChangeHistory, CodeRegistry, CostEvidence, DecidedCost, FieldValue, Item,
+)
 
 
 def clear_item_refs(db: Session, item_id: str) -> None:
@@ -74,6 +76,13 @@ def rename_item(
         data["module_code"] = _m.group("module")
     db.add(Item(**data))
     db.flush()
+    # Retire BOTH ends. The destination is now spoken for; the code being vacated must never
+    # be reissued either. Registering the old one here matters because plenty of items never
+    # went through allocate_code — seeds, OPML imports and backup restores all insert ids
+    # directly, so a rename is the only moment their number can be recorded before the row
+    # that proves it existed disappears.
+    register_code(db, old_id)
+    register_code(db, new_id)
 
     # 2) repoint every reference old_id → new_id
     db.execute(update(BomLink).where(BomLink.parent_item_id == old_id).values(parent_item_id=new_id))
@@ -154,14 +163,61 @@ def normalize_type(db: Session, item_id: str, *, user: str | None) -> str:
     return item_id
 
 
-def allocate_code(db: Session, module: str, suffix: str) -> str:
-    """Next free code in a module, e.g. ('UN','P') → 'UN042P' (max existing + 1)."""
-    mx = 0
+def _registered_numbers(db: Session, module: str) -> set[int]:
+    """Every number ever issued in this module, plus anything a live row holds.
+
+    The live scan is belt and braces: the registry is authoritative, but an id that somehow
+    predates it must never be handed out twice.
+    """
+    used = {
+        n for (n,) in db.execute(
+            select(CodeRegistry.number).where(CodeRegistry.module == module)
+        )
+    }
     for iid in db.execute(select(Item.item_id)).scalars():
         m = ITEM_NUMBER_RE.match(iid)
         if m and m.group("module") == module:
-            mx = max(mx, int(m.group("number")))
-    return f"{module}{mx + 1:03d}{suffix}"
+            used.add(int(m.group("number")))
+    return used
+
+
+def register_code(db: Session, code: str) -> None:
+    """Record a code as issued. Idempotent; never removes anything."""
+    m = ITEM_NUMBER_RE.match(code or "")
+    if not m:
+        return
+    module, number = m.group("module"), int(m.group("number"))
+    exists = db.execute(
+        select(CodeRegistry.id).where(
+            CodeRegistry.module == module, CodeRegistry.number == number
+        )
+    ).first()
+    if exists is None:
+        db.add(CodeRegistry(module=module, number=number, first_code=code))
+        db.flush()
+
+
+def number_is_free(db: Session, module: str, number: int) -> bool:
+    """True only if this number has NEVER been issued in this module."""
+    return number not in _registered_numbers(db, module)
+
+
+def allocate_code(db: Session, module: str, suffix: str) -> str:
+    """Lowest never-used code in a module, e.g. ('UN','P') → 'UN047P'.
+
+    Was `max existing + 1`, which never reclaimed a number: a module change parks the old
+    digits in the new module and every later code steps over them (UNP reached max 188 with
+    only 36 codes actually in use). Filling from the bottom compacts the space, and the
+    registry guarantees a number that once meant something is never reissued — so an old
+    drawing or PO can't come to mean a different part.
+    """
+    used = _registered_numbers(db, module)
+    number = 1
+    while number in used:
+        number += 1
+    code = f"{module}{number:03d}{suffix}"   # widens to 4 digits past 999 on its own
+    register_code(db, code)
+    return code
 
 
 def allowed_modules(db: Session, item_id: str) -> list[str]:
@@ -222,8 +278,15 @@ def set_module(db: Session, item_id: str, module: str, *, user: str | None) -> s
         )
     was_top_level = bool(it.is_top_level)
     suffix = m.group("suffix")
+    # Keeping the digits across a module change keeps the part recognisable, but "free" has
+    # to mean never issued in the target module — otherwise this path quietly reissues a
+    # retired number and undoes the guarantee allocate_code makes.
     same_number = f"{module}{m.group('number')}{suffix}"
-    new_id = same_number if db.get(Item, same_number) is None else allocate_code(db, module, suffix)
+    if db.get(Item, same_number) is None and number_is_free(db, module, int(m.group("number"))):
+        register_code(db, same_number)
+        new_id = same_number
+    else:
+        new_id = allocate_code(db, module, suffix)
     new_id = rename_item(
         db, item_id, new_id, user=user,
         reason=f"module {m.group('module')}→{module} (manual edit)",

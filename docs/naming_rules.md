@@ -122,6 +122,21 @@ Promoting runs the naming engine and reports any re-codes. Two roots sharing a c
 is fine and expected: the shared part becomes **UN**, and universals are never re-coded
 again. Demoting is the same call with `is_top_level: false`.
 
+## 4c. Number allocation — never reused
+A new code takes the **lowest number never issued** in that module, not `max + 1`.
+Every `(module, number)` ever handed out is recorded in `code_registry`, which is
+append-only — rows are never deleted, and `rename_item` retires both the code it leaves
+and the one it takes. So a number that once meant a part is never given to another one,
+and an old drawing or PO can't come to mean something else.
+
+Why: allocation used to step over parked numbers, and `set_module` keeps an item's digits
+when it changes module. Together those left UNP with 36 codes in use but a max of 188 —
+81% holes (UN 65%). Filling from the bottom compacts the space instead; existing gaps are
+left alone and simply get consumed by new parts. `set_module` still keeps the digits, but
+only when that number was **never** used in the target module.
+
+Codes widen past 999 on their own (`AEC1000A`), so there is no hard ceiling.
+
 ## 5. Catalog — adding & editing
 - **Add a new item** — free-text name + type (part/assembly) + **module** (default **UN**).
   - **No accidental duplicates** — if a live item already has that name (compared after
