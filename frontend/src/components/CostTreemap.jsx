@@ -1,42 +1,60 @@
 import { useEffect, useRef, useState } from "react";
-import { squarify, colorFor } from "./Treemap.jsx";
+import { squarify, colorAt } from "./Treemap.jsx";
 
 // Hierarchical treemap for the Costing tab. Two layouts, chosen by `depth`:
 //   depth = 1  → drill-down: one level at a time; click an assembly to zoom in.
-//   depth > 1  → nested overview: N levels at once. An assembly is drawn as a *frame* — a
-//                pale body with a coloured border and title bar in its module's colour, going
-//                lighter with depth — so you can see where a block starts and ends, and which
-//                subsystem it belongs to, without reading a word.
-// Parts are solid; an assembly's own process cost is drawn as a hatched tile of the same colour
-// (Leonard's ask: material vs assembly cost, distinguishable by pattern as well as colour).
+//   depth > 1  → nested overview: N levels at once. An assembly is drawn as a card — white
+//                body, rounded corners, a soft shadow and a coloured title bar — so the
+//                nesting reads as stacked cards rather than boxes drawn inside boxes.
+// Parts are solid; an assembly's own process cost is drawn as a hatched tile, so material vs
+// assembly cost differs by pattern as well as colour.
+// Heat mode is strictly one red ramp — module colours appear only in Module mode.
 // The viewBox is sized to the real pixel width, so text stays a constant size at any width.
 
-const SLATE = "#55606E";     // assembly-work hatch when we're not colouring by module
-const NO_MODULE = "#8A8378"; // frame colour for an assembly with no module tag
-const COOL = [239, 227, 214];
-const HOT = [184, 0, 31];
+// ── ZEF design tokens, inlined ────────────────────────────────────────────────────────
+// The system is explicit: warm bone surfaces, charcoal ink, hairlines, ONE red, and
+// "no drop shadows". Concrete values (not var()) so the exported PNG matches the screen.
+const BG = "#F5F2EE";          // --bg
+const INK = "#1C1B1A";         // --ink
+const INK_3 = "#6B6862";       // --ink-3
+const HAIR = "rgba(28,27,26,0.12)";        // --hair
+const HAIR_STRONG = "rgba(28,27,26,0.22)"; // --hair-strong
+const NO_MODULE = "#8C857A";   // assembly with no module tag — warm grey
+
+// Cost intensity: bone → ochre → ZEF red. A single-hue beige-to-red ramp goes muddy in the
+// middle, so it passes through --warn ochre; every stop is a system colour.
+const HEAT = [[237, 233, 226], [201, 138, 43], [184, 0, 31]];
+const heatRgb = (v, maxV) => {
+  const t = maxV > 0 ? Math.sqrt(Math.max(0, v) / maxV) : 0;
+  const k = t * (HEAT.length - 1);
+  const i = Math.min(HEAT.length - 2, Math.floor(k)), f = k - i;
+  return HEAT[i].map((c, j) => c + (HEAT[i + 1][j] - c) * f);
+};
 
 const hex2rgb = (h) => { const m = String(h).replace("#", ""); return [0, 2, 4].map((i) => parseInt(m.slice(i, i + 2), 16)); };
 const css = (a) => `rgb(${a.map((v) => Math.round(v)).join(",")})`;
-const toWhite = (rgb, t) => rgb.map((v) => v + (255 - v) * t);
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 const lum = (rgb) => (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255;
-const inkOn = (rgb) => (lum(rgb) > 0.62 ? "#1C1B1A" : "#ffffff");
-const lerp = (a, b, t) => css(a.map((x, i) => x + (b[i] - x) * t));
-const costColor = (v, maxV) => lerp(COOL, HOT, maxV > 0 ? Math.sqrt(Math.max(0, v) / maxV) : 0);
+const inkOn = (rgb) => (lum(rgb) > 0.6 ? INK : "#ffffff");
 
-// Frames: header/border take the module colour, lightened as you go deeper.
-const headH = (level) => (level === 0 ? 23 : level === 1 ? 20 : level === 2 ? 17 : 15);
-const headFont = (level) => (level === 0 ? 14 : level === 1 ? 12 : level === 2 ? 10.8 : level === 3 ? 10 : 9.5);
-// A child must never shout louder than the assembly holding it: a tile's type is capped at its
-// own level's header size, so type shrinks as you go deeper — that IS the depth cue.
-const leafCap = (level, nested) => (nested ? headFont(level) : 15);
-const frameTint = (level) => Math.min(0.5, level * 0.13);
-const framePad = (level) => (level === 0 ? 5 : level === 1 ? 4 : 3);
-const frameStroke = (level) => Math.max(1.2, 3.2 - level * 0.55);
+// An assembly is a miniature of the app's own .card: bone body, hairline border, uppercase
+// display title over a hairline rule. Depth is carried by a wash of the assembly's colour
+// and by the title size — never by a raised bevel or a filled title bar.
+const headH = (level) => (level === 0 ? 22 : level === 1 ? 19 : level === 2 ? 16.5 : 15);
+const headFont = (level) => (level === 0 ? 11.5 : level === 1 ? 10.4 : level === 2 ? 9.4 : 8.8);
+const leafCap = (level, nested) => (nested ? headFont(level) + 2 : 15);
+// Module mode leans on the wash to say WHICH subsystem a card is; Heat mode keeps it faint so
+// the red ramp on the parts stays the only thing carrying data.
+const cardWash = (level, byModule) =>
+  (byModule ? 0.84 : 0.9) + Math.min(0.08, level * 0.025);   // toward bone as you nest
+const cardLine = (level) => (level === 0 ? HAIR_STRONG : HAIR);
+const cardR = (level) => (level === 0 ? 5 : level === 1 ? 4 : 3);
+const framePad = (level) => (level === 0 ? 3 : level === 1 ? 2.5 : 2);
+const INSET = 0.75;  // hairline gutter between neighbouring cards
 
-const fitFont = (w, h, max) => Math.min(max, Math.max(8.5, Math.min(w / 7.2, h / 2.9)));
-const clip = (s, w, fs) => {
-  const max = Math.max(1, Math.floor((w - 8) / (fs * 0.56)));
+const fitFont = (w, h, max) => Math.min(max, Math.max(8, Math.min(w / 6.4, h / 2.4)));
+const clip = (s, w, fs, cw = 0.54) => {
+  const max = Math.max(1, Math.floor((w - 6) / (fs * cw)));
   return !s ? "" : s.length > max ? s.slice(0, Math.max(1, max - 1)) + "…" : s;
 };
 
@@ -71,6 +89,14 @@ function gridCells(x, y, w, h, n) {
   return out;
 }
 
+// Every module in the BOM, in a stable order. Colours are handed out by position in this
+// list — so they're always distinct, and a module keeps its colour as you drill in and out.
+function collectModules(n, acc = new Set()) {
+  if (n?.module_code) acc.add(n.module_code);
+  for (const c of n?.children || []) collectModules(c, acc);
+  return acc;
+}
+
 function componentInstances(n) {
   return (n.children || []).reduce((s, c) => {
     const cc = c.children && c.children.length ? componentInstances(c) : 1;
@@ -84,12 +110,14 @@ const SPLIT_MAX = 48;
 
 export default function CostTreemap({ node, metric = "cost", colorMode = "cost", scenario = "likely",
   depth = 1, split = true, svgRef, format, onOpenPart }) {
-  const [pathIds, setPathIds] = useState([]);
+  // Each step is {id, single, inst}: `single` marks a drill into ONE instance of a ×N part,
+  // so the view that opens sums to the tile you actually clicked, not the whole ×N group.
+  const [path, setPath] = useState([]);
   const [hover, setHover] = useState(null);
   const [boxW, setBoxW] = useState(760);
   const rootRef = useRef(null);
   const wrapRef = useRef(null);
-  useEffect(() => { setPathIds([]); }, [node?.item_id]);
+  useEffect(() => { setPath([]); }, [node?.item_id]);
   useEffect(() => {
     const el = rootRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
@@ -101,6 +129,10 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
     return () => ro.disconnect();
   }, []);
   if (!node) return null;
+
+  const moduleOrder = [...collectModules(node)].sort();
+  const moduleColor = (code) => (code && moduleOrder.includes(code)
+    ? colorAt(moduleOrder.indexOf(code)) : NO_MODULE);
 
   const width = Math.max(360, boxW);   // viewBox = real pixels → constant text size at any width
   const nested = Math.max(1, depth) > 1;
@@ -122,14 +154,16 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
   };
 
   const chain = [node];
-  let cur = node;
-  for (const id of pathIds) {
-    const nxt = (cur.children || []).find((c) => c.item_id === id);
+  const steps = [];
+  let mult = 1, cur = node;
+  for (const step of path) {
+    const nxt = (cur.children || []).find((c) => c.item_id === step.id);
     if (!nxt) break;
-    chain.push(nxt); cur = nxt;
+    chain.push(nxt); steps.push(step);
+    mult *= step.single && split ? 1 : nxt.quantity || 1;
+    cur = nxt;
   }
   const focus = chain[chain.length - 1];
-  const mult = chain.reduce((m, n) => m * (n.quantity || 1), 1);
   const bomTotal = costOf(node) || 0;
 
   const contrib = (c) => costOf(c) * (c.quantity || 1);
@@ -157,17 +191,18 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
   const emit = (r, c, instance, instances, level, absMult, ppath, levelTotal) => {
     const unitMult = instance ? 1 : c.quantity || 1;
     const scale = unitMult * absMult;
+    const step = { id: c.item_id, single: !!instance, inst: instance || null };
     const base = {
-      node: c, x: r.x, y: r.y, w: r.w, h: r.h, level, path: [...ppath, c.item_id],
+      node: c, x: r.x, y: r.y, w: r.w, h: r.h, level, path: [...ppath, step],
       instance, instances, abs: costOf(c) * scale, own: ownCost(c) * scale,
       pctLevel: levelTotal ? ((costOf(c) * unitMult) / levelTotal) * 100 : null,
     };
     const hh = headH(level), pad = framePad(level);
     const canNest = maxLevel > 1 && c.children?.length && level + 1 < maxLevel
-      && r.h > hh + 28 && r.w > 66 && childItems(c).length > 0;
+      && r.h > hh + 28 && r.w > 64 && childItems(c).length > 0;
     if (canNest) {
       tiles.push({ ...base, container: true, headH: hh });
-      layout(c, r.x + pad, r.y + hh, r.w - 2 * pad, r.h - hh - pad, level + 1, scale, base.path);
+      layout(c, r.x + pad, r.y + hh + 1, r.w - 2 * pad, r.h - hh - pad - 1, level + 1, scale, base.path);
     } else {
       tiles.push({ ...base, leaf: true });
     }
@@ -197,23 +232,41 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
   const maxAbs = Math.max(...tiles.filter((t) => !t.container).map((t) => t.abs), 0);
   const modules = [...new Set(tiles.filter((t) => !t.isAsm && t.node?.module_code).map((t) => t.node.module_code))].sort();
   const hasAsm = tiles.some((t) => t.isAsm);
+  const byModule = colorMode === "module";
 
-  const frameBase = (n) => (n?.module_code ? colorFor(n.module_code) : NO_MODULE);
-  const asmBase = (t) => (colorMode === "module" && t.module ? colorFor(t.module) : SLATE);
-  const hatchId = (c) => "hx" + String(c).replace(/[^a-z0-9]/gi, "");
-  const hatches = [...new Set([...tiles.filter((t) => t.isAsm).map(asmBase), SLATE])];
+  // Heat mode is one red ramp end to end: frames get a red that pales with depth (structure,
+  // not data), parts get the true cost heat. Module colours never appear here.
+  // In Heat mode the accent belongs to the parts, so a card's marker is a calm ink-grey and
+  // depth alone separates the levels; Module mode gives each card its subsystem colour.
+  const frameRgb = (t) => byModule
+    ? hex2rgb(moduleColor(t.node?.module_code))
+    : mix(hex2rgb(INK), hex2rgb(BG), Math.min(0.55, 0.12 + t.level * 0.14));
+  const asmRgb = (t) => (byModule ? hex2rgb(moduleColor(t.module)) : heatRgb(t.abs, maxAbs));
+
+  const hatches = [];
+  const hatchId = (rgb) => {
+    const key = css(rgb);
+    let i = hatches.indexOf(key);
+    if (i < 0) { hatches.push(key); i = hatches.length - 1; }
+    return "hx" + i;
+  };
+  for (const t of tiles) if (t.isAsm) hatchId(asmRgb(t));
+  const legendHatch = byModule ? hex2rgb(NO_MODULE) : HEAT[HEAT.length - 1];
+  const legendHatchId = hatchId(legendHatch);
 
   // Legend lives inside the SVG so it's always visible AND lands in the exported PNG.
   const legendItems = [];
-  if (colorMode === "module") {
+  if (byModule) {
     legendItems.push({ type: "title", text: "Modules" });
-    for (const m of modules) legendItems.push({ type: "swatch", color: colorFor(m), text: m });
+    for (const m of modules) legendItems.push({ type: "swatch", color: moduleColor(m), text: m });
     if (!modules.length) legendItems.push({ type: "title", text: "— none tagged" });
   } else {
     legendItems.push({ type: "grad", text: metric === "cost" ? "cheaper → pricier" : "lighter → heavier" });
   }
-  if (hasAsm) legendItems.push({ type: "hatch", color: SLATE, text: "assembly work (hatched)" });
-  if (nested) legendItems.push({ type: "title", text: "Frames = assemblies, coloured by module · paler = deeper · solid tiles = parts" });
+  if (hasAsm) legendItems.push({ type: "hatch", id: legendHatchId, text: "assembly work (hatched)" });
+  if (nested) legendItems.push({ type: "title", text: byModule
+    ? "Cards = assemblies, coloured by module · paler = deeper · solid tiles = parts"
+    : "Cards = assemblies · paler = deeper · solid tiles = parts" });
   const LEG_FS = 10.5;
   const legW = (e) => (e.type === "grad" ? 60 : e.type === "title" ? 0 : 13) + (e.type === "title" ? 0 : 5)
     + e.text.length * 5.9 + 14;
@@ -230,25 +283,29 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
 
   const onTile = (t) => {
     if (t.isAsm) return;
-    if (t.node?.has_children) { setHover(null); setPathIds([...pathIds, ...(t.path || [t.node.item_id])]); }
+    if (t.node?.has_children) { setHover(null); setPath([...steps, ...(t.path || [])]); }
     else onOpenPart?.(t.node?.item_id);
   };
   const onMove = (e, t) => {
     const r = wrapRef.current?.getBoundingClientRect();
     if (r) setHover({ tile: t, x: e.clientX - r.left, y: e.clientY - r.top });
   };
+  const crumb = (n, i) => {
+    const st = steps[i - 1];
+    return i > 0 && st?.inst && split ? `${n.item_name} ${st.inst}` : n.item_name;
+  };
 
   return (
     <div ref={rootRef}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4, marginBottom: 8, fontSize: 12 }}>
         {chain.map((n, i) => (
-          <span key={n.item_id} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <span key={n.item_id + i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             {i > 0 && <span style={{ color: "var(--ink-4)" }}>›</span>}
-            <button onClick={() => setPathIds(pathIds.slice(0, i))} disabled={i === chain.length - 1}
+            <button onClick={() => setPath(steps.slice(0, i))} disabled={i === chain.length - 1}
               style={{ border: 0, background: "transparent", padding: "2px 4px", borderRadius: 4, fontSize: 12,
                 cursor: i === chain.length - 1 ? "default" : "pointer",
                 color: i === chain.length - 1 ? "var(--ink)" : "var(--accent)", fontWeight: i === chain.length - 1 ? 600 : 400 }}>
-              {n.item_name}
+              {crumb(n, i)}
             </button>
           </span>
         ))}
@@ -261,54 +318,59 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
         <div ref={wrapRef} style={{ position: "relative" }} onMouseLeave={() => setHover(null)}>
           <svg ref={svgRef} viewBox={`0 0 ${width} ${totalH}`} style={{ width: "100%", height: "auto", display: "block", fontFamily: "var(--font-body)" }}>
             <defs>
-              {hatches.map((c) => (
-                <pattern key={c} id={hatchId(c)} width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              {hatches.map((c, i) => (
+                <pattern key={c} id={"hx" + i} width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
                   <rect width="7" height="7" fill={c} />
-                  <line x1="0" y1="0" x2="0" y2="7" stroke="#ffffff" strokeWidth="2.6" opacity="0.5" />
+                  <line x1="0" y1="0" x2="0" y2="7" strokeWidth="2.6"
+                    stroke={inkOn(c.match(/\d+/g).map(Number)) === INK ? INK : "#ffffff"}
+                    opacity={inkOn(c.match(/\d+/g).map(Number)) === INK ? 0.22 : 0.5} />
                 </pattern>
               ))}
+              <linearGradient id="heatKey" x1="0" x2="1">
+                {HEAT.map((c, i) => <stop key={i} offset={i / (HEAT.length - 1)} stopColor={css(c)} />)}
+              </linearGradient>
             </defs>
-            <rect x="0" y="0" width={width} height={totalH} fill="var(--bg, #fff)" />
+            <rect x="0" y="0" width={width} height={totalH} fill={BG} />
 
             {tiles.map((t, i) => {
               const key = (t.node?.item_id || "asm") + "_" + i;
               const isHover = hover && hover.tile === t;
 
-              if (t.container) {   // assembly frame: pale body, module-coloured border + title bar
-                const rgb = hex2rgb(frameBase(t.node));
-                const bar = toWhite(rgb, frameTint(t.level));
-                const body = toWhite(rgb, 0.9);
+              if (t.container) {   // assembly card: white body, soft shadow, coloured title bar
+                const rgb = frameRgb(t);
+                const x = t.x + INSET, y = t.y + INSET, w = Math.max(0, t.w - INSET * 2), h = Math.max(0, t.h - INSET * 2);
                 const fs = headFont(t.level);
                 const money = format ? format(t.abs) : String(Math.round(t.abs));
                 const showMoney = t.w > 170;
                 return (
                   <g key={key} onClick={() => onTile(t)} onMouseMove={(e) => onMove(e, t)} style={{ cursor: "pointer" }}>
-                    <rect x={t.x + 0.8} y={t.y + 0.8} width={Math.max(0, t.w - 1.6)} height={Math.max(0, t.h - 1.6)}
-                      fill={css(body)} stroke={css(bar)} strokeWidth={frameStroke(t.level)} rx="3" />
-                    <rect x={t.x + 0.8} y={t.y + 0.8} width={Math.max(0, t.w - 1.6)} height={t.headH - 1.6} fill={css(bar)} rx="2" />
-                    <text x={t.x + 6} y={t.y + t.headH * 0.72} fill={inkOn(bar)} fontSize={fs} fontWeight="700" style={{ pointerEvents: "none" }}>
-                      {clip(tileLabel(t), showMoney ? t.w - 62 : t.w, fs)}
+                    <rect x={x} y={y} width={w} height={h} fill={css(mix(rgb, hex2rgb(BG), cardWash(t.level, byModule)))}
+                      stroke={byModule ? css(mix(rgb, hex2rgb(BG), 0.55)) : cardLine(t.level)} strokeWidth="1" rx={cardR(t.level)} />
+                    <rect x={x} y={y} width={byModule ? 4 : 2.5} height={t.headH} fill={css(rgb)}
+                      rx={byModule ? 0 : 1.25} />
+                    <line x1={x} y1={y + t.headH} x2={x + w} y2={y + t.headH}
+                      stroke={byModule ? css(rgb) : cardLine(t.level)} strokeWidth={byModule ? 1.4 : 1}
+                      opacity={byModule ? 0.6 : 1} />
+                    <text x={x + (byModule ? 10 : 8)} y={y + t.headH * 0.7} fill={INK} fontSize={fs} fontWeight="700"
+                      fontFamily="var(--font-display)" letterSpacing="0.08em" style={{ pointerEvents: "none" }}>
+                      {clip(tileLabel(t).toUpperCase(), (showMoney ? w - 64 : w - 4) - (byModule ? 6 : 4), fs, 0.72)}
                     </text>
                     {showMoney && (
-                      <text x={t.x + t.w - 6} y={t.y + t.headH * 0.72} textAnchor="end" fill={inkOn(bar)} opacity="0.85"
-                        fontSize={fs - 1.5} fontFamily="var(--font-mono)" style={{ pointerEvents: "none" }}>{money}</text>
+                      <text x={x + w - 6} y={y + t.headH * 0.7} textAnchor="end" fill={INK_3}
+                        fontSize={fs - 0.5} fontFamily="var(--font-mono)" style={{ pointerEvents: "none" }}>{money}</text>
                     )}
                   </g>
                 );
               }
 
-              const solid = t.isAsm ? asmBase(t)
-                : colorMode === "module" ? colorFor(t.node?.module_code) : costColor(t.abs, maxAbs);
-              const fill = t.isAsm ? `url(#${hatchId(asmBase(t))})` : solid;
-              // heat tiles get their contrast from the scale position; everything else from luminance
-              const ink = t.isAsm || colorMode === "module"
-                ? inkOn(hex2rgb(t.isAsm ? asmBase(t) : solid))
-                : (t.abs / (maxAbs || 1)) < 0.42 ? "#1C1B1A" : "#ffffff";
+              const rgb = t.isAsm ? asmRgb(t) : byModule ? hex2rgb(moduleColor(t.node?.module_code)) : heatRgb(t.abs, maxAbs);
+              const fill = t.isAsm ? `url(#${hatchId(asmRgb(t))})` : css(rgb);
+              const ink = inkOn(rgb);
               const drill = t.node?.has_children;
               const fs = fitFont(t.w, t.h, leafCap(t.level, nested));
               const vertical = t.w < 40 && t.h > 52 && t.h > t.w * 1.5;
-              const showLabel = vertical || (t.w > 24 && t.h > 13);
-              const showVal = !vertical && showLabel && t.h > fs * 2.7 + 8 && t.w > 46;
+              const showLabel = vertical || (t.w > 17 && t.h > 10);
+              const showVal = !vertical && showLabel && t.h > fs * 2.6 + 6 && t.w > 44;
               const room = vertical ? t.h : drill && t.w > 26 ? t.w - 14 : t.w;
               let text = clip(tileLabel(t), room, fs);
               if (text === "…" || text === "") text = t.instances ? String(t.instance) : tileLabel(t).slice(0, 1);
@@ -316,18 +378,18 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
                 <g key={key} onClick={() => onTile(t)} onMouseMove={(e) => onMove(e, t)}
                   style={{ cursor: t.isAsm ? "default" : "pointer" }}>
                   <rect x={t.x + 0.4} y={t.y + 0.4} width={Math.max(0, t.w - 0.8)} height={Math.max(0, t.h - 0.8)}
-                    fill={fill} stroke="var(--bg)" strokeWidth="1" rx="1.5" opacity={hover && !isHover ? 0.9 : 1} />
+                    fill={fill} stroke={BG} strokeWidth="0.8" rx="2" opacity={hover && !isHover ? 0.88 : 1} />
                   {drill && t.w > 26 && t.h > 24 && !vertical && (
-                    <text x={t.x + t.w - 4} y={t.y + fs + 1} textAnchor="end" fill={ink} fontSize={Math.min(12, fs)} opacity="0.6" style={{ pointerEvents: "none" }}>⤢</text>
+                    <text x={t.x + t.w - 5} y={t.y + fs + 1} textAnchor="end" fill={ink} fontSize={Math.min(12, fs)} opacity="0.6" style={{ pointerEvents: "none" }}>⤢</text>
                   )}
                   {showLabel && (vertical ? (
                     <text transform={`translate(${t.x + t.w / 2 + fs * 0.36} ${t.y + 5}) rotate(90)`}
-                      fill={ink} fontSize={fs} fontWeight="600" style={{ pointerEvents: "none" }}>{text}</text>
+                      fill={ink} fontSize={fs} fontWeight="500" style={{ pointerEvents: "none" }}>{text}</text>
                   ) : (
-                    <text x={t.x + 5} y={t.y + fs + 3} fill={ink} fontSize={fs} fontWeight="600" style={{ pointerEvents: "none" }}>{text}</text>
+                    <text x={t.x + 4} y={t.y + fs + 2.5} fill={ink} fontSize={fs} fontWeight="500" style={{ pointerEvents: "none" }}>{text}</text>
                   ))}
                   {showVal && (
-                    <text x={t.x + 5} y={t.y + fs * 2.2 + 5} fill={ink} fontSize={Math.max(9, fs * 0.82)} opacity="0.85"
+                    <text x={t.x + 4} y={t.y + fs * 2.1 + 4} fill={ink} fontSize={Math.max(8.5, fs * 0.82)} opacity="0.85"
                       fontFamily="var(--font-mono)" style={{ pointerEvents: "none" }}>
                       {format ? format(t.abs) : t.abs}
                     </text>
@@ -344,21 +406,17 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
                   {r.map((e, ei) => {
                     const x = cx; cx += legW(e);
                     if (e.type === "title") {
-                      return <text key={ei} x={x} y={y} fontSize={LEG_FS} fontWeight="700" fill="#6B645C">{e.text}</text>;
+                      return <text key={ei} x={x} y={y} fontSize={LEG_FS} fontWeight="700" fill={INK_3}
+                        fontFamily="var(--font-display)" letterSpacing="0.06em">{e.text}</text>;
                     }
                     const bw = e.type === "grad" ? 60 : 13;
                     const bh = e.type === "grad" ? 9 : 11;
-                    const paint = e.type === "grad" ? `url(#lg${ri}_${ei})`
-                      : e.type === "hatch" ? `url(#${hatchId(e.color)})` : e.color;
+                    const paint = e.type === "grad" ? "url(#heatKey)"
+                      : e.type === "hatch" ? `url(#${e.id})` : e.color;
                     return (
                       <g key={ei}>
-                        {e.type === "grad" && (
-                          <defs><linearGradient id={`lg${ri}_${ei}`} x1="0" x2="1">
-                            <stop offset="0" stopColor="rgb(239,227,214)" /><stop offset="1" stopColor="rgb(184,0,31)" />
-                          </linearGradient></defs>
-                        )}
                         <rect x={x} y={y - bh + 1} width={bw} height={bh} rx="2" fill={paint} />
-                        <text x={x + bw + 5} y={y} fontSize={LEG_FS} fill="#57514B">{e.text}</text>
+                        <text x={x + bw + 5} y={y} fontSize={LEG_FS} fill={INK_3}>{e.text}</text>
                       </g>
                     );
                   })}
@@ -393,7 +451,6 @@ function Tooltip({ tile, x, y, flip, flipY, metric, scenario, format, bomTotal }
     const tag = tile.instances ? ` · ${tile.instance} of ${tile.instances}` : qty > 1 ? ` · ×${qty}` : "";
     rows.push([n?.has_children ? "Assembly" : "Part", `${n?.module_code || ""}${tag}`]);
     rows.push([`Rolled-up ${isCost ? (scenario === "likely" ? "cost" : scenario + " cost") : "weight"}`, fmt(abs)]);
-    // Leonard's ask: split what you're hovering into material vs assembly labour.
     if (isCost && n?.has_children) {
       rows.push(["  ├ parts", fmt(abs - (tile.own || 0))]);
       rows.push(["  └ assembly work", (tile.own || 0) > 0 ? fmt(tile.own) : "—"]);

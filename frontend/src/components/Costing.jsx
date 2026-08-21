@@ -201,8 +201,11 @@ function VolumeChart({ tiers, selected }) {
   );
 }
 
-// Rasterise the treemap SVG to a PNG and download it (for decks/emails). CSS-var colours don't
-// exist in an isolated SVG, so they're swapped to white; concrete rgb/hex colours are kept.
+// Rasterise the treemap SVG to a PNG and download it (for decks/emails). The treemap paints in
+// concrete ZEF token values, so the export matches the screen; the only var()s left are the font
+// stacks, which don't resolve in an isolated SVG and are swapped for concrete equivalents.
+const BONE = "#F5F2EE";  // --bg; the export is bone-on-bone like the app, not white
+
 async function exportSvgToPng(svg, filename) {
   try {
     const vb = svg.viewBox?.baseVal;
@@ -213,8 +216,17 @@ async function exportSvgToPng(svg, filename) {
     clone.setAttribute("width", w);
     clone.setAttribute("height", h);
     clone.style.fontFamily = "Inter, Arial, Helvetica, sans-serif";
-    clone.querySelectorAll("[stroke]").forEach((el) => { if ((el.getAttribute("stroke") || "").includes("var(")) el.setAttribute("stroke", "#ffffff"); });
-    clone.querySelectorAll("[fill]").forEach((el) => { if ((el.getAttribute("fill") || "").includes("var(")) el.setAttribute("fill", "#ffffff"); });
+    const FONTS = {
+      "var(--font-display)": "'Space Grotesk', 'Helvetica Neue', sans-serif",
+      "var(--font-mono)": "'JetBrains Mono', ui-monospace, monospace",
+      "var(--font-body)": "Inter, 'Helvetica Neue', sans-serif",
+    };
+    clone.querySelectorAll("[font-family]").forEach((el) => {
+      const f = FONTS[el.getAttribute("font-family")];
+      if (f) el.setAttribute("font-family", f);
+    });
+    clone.querySelectorAll("[stroke]").forEach((el) => { if ((el.getAttribute("stroke") || "").includes("var(")) el.setAttribute("stroke", BONE); });
+    clone.querySelectorAll("[fill]").forEach((el) => { if ((el.getAttribute("fill") || "").includes("var(")) el.setAttribute("fill", BONE); });
     const str = new XMLSerializer().serializeToString(clone);
     const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(str);
     const img = new Image();
@@ -223,7 +235,7 @@ async function exportSvgToPng(svg, filename) {
     const canvas = document.createElement("canvas");
     canvas.width = w * scale; canvas.height = h * scale;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = BONE; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.drawImage(img, 0, 0, w, h);
     canvas.toBlob((blob) => {

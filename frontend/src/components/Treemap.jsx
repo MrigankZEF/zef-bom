@@ -1,5 +1,21 @@
 // Lightweight squarified treemap in SVG (no d3). Sizes rects by `value`.
-const PALETTE = ["#4E79A7", "#59A14F", "#E1A53F", "#B8001F", "#76689A", "#2E9B8F", "#C16E3A"];
+// Categorical scale drawn from the ZEF data-viz tokens (slate / moss / ochre / red / ink),
+// then muted variants of the same five. No hues from outside the design system.
+const PALETTE = [
+  "#3D5A6B", // --data-6 slate
+  "#6B7A55", // --data-4 moss
+  "#A8751F", // --data-5 ochre
+  "#B8001F", // --accent-ink
+  "#3D3B38", // --ink-2
+  "#7E8FA0", // slate, lifted
+  "#9AA882", // moss, lifted
+  "#C79A4B", // ochre, lifted
+  "#8C7B6B", // taupe
+];
+// Assign by POSITION in a known list, never by hashing the name: hashing collides silently
+// (AEC, UN and MS all landed on the same swatch), and the collisions move whenever the palette
+// or the module list changes. Callers that know their full category list should use colorAt.
+export const colorAt = (i) => PALETTE[((i % PALETTE.length) + PALETTE.length) % PALETTE.length];
 export const colorFor = (key) => {
   let h = 0;
   for (const ch of String(key || "")) h = (h * 31 + ch.charCodeAt(0)) % 997;
