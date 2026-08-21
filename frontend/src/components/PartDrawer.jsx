@@ -485,7 +485,8 @@ Create this copy anyway? It gets its own new code.`)) {
               <button className="btn ghost sm" onClick={() => setAddingChild(true)} style={{ alignSelf: "flex-start" }}>+ Add component</button>
             ))}
 
-            <FilesTab itemId={itemId} />
+            <FilesTab itemId={itemId} thumbnailFileId={item.thumbnail_file_id}
+              onThumbnailChanged={() => { load(); onChanged?.(); }} setError={setError} />
 
             <AdvancedOptions
               itemId={itemId} item={item} isAssembly={isAssembly} parents={parents} busy={busy}
@@ -538,6 +539,30 @@ function extUrl(u) {
   if (!s) return s;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("//")) return s; // already has a scheme
   return `https://${s}`;
+}
+
+// The pinned image, fetched as a blob because the session token can't ride on an <img src>.
+// Renders nothing at all when the item has no thumbnail, so the figures grid keeps its
+// original layout.
+function Thumbnail({ itemId, fileId, size = 96 }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    if (!fileId) { setUrl(null); return undefined; }
+    let dead = false;
+    let objectUrl = null;
+    api.thumbnailBlob(itemId).then((blob) => {
+      if (dead || !blob) return;
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    }).catch(() => {});
+    return () => { dead = true; if (objectUrl) URL.revokeObjectURL(objectUrl); setUrl(null); };
+  }, [itemId, fileId]);
+  if (!fileId || !url) return null;
+  return (
+    <img src={url} alt="" title="Pinned image — change it under Attachments in the Edit tab"
+      style={{ width: size, height: size, objectFit: "cover", borderRadius: 4,
+               border: "1px solid var(--hair)", background: "var(--warm-3)", flex: "0 0 auto" }} />
+  );
 }
 
 // One outward link. The URL is shown as far as it fits and cut with an ellipsis — a supplier
@@ -612,7 +637,9 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) 
           <span className="card-meta">pcs</span>
         </span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <Thumbnail itemId={item.item_id} fileId={item.thumbnail_file_id} />
+        <div style={{ flex: 1, minWidth: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
         {isAssembly ? (
           <>
             <Readout label={`Cost @ ${tierLabel(tier)} pcs`} value={rollup.cost > 0 ? fmtEURcompact(rollup.cost) : "—"} sub={rng ? `${rng} · ${fmtPct(rollup.coverage)} costed` : `${fmtPct(rollup.coverage)} costed · ${rollup.total} leaves`} />
@@ -628,6 +655,7 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) 
             <Readout label="Used in" value={parents.length} sub={parents.length ? "assemblies" : "top-level"} />
           </>
         )}
+        </div>
       </div>
 
       {(item.drawing_url || item.drive_folder_url || item.supplier || item.supplier_part_number
@@ -840,7 +868,7 @@ function MovePicker({ itemId, fromParent, onCancel, onMoved, setError }) {
   );
 }
 
-function FilesTab({ itemId }) {
+function FilesTab({ itemId, thumbnailFileId, onThumbnailChanged, setError: setDrawerError }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -870,6 +898,11 @@ function FilesTab({ itemId }) {
     if (failed.length) setError(`${failed.length}/${files.length} failed: ${failed.slice(0, 4).join(", ")}${failed.length > 4 ? "…" : ""}`);
     load();
   };
+  const pin = async (fileId) => {
+    setBusy(true);
+    try { await api.setThumbnail(itemId, fileId); onThumbnailChanged?.(); }
+    catch (e) { (setDrawerError || setError)(e.message); } finally { setBusy(false); }
+  };
   const upload = () => uploadBatch(fileRef, false);
   const uploadFolder = () => uploadBatch(folderRef, true);
 
@@ -892,12 +925,25 @@ function FilesTab({ itemId }) {
         <span className="card-title">Attachments · {data.files.length}</span>
         {data.folder_url && <a className="card-meta" href={data.folder_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Open folder ↗</a>}
       </div>
-      {data.files.map((f) => (
-        <a key={f.id} href={f.url} target="_blank" rel="noreferrer" style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, padding: "9px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, textDecoration: "none", color: "var(--ink)" }}>
-          <span><Icon name="box" size={12} /> {f.name}</span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{(f.modified || "").slice(0, 10)}</span>
-        </a>
-      ))}
+      {data.files.map((f) => {
+        const pinned = thumbnailFileId === f.id;
+        return (
+          <div key={f.id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 10, padding: "9px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+            <a href={f.url} target="_blank" rel="noreferrer" title={f.name}
+              style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "none", color: "var(--ink)" }}>
+              <Icon name="box" size={12} /> {f.name}
+            </a>
+            {/* Only a file Drive can render has a thumbnail to pin. */}
+            {f.has_thumbnail
+              ? <button className="btn ghost sm" disabled={busy} onClick={() => pin(pinned ? null : f.id)}
+                        title={pinned ? "Stop using this as the item's picture" : "Show this image in the drawer"}>
+                  {pinned ? "★ thumbnail" : "set as thumbnail"}
+                </button>
+              : <span />}
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{(f.modified || "").slice(0, 10)}</span>
+          </div>
+        );
+      })}
       {data.files.length === 0 && <div style={{ padding: 16, color: "var(--ink-3)", fontSize: 13 }}>No files yet.</div>}
       <div style={{ padding: 14, borderTop: "1px solid var(--hair)", display: "grid", gap: 10 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

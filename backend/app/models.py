@@ -68,6 +68,9 @@ class Item(Base):
 
     drawing_url: Mapped[str | None] = mapped_column(Text)
     drive_folder_url: Mapped[str | None] = mapped_column(Text)
+    # Drive file id of the image pinned as this item's thumbnail. Pinned rather than
+    # "first image in the folder", so uploading a new photo never silently swaps the picture.
+    thumbnail_file_id: Mapped[str | None] = mapped_column(String(128))
     comment: Mapped[str | None] = mapped_column(Text)
     external_reference: Mapped[str | None] = mapped_column(Text)
 

@@ -203,6 +203,15 @@ export const api = {
 
   // ── attachments (Drive) ──
   attachments: (id) => request(`/items/${encodeURIComponent(id)}/attachments`),
+  setThumbnail: (id, fileId) =>
+    request(`/items/${encodeURIComponent(id)}/thumbnail`, { method: "PUT", body: JSON.stringify({ file_id: fileId }) }),
+  // The app-wide guard means an <img src> can't carry the session token, so the bytes are
+  // fetched here and handed to the <img> as an object URL.
+  thumbnailBlob: async (id) => {
+    const res = await fetch(`${BASE}/items/${encodeURIComponent(id)}/thumbnail`, { headers: authHeaders() });
+    if (!res.ok) return null;
+    return res.blob();
+  },
   ensureFolder: (id) => request(`/items/${encodeURIComponent(id)}/attachments/folder`, { method: "POST" }),
   uploadAttachment: async (id, file, relPath = "") => {
     const fd = new FormData();

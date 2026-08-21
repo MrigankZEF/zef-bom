@@ -52,3 +52,7 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 - `GET /history?entity=&since=&as_of=` — change feed + "BOM as of date X"
 - `GET /pending` — items missing required fields
 - `POST /items/{id}/attachments` — create/locate Drive folder, return URL
+- `PUT /items/{id}/thumbnail` — `{file_id}`; pin a Drive file as the item's picture
+  (`null` clears it)
+- `GET /items/{id}/thumbnail` — the pinned image's bytes, proxied from Drive with a short
+  server-side cache. 404 when nothing is pinned, 503 when Drive isn't configured

@@ -25,6 +25,7 @@ class ItemOut(BaseModel):
     cost_type_id: int | None = None
     drawing_url: str | None = None
     drive_folder_url: str | None = None
+    thumbnail_file_id: str | None = None
     comment: str | None = None
     external_reference: str | None = None
     archived: bool = False
