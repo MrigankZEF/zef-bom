@@ -109,6 +109,8 @@ export const api = {
   setChildQuantity: (parentId, childId, quantity) =>
     request(`/items/${encodeURIComponent(parentId)}/children/${encodeURIComponent(childId)}`,
       { method: "PATCH", body: JSON.stringify({ quantity }) }),
+  duplicateItem: (id, body) =>
+    request(`/items/${encodeURIComponent(id)}/duplicate`, { method: "POST", body: JSON.stringify(body) }),
   createBom: (body) => request("/bom", { method: "POST", body: JSON.stringify(body) }),
   moveItem: (childId, body) =>
     request(`/items/${encodeURIComponent(childId)}/move`, { method: "POST", body: JSON.stringify(body) }),

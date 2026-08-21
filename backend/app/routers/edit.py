@@ -32,6 +32,7 @@ from ..schemas import (
     FieldValueIn,
     ItemOut,
     ItemPatch,
+    DuplicateItemIn,
     MoveLinkIn,
     UpdateLinkIn,
 )
@@ -80,6 +81,100 @@ def module_options(item_id: str, db: Session = Depends(get_db)) -> dict:
     _get_item(db, item_id)
     m = ITEM_NUMBER_RE.match(item_id)
     return {"current": m.group("module") if m else None, "options": allowed_modules(db, item_id)}
+
+
+@router.post("/items/{item_id}/duplicate", status_code=201)
+def duplicate_item(
+    item_id: str, body: DuplicateItemIn,
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Copy a part (or an assembly) into the catalog under a fresh code.
+
+    Copies what a person typed to describe the thing — core fields, decided costs at every
+    tier, assembly labour, custom field values. Deliberately NOT cost evidence or Drive files:
+    a quote names a specific part number, supplier and date, and `attachment_url` points at
+    that part's document, so cloning them would assert evidence nobody gathered for the copy.
+    The decided cost — the number the rollup actually uses — still comes across.
+
+    An assembly copies SHALLOW: links to the same children at the same quantities, which is
+    what "a variant of this assembly" means. A deep copy would mint a code per descendant.
+
+    The copy lands in the catalog only and is placed with the normal add-child flow, so
+    copying never silently changes a BOM's structure or cost.
+    """
+    from ..bom_ingest.miro_csv_fix import normalize_item_name
+    from ..operations import allocate_code, clear_item_refs, normalize_structure
+
+    src = _get_item(db, item_id)
+    name = (body.item_name or "").strip()
+    if not name:
+        raise HTTPException(400, "Give the copy a name")
+
+    # Same naming authority as creating a catalog item, so a copy can't slip past it.
+    if not body.allow_duplicate:
+        target = normalize_item_name(name)
+        dupes = [
+            it.item_id for it in db.execute(select(Item).where(Item.archived.is_(False))).scalars()
+            if it.item_name and normalize_item_name(it.item_name) == target
+        ]
+        if dupes:
+            raise HTTPException(
+                409,
+                f"A part named “{name}” already exists ({', '.join(sorted(dupes)[:5])}"
+                f"{'…' if len(dupes) > 5 else ''}). Re-submit with allow_duplicate to add it "
+                "as a separate part.",
+            )
+
+    suffix = "A" if src.item_type == "assembly" else "P"
+    new_id = allocate_code(db, src.module_code or "UN", suffix)
+    # A freshly allocated code must not inherit cost/link rows stranded at that id (the bug
+    # fixed in 35fa20b).
+    clear_item_refs(db, new_id)
+
+    COPY_FIELDS = (
+        "item_type", "module_code", "materials", "material", "weight_grams", "unit_of_measure",
+        "supplier", "supplier_country", "lead_time_weeks", "cost_type_id", "drawing_url", "comment",
+    )
+    db.add(Item(
+        item_id=new_id, item_name=name, is_top_level=False, created_by=user, updated_by=user,
+        **{f: getattr(src, f) for f in COPY_FIELDS},
+    ))
+    db.flush()
+
+    for dc in db.execute(select(DecidedCost).where(DecidedCost.item_id == item_id)).scalars():
+        db.add(DecidedCost(
+            item_id=new_id, volume_tier=dc.volume_tier, unit_cost_eur=dc.unit_cost_eur,
+            cost_min=dc.cost_min, cost_max=dc.cost_max, confidence=dc.confidence,
+            make_or_buy=dc.make_or_buy, source_type=dc.source_type, basis_note=dc.basis_note,
+            decided_by=user,
+        ))
+    for al in db.execute(select(AssemblyLabor).where(AssemblyLabor.item_id == item_id)).scalars():
+        db.add(AssemblyLabor(
+            item_id=new_id, volume_tier=al.volume_tier, time_min=al.time_min,
+            time_likely=al.time_likely, time_max=al.time_max,
+            covers_subassemblies=al.covers_subassemblies, updated_by=user,
+        ))
+    for fv in db.execute(select(FieldValue).where(FieldValue.item_id == item_id)).scalars():
+        db.add(FieldValue(item_id=new_id, field_key=fv.field_key, value=fv.value))
+    # shallow: the same children, not copies of them
+    for bl in db.execute(select(BomLink).where(
+        BomLink.parent_item_id == item_id, BomLink.archived.is_(False)
+    )).scalars():
+        db.add(BomLink(
+            parent_item_id=new_id, child_item_id=bl.child_item_id,
+            quantity=bl.quantity, unit_of_measure=bl.unit_of_measure,
+        ))
+
+    record_change(
+        db, entity_type="item", entity_id=new_id, change_type="create",
+        new_value=name, changed_by=user, change_reason=f"copied from {item_id}",
+    )
+    db.flush()
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    from ..operations import resolve_rename
+    final_id = resolve_rename(changes, new_id)
+    return {"item_id": final_id, "item_name": name, "copied_from": item_id, "renamed": changes}
 
 
 @router.post("/items/{item_id}/top-level")

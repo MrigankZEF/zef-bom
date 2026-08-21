@@ -47,6 +47,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const setError = setActionError;   // every action, and every sub-component, funnels here
   const [modOpts, setModOpts] = useState({ current: null, options: [] });
   const [pendingMod, setPendingMod] = useState(null);  // staged module; applied on Save
+  const copyName = useRef(null);   // survives the duplicate-name confirm round trip
   useEffect(() => {
     api.moduleOptions(itemId)
       .then((o) => { setModOpts(o); setPendingMod(o.current); })
@@ -176,6 +177,32 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
       load();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
+  const copyItem = async (force = false) => {
+    // Prefilled with "(copy)" and pre-selected, because a copy exists to become a variant and
+    // a variant needs its own name — better to get it right at creation than leave litter.
+    const suggested = force ? undefined : window.prompt(`Name for the copy of ${itemId}:`, `${item.item_name} (copy)`);
+    const name = force ? copyName.current : (suggested || "").trim();
+    if (!name) return;
+    copyName.current = name;
+    setBusy(true);
+    try {
+      const r = await api.duplicateItem(itemId, { item_name: name, allow_duplicate: force });
+      onChanged?.();
+      onOpenPart(r.item_id);
+    } catch (e) {
+      if (!force && /\b409\b/.test(e.message) && /allow_duplicate/.test(e.message)) {
+        const detail = (e.message.match(/"detail"\s*:\s*"([^"]+)"/) || [])[1] || "";
+        const codes = (detail.match(/\(([^)]+)\)/) || [])[1];
+        if (window.confirm(`A part named “${name}” already exists${codes ? ` (${codes})` : ""}.
+
+Create this copy anyway? It gets its own new code.`)) {
+          return copyItem(true);
+        }
+        return;
+      }
+      setError(e.message);
+    } finally { setBusy(false); }
+  };
   const restore = async () => {
     setBusy(true);
     try { await api.restoreItem(itemId); load(); onChanged?.(); }
@@ -219,6 +246,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn ghost sm" title="Copy this item into the catalog" onClick={() => copyItem()} disabled={busy}><Icon name="box" size={13} /></button>
           <button className="btn ghost sm danger" title="Archive (soft-delete)" onClick={archive} disabled={busy}><Icon name="alert" size={13} /></button>
           <button className="btn ghost sm" onClick={onClose}><Icon name="close" /></button>
         </div>

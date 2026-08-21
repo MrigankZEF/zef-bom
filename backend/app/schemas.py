@@ -109,6 +109,11 @@ class UpdateLinkIn(BaseModel):
     quantity: float = Field(gt=0)
 
 
+class DuplicateItemIn(BaseModel):
+    item_name: str
+    allow_duplicate: bool = False   # same guard the catalog applies to a new item
+
+
 class CreateBomIn(BaseModel):
     item_name: str
     module: str  # the system this BOM belongs to (AEC, DAC, MDAC, …) — not a universal
