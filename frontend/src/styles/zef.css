@@ -568,6 +568,10 @@ body { background: var(--bg); }
   background-repeat: no-repeat;
   padding-right: 24px;
   min-width: 0;   /* same reason as .input above */
+  /* Option labels are often longer than the column a select sits in ("made to order (our
+     specs)" in a 78px sourcing column). Crop the closed control instead of letting it spill
+     over the card edge — the open list still reads in full. */
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .select:focus { border-color: var(--ink); }
 
