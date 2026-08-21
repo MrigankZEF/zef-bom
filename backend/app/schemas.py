@@ -14,7 +14,6 @@ class ItemOut(BaseModel):
     item_type: str
     is_top_level: bool
     module_code: str | None = None
-    make_or_buy: str | None = None
     material: str | None = None
     materials: list[str] | None = None
     weight_grams: float | None = None
@@ -37,7 +36,6 @@ class ItemPatch(BaseModel):
     item_name: str | None = None
     item_type: str | None = None
     is_top_level: bool | None = None
-    make_or_buy: str | None = None
     material: str | None = None
     materials: list[str] | None = None
     weight_grams: float | None = None

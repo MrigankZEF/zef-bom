@@ -320,8 +320,40 @@ def restore_from_workbook(db: Session, sheets: dict) -> dict:
                     except Exception:  # noqa: BLE001 — table may have no sequence; ignore
                         pass
 
+        _migrate_legacy_sourcing(db, sheets)
+
         db.commit()
         return {"restored": True, "counts": counts}
     except Exception:
         db.rollback()
         raise
+
+
+def _migrate_legacy_sourcing(db: Session, sheets: dict) -> None:
+    """Apply migration 0009's mapping to data coming from an older backup.
+
+    A backup taken before 0009 carries `make_or_buy` on the Items sheet — a column the schema
+    no longer has, so the loader skips it — and pre-taxonomy values on DecidedCosts. Without
+    this, restoring an old backup would silently undo the migration: the 14 item-level values
+    would be dropped on the floor and "modified-buy" would reappear. Restoring must land in
+    the same state the migration produces.
+    """
+    db.execute(
+        text("UPDATE decided_costs SET make_or_buy = 'made-to-order' WHERE make_or_buy = 'modified-buy'")
+    )
+    items = sheets.get("Items")
+    if items is None or "make_or_buy" not in [str(c) for c in items.columns]:
+        return  # a current-schema backup: nothing legacy to fold in
+    for rec in items.to_dict(orient="records"):
+        value = rec.get("make_or_buy")
+        item_id = rec.get("item_id")
+        if not item_id or value is None or str(value).strip() in ("", "nan", "None"):
+            continue
+        value = "made-to-order" if str(value) == "modified-buy" else str(value)
+        db.execute(
+            text(
+                "UPDATE decided_costs SET make_or_buy = :v "
+                "WHERE item_id = :i AND (make_or_buy IS NULL OR make_or_buy = '')"
+            ),
+            {"v": value, "i": item_id},
+        )

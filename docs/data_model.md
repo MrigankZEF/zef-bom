@@ -34,7 +34,7 @@ some parts have several, some none.
 
 ### `decided_costs` (one per part per volume tier)
 The number the user **commits to** as an educated call: `unit_cost_eur` at a
-`volume_tier` (1 / 100 / 10000…), with `confidence`, `basis_note`, and an optional
+`volume_tier` (1 / 100 / 10000…), with `confidence`, `make_or_buy`, `basis_note`, and an optional
 pointer to the evidence row that informed it. **Rollups sum these decided numbers**
 — they never auto-pick a quote. A decided cost is only ever read for an item with
 **no live children**: once something has contents it is costed from those contents plus
@@ -49,6 +49,15 @@ tier** because sourcing differs by volume (built in house at @1, outsourced at @
 It affects coverage reporting only; the rollup arithmetic is unchanged. A descendant
 that carries its own assembly cost under a covering ancestor is reported in
 `covered_conflict[]`.
+
+### Sourcing (`decided_costs.make_or_buy`)
+**One source of truth, per volume tier.** `buy` (off the shelf) · `made-to-order` (our
+specs) · `make` (in house). It lives on `decided_costs`, not on `items`, because sourcing
+genuinely differs by volume — e.g. `UN023P` is make@1, buy@100, buy@10k. The old
+`items.make_or_buy` column was dropped in migration 0009 (its values were pushed down
+onto the tiers first); the retired value `modified-buy` maps to `made-to-order`, and the
+restore path applies the same mapping so an older backup can't reintroduce it.
+Consequence: sourcing can only be recorded once a part has a price at that tier.
 
 ## Custom fields — addable without migration
 

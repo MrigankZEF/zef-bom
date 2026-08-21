@@ -51,7 +51,6 @@ class Item(Base):
     is_top_level: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     module_code: Mapped[str | None] = mapped_column(String(8))
 
-    make_or_buy: Mapped[str | None] = mapped_column(String(16))  # make | buy | modified-buy
     material: Mapped[str | None] = mapped_column(Text)  # deprecated: single material (kept for back-compat)
     materials: Mapped[list | None] = mapped_column(JSONB_OR_JSON)  # list of material names
     weight_grams: Mapped[float | None] = mapped_column(Float)
@@ -183,7 +182,9 @@ class DecidedCost(Base):
     cost_min: Mapped[float | None] = mapped_column(Numeric(14, 4))  # optional 3-point estimate
     cost_max: Mapped[float | None] = mapped_column(Numeric(14, 4))
     confidence: Mapped[str | None] = mapped_column(String(8))
-    # Per-tier basis: make/buy + provenance can differ by volume (e.g. make@10k, buy@100).
+    # Sourcing, and the single source of truth for it: buy (off the shelf) | made-to-order
+    # (our specs) | make (in house). Per tier because it genuinely differs by volume —
+    # e.g. make@1 as a prototype, buy@10k once a supplier will tool for it.
     make_or_buy: Mapped[str | None] = mapped_column(String(16))
     source_type: Mapped[str | None] = mapped_column(String(24))
     basis_note: Mapped[str | None] = mapped_column(Text)
