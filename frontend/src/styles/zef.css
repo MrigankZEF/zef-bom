@@ -674,7 +674,7 @@ body { background: var(--bg); }
 }
 .tree-row {
   display: grid;
-  grid-template-columns: 1fr 90px 110px 80px 100px 100px 28px;
+  grid-template-columns: 1fr 70px 100px 100px 90px 90px 28px;
   align-items: center;
   padding: 7px 12px 7px var(--indent, 12px);
   border-bottom: 1px solid var(--hair-faint);
@@ -757,7 +757,7 @@ body { background: var(--bg); }
 }
 .tree-head {
   display: grid;
-  grid-template-columns: 1fr 90px 110px 80px 100px 100px 28px;
+  grid-template-columns: 1fr 70px 100px 100px 90px 90px 28px;
   padding: 12px;
   border-bottom: 1px solid var(--hair-strong);
   background: var(--bg-sunk);

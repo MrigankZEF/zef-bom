@@ -196,6 +196,7 @@ export default function Tree({ onOpenPart, focus, version }) {
           <div>Part / assembly</div>
           <div className="right">Qty</div>
           <div className="right">Cost @ {tierLabel(tier)}</div>
+          <div className="right">Total</div>
           <div className="right">Coverage</div>
           <div className="right">Module</div>
           <div></div>
@@ -259,6 +260,13 @@ export default function Tree({ onOpenPart, focus, version }) {
               <div className="qty">× {n.quantity}</div>
               <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}>
                 {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost) : "—"}
+              </div>
+              {/* Line extended cost: unit rollup x the quantity on THIS row. Deliberately not
+                  the effective quantity from the root, so it always agrees with the two
+                  columns beside it — the trade-off is that leaf lines don't sum to the BOM. */}
+              <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}
+                   title={n.rollup_cost > 0 ? `${fmtEURcompact(n.rollup_cost)} x ${n.quantity}` : undefined}>
+                {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost * n.quantity) : "—"}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
                 <div className="cov-bar" style={{ width: 38 }}>
