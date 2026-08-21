@@ -17,6 +17,16 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 - `GET /costing/summary?volume=` — per-subsystem rollups + tier totals
 - `GET /catalog` — flat list; costs are the **rolled-up** figures per tier (same numbers the drawer shows), not raw `decided_costs`
 
+- `GET /flat?root=&volume=` — a BOM flattened to one level: one row per distinct descendant
+  with `count` (the quantity multiplied along every path and summed over paths), `unit_cost`,
+  `cost`, `share` of the BOM, `coverage`, `module_code` and `is_leaf`. Rows are sorted
+  dearest-first with the unpriced last. Leaf rows sum to the parts cost; assembly rows carry
+  their own process cost, so summing both double-counts — filter on `is_leaf`. The root's own
+  labour is not a row; it comes back as `own_assembly_cost`.
+- `GET /items/{id}/usage?volume=` — which top-level BOMs need this item and how many of it
+  (`roots[]`, `total_count`, `shared`). `shared` = more than one BOM reaches it, in which case
+  no single extended total means anything.
+
 ## M4 — edit / cost
 - `PATCH /items/{id}` — partial update; writes change_history
 - `POST /items/{id}/code` — `{mode: auto|manual, code, on_conflict: abort|merge, preview}`;

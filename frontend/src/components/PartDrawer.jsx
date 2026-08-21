@@ -74,11 +74,12 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
       safe(api.assemblyLabor(itemId), []),
       safe(api.costTypes(), []),
       safe(api.itemLinks(itemId), []),
+      safe(api.itemUsage(itemId), { roots: [], total_count: 0, shared: false }),
     ])
-      .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes, links]) => {
+      .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes, links, usage]) => {
         const rollups = { 1: r1, 100: r100, 10000: r10k };
         setActionError(null);   // a successful reload means the last action went through
-        setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes, links });
+        setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes, links, usage });
         setForm({ ...item, materials: item.materials || (item.material ? [item.material] : []) });
       })
       .catch((e) => setLoadError(e.message));
@@ -88,7 +89,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   if (loadError) return <Shell><p className="err" style={{ padding: 24 }}>{loadError}</p></Shell>;
   if (!d) return <Shell><p className="muted" style={{ padding: 24 }}>Loading…</p></Shell>;
 
-  const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes, links } = d;
+  const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes, links, usage } = d;
   const isAssembly = item.item_type === "assembly";
   const isLeaf = !node.has_children;
   const set = (k, v) => { setSaved(false); setForm((f) => ({ ...f, [k]: v })); };
@@ -359,7 +360,7 @@ Create this copy anyway? It gets its own new code.`)) {
 
         {tab === "edit" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} />
+            <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} usage={usage} />
 
             {!isLeaf && (
               <AssemblyCostCards itemId={itemId} item={item} rollups={rollups} decided={decided}
@@ -964,7 +965,7 @@ function FilesTab({ itemId, thumbnailFileId, onThumbnailChanged, setError: setDr
 // The three volume tiers side by side, read-only — the figure the cards below it edit.
 // A leaf shows its own decided unit cost; an assembly shows the rolled-up cost split into
 // the parts beneath it plus its own assembly labour.
-function CostOverviewCard({ isLeaf, rollups, decided }) {
+function CostOverviewCard({ isLeaf, rollups, decided, usage }) {
   const byTier = Object.fromEntries(decided.map((x) => [x.volume_tier, x]));
   return (
     <div className="card">
@@ -978,6 +979,10 @@ function CostOverviewCard({ isLeaf, rollups, decided }) {
           const dc = byTier[t];
           const unit = dc?.unit_cost_eur != null ? Number(dc.unit_cost_eur) : null;
           const value = isLeaf ? unit : (r.cost > 0 ? r.cost : null);
+          // What this part costs the BOM at this tier. Only shown when a single top-level
+          // BOM needs it — across two products no one total is the right answer.
+          const count = usage && !usage.shared ? usage.total_count : null;
+          const extended = unit != null && count ? unit * count : null;
           return (
             <div key={t} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span className="label">@ {tierLabel(t)} pcs</span>
@@ -989,6 +994,12 @@ function CostOverviewCard({ isLeaf, rollups, decided }) {
                   ? (unit == null ? "no decided cost" : "decided unit cost")
                   : `parts ${fmtEURcompact(r.parts_cost || 0)} + assembly ${fmtEURcompact(r.assembly_cost || 0)}`}
               </span>
+              {isLeaf && extended != null && (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}
+                      title={`${usage.roots[0]?.root} needs ${count.toLocaleString()} of these`}>
+                  × {count.toLocaleString()} = {fmtEURcompact(extended)}
+                </span>
+              )}
             </div>
           );
         })}

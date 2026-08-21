@@ -43,6 +43,12 @@ export const api = {
   },
   rollup: (root, volume = 100) =>
     request(`/rollup?${new URLSearchParams({ root, volume })}`),
+  flat: (root, volume = 100) => {
+    const qs = new URLSearchParams({ ...(root ? { root } : {}), volume }).toString();
+    return request(`/flat?${qs}`);
+  },
+  itemUsage: (id, volume = 100) =>
+    request(`/items/${encodeURIComponent(id)}/usage?${new URLSearchParams({ volume })}`),
   whereUsed: (id) => request(`/items/${encodeURIComponent(id)}/where-used`),
   costingSummary: (volume = 100) =>
     request(`/costing/summary?${new URLSearchParams({ volume })}`),
