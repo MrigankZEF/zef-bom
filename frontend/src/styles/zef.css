@@ -724,7 +724,15 @@ body { background: var(--bg); }
   font-family: var(--font-body); font-size: 13px;
   color: var(--ink);
   min-width: 0;
+  /* the row is split in two: this column expands, the data columns open the drawer */
+  margin: -7px 0; padding: 7px 6px 7px 0;   /* full row height, so the hover tint reads as a zone */
+  border-radius: 3px;
 }
+/* left zone: expands. Its own tint sits on top of the row tint, so the boundary is visible
+   before you commit to a click. */
+.tree-name.expands:hover { background: var(--warm-3); }
+/* a leaf has no layer below, so the zone is inert and must NOT invite a click */
+.tree-name.inert { cursor: default; }
 .tree-name .num {
   font-family: var(--font-mono); font-size: 11px;
   color: var(--ink-3);

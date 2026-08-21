@@ -228,9 +228,8 @@ export default function Tree({ onOpenPart, focus, version }) {
               onDragLeave={() => setDropKey((d) => (d === key ? null : d))}
               onDrop={(e) => { if (isValid) { e.preventDefault(); doMove(n.item_id); } }}
               title={drag ? (isValid ? `Move ${drag.name} into ${n.item_name}` : "")
-                : expandable ? "Click to expand · drag to move · arrow opens details"
-                : (n.has_children ? "In a loop — click to open details" : "Drag to move · click to open details")}
-              onClick={() => (expandable ? toggle(n.item_id) : onOpenPart(n.item_id))}
+                : "Open details · drag to move"}
+              onClick={() => onOpenPart(n.item_id)}
             >
               {depth > 0 && (
                 <span className="tree-rails" aria-hidden="true">
@@ -241,10 +240,15 @@ export default function Tree({ onOpenPart, focus, version }) {
                   ))}
                 </span>
               )}
-              <div className="tree-name">
+              <div
+                className={`tree-name ${expandable ? "expands" : "inert"}`}
+                title={expandable ? (open ? "Collapse" : "Expand one level") : ""}
+                onClick={(e) => { e.stopPropagation(); if (expandable) toggle(n.item_id); }}
+              >
                 <button
                   className={`tree-toggle ${expandable ? "" : "is-leaf"}`}
-                  onClick={(e) => { e.stopPropagation(); expandable ? toggle(n.item_id) : onOpenPart(n.item_id); }}
+                  tabIndex={expandable ? 0 : -1}
+                  onClick={(e) => { e.stopPropagation(); if (expandable) toggle(n.item_id); }}
                 >
                   <Icon name={open ? "chevD" : "chevR"} size={12} />
                 </button>
