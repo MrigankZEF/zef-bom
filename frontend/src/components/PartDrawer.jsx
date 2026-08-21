@@ -34,15 +34,17 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   // written until Save, so a stray click can't change a BOM.
   const [editQty, setEditQty] = useState(false);
   const [qtyDraft, setQtyDraft] = useState({});   // { child_id: "raw string" }
-  // Kept separate from `error`: that one replaces the whole drawer body, which would
-  // throw away the edits still staged in this card.
-  const [qtyError, setQtyError] = useState(null);
   const [d, setD] = useState(null);
   const [form, setForm] = useState({});
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [error, setError] = useState(null);
+  // Two separate channels. `loadError` means the drawer has no data to show, so it
+  // legitimately replaces the body. `actionError` means an action failed while the drawer is
+  // perfectly usable — replacing the body there would throw away unsaved input.
+  const [loadError, setLoadError] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const setError = setActionError;   // every action, and every sub-component, funnels here
   const [modOpts, setModOpts] = useState({ current: null, options: [] });
   const [pendingMod, setPendingMod] = useState(null);  // staged module; applied on Save
   useEffect(() => {
@@ -52,7 +54,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   }, [itemId]);
 
   const load = () => {
-    setError(null);
+    setLoadError(null);
     // Archived items aren't in the live tree/rollup graph, so those calls 404 —
     // fail-soft to empty so an archived item still opens with its saved data.
     const safe = (p, fallback) => p.catch(() => fallback);
@@ -73,14 +75,15 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
     ])
       .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes]) => {
         const rollups = { 1: r1, 100: r100, 10000: r10k };
+        setActionError(null);   // a successful reload means the last action went through
         setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes });
         setForm({ ...item, materials: item.materials || (item.material ? [item.material] : []) });
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setLoadError(e.message));
   };
-  useEffect(() => { setD(null); setTab("details"); setAddingChild(false); setEditQty(false); setQtyDraft({}); setQtyError(null); load(); /* eslint-disable-next-line */ }, [itemId]);
+  useEffect(() => { setD(null); setTab("details"); setAddingChild(false); setEditQty(false); setQtyDraft({}); setActionError(null); load(); /* eslint-disable-next-line */ }, [itemId]);
 
-  if (error) return <Shell><p className="err" style={{ padding: 24 }}>{error}</p></Shell>;
+  if (loadError) return <Shell><p className="err" style={{ padding: 24 }}>{loadError}</p></Shell>;
   if (!d) return <Shell><p className="muted" style={{ padding: 24 }}>Loading…</p></Shell>;
 
   const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes } = d;
@@ -137,21 +140,21 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const qtyEdits = () => (node.children || []).filter(qtyChanged);
   const qtyInvalid = () => (node.children || []).filter(qtyBad);
 
-  const cancelQty = () => { setQtyDraft({}); setEditQty(false); setQtyError(null); };
+  const cancelQty = () => { setQtyDraft({}); setEditQty(false); setActionError(null); };
   const saveQty = async () => {
     const bad = qtyInvalid();
     if (bad.length) {
-      setQtyError(`Quantity must be a number greater than 0 — check ${bad.map((c) => c.item_id).join(", ")}.`);
+      setActionError(`Quantity must be a number greater than 0 — check ${bad.map((c) => c.item_id).join(", ")}.`);
       return;
     }
     const edits = qtyEdits();
     if (!edits.length) { cancelQty(); return; }
-    setBusy(true); setQtyError(null);
+    setBusy(true); setActionError(null);
     try {
       for (const c of edits) await api.setChildQuantity(itemId, c.item_id, toNum(qtyRaw(c)));
       setQtyDraft({}); setEditQty(false);
       load(); onChanged?.();
-    } catch (e) { setQtyError(e.message); } finally { setBusy(false); }
+    } catch (e) { setActionError(e.message); } finally { setBusy(false); }
   };
 
   const restore = async () => {
@@ -201,6 +204,17 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
           <button className="btn ghost sm" onClick={onClose}><Icon name="close" /></button>
         </div>
       </div>
+
+      {actionError && (
+        <div role="alert" style={{ flex: "0 0 auto", margin: "0 24px 4px", padding: "10px 12px", border: "1px solid var(--accent)", borderRadius: 4, background: "var(--accent-soft)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <span style={{ fontSize: 13, color: "var(--accent)" }}>
+            <Icon name="alert" size={13} /> {actionError}
+          </span>
+          <button className="btn ghost sm" title="Dismiss" onClick={() => setActionError(null)}>
+            <Icon name="close" size={11} />
+          </button>
+        </div>
+      )}
 
       <div className="drawer-body">
         {item.archived && (
@@ -304,8 +318,8 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
                   ))}
                 </div>
                 {editQty && (
-                  <div style={{ padding: "0 18px 10px", fontSize: 11.5, color: qtyError ? "var(--accent)" : "var(--ink-3)" }}>
-                    {qtyError || "Nothing is written until you press Save. Cancel discards every change."}
+                  <div style={{ padding: "0 18px 10px", fontSize: 11.5, color: "var(--ink-3)" }}>
+                    Nothing is written until you press Save. Cancel discards every change.
                   </div>
                 )}
                 {node.children.map((c) => (
