@@ -376,7 +376,7 @@ Create this copy anyway? It gets its own new code.`)) {
             )}
 
             <Accordion title="Add / edit" meta="fill in item data">
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, paddingTop: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14, paddingTop: 14 }}>
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Name"><input className="input" value={form.item_name ?? ""} onChange={(e) => set("item_name", e.target.value)} /></Field></div>
                 <div style={{ gridColumn: "1 / -1" }}>
                   <Field label={`Module / code  ·  currently ${item.item_id}`}>
@@ -445,7 +445,7 @@ Create this copy anyway? It gets its own new code.`)) {
                   </div>
                 )}
                 {node.children.map((c) => (
-                  <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px 1fr 78px 80px 28px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, background: editQty && qtyChanged(c) ? "var(--accent-soft)" : undefined }}>
+                  <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px minmax(0, 1fr) 78px 80px 28px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, background: editQty && qtyChanged(c) ? "var(--accent-soft)" : undefined }}>
                     <span className="mono" style={{ fontSize: 12, cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_id}</span>
                     <span style={{ cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_name}</span>
                     {editQty ? (
@@ -499,9 +499,9 @@ Create this copy anyway? It gets its own new code.`)) {
             <div className="card-head" style={{ padding: "14px 18px 10px" }}><span className="card-title">Change history · {history.length}</span></div>
             {history.length === 0 && <div style={{ padding: 18, color: "var(--ink-3)" }}>No changes yet.</div>}
             {history.map((h) => (
-              <div key={h.id} style={{ display: "grid", gridTemplateColumns: "130px 1fr", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", fontSize: 12.5 }}>
+              <div key={h.id} style={{ display: "grid", gridTemplateColumns: "130px minmax(0, 1fr)", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", fontSize: 12.5 }}>
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" }}>{(h.changed_at || "").slice(0, 16).replace("T", " ")}</span>
-                <span><strong>{h.field_changed || h.change_type}</strong>{h.old_value != null && <span style={{ color: "var(--ink-3)" }}> {h.old_value} →</span>} <span>{h.new_value ?? ""}</span><span style={{ color: "var(--ink-3)" }}> · {h.changed_by}</span></span>
+                <span style={{ overflowWrap: "anywhere" }}><strong>{h.field_changed || h.change_type}</strong>{h.old_value != null && <span style={{ color: "var(--ink-3)" }}> {h.old_value} →</span>} <span>{h.new_value ?? ""}</span><span style={{ color: "var(--ink-3)" }}> · {h.changed_by}</span></span>
               </div>
             ))}
           </div>
@@ -602,7 +602,10 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents }) {
           {item.comment && (
             <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
               <span className="label" style={{ minWidth: 96, paddingTop: 2 }}>Notes</span>
-              <span style={{ flex: 1, color: "var(--ink-2)", whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{item.comment}</span>
+              {/* A pasted URL is one unbroken word with no break opportunity, so without
+                  `anywhere` it runs straight past the card edge. */}
+              <span style={{ flex: 1, minWidth: 0, color: "var(--ink-2)", whiteSpace: "pre-wrap",
+                             overflowWrap: "anywhere", lineHeight: 1.45 }}>{item.comment}</span>
             </div>
           )}
         </div>
@@ -689,7 +692,7 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
             {!cat && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>Loading catalog…</div>}
             {cat && !s && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>Type to search the {cat.length} catalog items…</div>}
             {results.map((r) => (
-              <div key={r.item_id} style={{ display: "grid", gridTemplateColumns: "100px 1fr 50px", gap: 8, padding: "6px 4px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+              <div key={r.item_id} style={{ display: "grid", gridTemplateColumns: "100px minmax(0, 1fr) 50px", gap: 8, padding: "6px 4px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
                 <span className="mono" style={{ fontSize: 12 }}>{r.item_id}</span>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.item_name}</span>
                 <button className="btn sm" onClick={() => addExisting(r.item_id)} disabled={busy}>add</button>
@@ -699,7 +702,7 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
           </div>
         </>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 110px 64px", gap: 8, alignItems: "end" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 110px 110px 64px", gap: 8, alignItems: "end" }}>
           <Field label="Name"><input className="input" value={nm} autoFocus placeholder="e.g. Bracket" onChange={(e) => setNm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createAndAdd()} /></Field>
           <Field label="Type"><select className="select" value={ntype} onChange={(e) => setNtype(e.target.value)}><option value="part">part</option><option value="assembly">assembly</option></select></Field>
           <Field label="Module"><select className="select" value={nmod} onChange={(e) => setNmod(e.target.value)}>{modOptions.map((m) => <option key={m} value={m}>{m}</option>)}</select></Field>
@@ -725,7 +728,7 @@ function WhereUsed({ itemId, parents, onOpenPart, onMoved, setError }) {
         <div style={{ padding: 18, color: "var(--ink-3)", fontSize: 13 }}>Top-level — not used inside another assembly.</div>
       ) : parents.map((p) => (
         <div key={p.parent} style={{ borderTop: "1px solid var(--hair-faint)" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "90px 1fr 54px 64px", gap: 10, padding: "8px 18px", alignItems: "center", fontSize: 13 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "90px minmax(0, 1fr) 54px 64px", gap: 10, padding: "8px 18px", alignItems: "center", fontSize: 13 }}>
             <span className="mono" style={{ fontSize: 12, cursor: "pointer" }} onClick={() => onOpenPart(p.parent)}>{p.parent}</span>
             <span style={{ cursor: "pointer" }} onClick={() => onOpenPart(p.parent)}>{p.name}</span>
             <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {p.quantity}</span>
@@ -770,7 +773,7 @@ function MovePicker({ itemId, fromParent, onCancel, onMoved, setError }) {
       <div style={{ maxHeight: 200, overflowY: "auto" }}>
         {cat && !s && <div style={{ padding: 6, color: "var(--ink-3)", fontSize: 12 }}>Type to find the target assembly…</div>}
         {results.map((r) => (
-          <div key={r.item_id} style={{ display: "grid", gridTemplateColumns: "100px 1fr 56px", gap: 8, padding: "5px 4px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+          <div key={r.item_id} style={{ display: "grid", gridTemplateColumns: "100px minmax(0, 1fr) 56px", gap: 8, padding: "5px 4px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
             <span className="mono" style={{ fontSize: 12 }}>{r.item_id}</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.item_name}</span>
             <button className="btn sm" onClick={() => move(r.item_id)} disabled={busy}>move</button>
@@ -993,7 +996,7 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
               <button className="btn ghost sm" onClick={() => setAdding((a) => !a)} disabled={busy}>+ add</button>
             </div>
             {adding && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 48px", gap: 8, marginTop: 8, alignItems: "end" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 100px 48px", gap: 8, marginTop: 8, alignItems: "end" }}>
                 <Field label="name (e.g. machine-A)"><input className="input" value={ctName} onChange={(e) => setCtName(e.target.value)} /></Field>
                 <Field label="€/hour"><NumInput value={ctRate} onChange={setCtRate} /></Field>
                 <button className="btn sm" style={{ marginBottom: 1 }} onClick={addCostTypeInline} disabled={busy}>add</button>
@@ -1008,9 +1011,9 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
             <div className="card-head"><span className="card-title">Assembly time — minutes</span><span className="card-meta">min · likely · max</span></div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {COST_TIERS.map((t) => (
-                <div key={t} style={{ display: "grid", gridTemplateColumns: "60px 1fr 44px", gap: 8, alignItems: "end" }}>
+                <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 44px", gap: 8, alignItems: "end" }}>
                   <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>{t.toLocaleString()}</span></Field>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
                     <Field label="min"><NumInput value={tval(t, "time_min")} onChange={(v) => setT(t, "time_min", v)} /></Field>
                     <Field label="likely*"><NumInput value={tval(t, "time_likely")} onChange={(v) => setT(t, "time_likely", v)} /></Field>
                     <Field label="max"><NumInput value={tval(t, "time_max")} onChange={(v) => setT(t, "time_max", v)} /></Field>
@@ -1040,9 +1043,9 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {COST_TIERS.map((t) => (
-              <div key={t} style={{ display: "grid", gridTemplateColumns: "60px 1fr 70px 44px", gap: 8, alignItems: "end" }}>
+              <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 70px 44px", gap: 8, alignItems: "end" }}>
                 <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>~{(totalQty * t).toLocaleString()}</span></Field>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
                   <Field label="min €"><NumInput value={dval(t, "cost_min", "")} onChange={(v) => setD(t, "cost_min", v)} /></Field>
                   <Field label="likely €*"><NumInput value={dval(t, "unit_cost_eur", "")} onChange={(v) => setD(t, "unit_cost_eur", v)} /></Field>
                   <Field label="max €"><NumInput value={dval(t, "cost_max", "")} onChange={(v) => setD(t, "cost_max", v)} /></Field>
@@ -1073,10 +1076,10 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
                 <span className="mono">{q.currency} {q.unit_cost} @{q.volume_tier}</span>
                 <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
               </div>
-              {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3 }}>{q.note}</div>}
+              {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
             </div>
           ))}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 80px 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 80px 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
             <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
             <Field label="Supplier"><RefSelect category="supplier" value={ev.supplier_name} onChange={(v) => setEv({ ...ev, supplier_name: v })} placeholder="—" /></Field>
             <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>

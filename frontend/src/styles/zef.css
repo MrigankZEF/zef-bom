@@ -543,6 +543,9 @@ body { background: var(--bg); }
   border-radius: 4px;
   font-family: var(--font-body); font-size: 13px; color: var(--ink);
   outline: none; width: 100%;
+  /* A form control carries an intrinsic default width, so `min-width: auto` refuses to
+     shrink and pushes the columns beside it out of the card (worst in the 680px drawer). */
+  min-width: 0;
 }
 .input:focus { border-color: var(--ink); }
 .input.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -564,6 +567,7 @@ body { background: var(--bg); }
   background-size: 4px 4px;
   background-repeat: no-repeat;
   padding-right: 24px;
+  min-width: 0;   /* same reason as .input above */
 }
 .select:focus { border-color: var(--ink); }
 
