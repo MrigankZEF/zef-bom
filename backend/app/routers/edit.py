@@ -7,7 +7,7 @@ Auth is deferred to M6; for now the editor identity comes from an optional
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select, update
 from sqlalchemy.orm import Session
 
 from ..bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
@@ -34,6 +34,7 @@ from ..schemas import (
     ItemPatch,
     DuplicateItemIn,
     MoveLinkIn,
+    SetCodeIn,
     UpdateLinkIn,
 )
 
@@ -81,6 +82,165 @@ def module_options(item_id: str, db: Session = Depends(get_db)) -> dict:
     _get_item(db, item_id)
     m = ITEM_NUMBER_RE.match(item_id)
     return {"current": m.group("module") if m else None, "options": allowed_modules(db, item_id)}
+
+
+def _merge_into(db: Session, src_id: str, dst_id: str, *, user: str) -> dict:
+    """Move `src_id`'s data onto the existing `dst_id`, then delete `src_id`.
+
+    `rename_item` hard-refuses an occupied target, so this is separate logic rather than a
+    flag on it. Placements become the UNION of both items' links so no assembly silently
+    loses a component; the occupant's costs/labour/fields/evidence are discarded, because the
+    point of the operation is that the incoming item's data wins.
+    """
+    from ..operations import register_code
+
+    dst = db.get(Item, dst_id)
+    kept_parents = {
+        bl.parent_item_id
+        for bl in db.execute(select(BomLink).where(BomLink.child_item_id == dst_id)).scalars()
+    }
+    # the occupant's own data goes; the code keeps only its identity
+    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue):
+        db.execute(sa_delete(model).where(model.item_id == dst_id))
+    db.flush()
+
+    # fold the incoming item's placements in, skipping edges the target already has
+    for bl in db.execute(select(BomLink).where(BomLink.child_item_id == src_id)).scalars():
+        if bl.parent_item_id in kept_parents or bl.parent_item_id == dst_id:
+            db.delete(bl)
+        else:
+            bl.child_item_id = dst_id
+    existing_kids = {
+        bl.child_item_id
+        for bl in db.execute(select(BomLink).where(BomLink.parent_item_id == dst_id)).scalars()
+    }
+    for bl in db.execute(select(BomLink).where(BomLink.parent_item_id == src_id)).scalars():
+        if bl.child_item_id in existing_kids or bl.child_item_id == dst_id:
+            db.delete(bl)
+        else:
+            bl.parent_item_id = dst_id
+    db.flush()
+
+    # the incoming item's data wins on the surviving code
+    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue):
+        db.execute(update(model).where(model.item_id == src_id).values(item_id=dst_id))
+    src = db.get(Item, src_id)
+    for col in ("item_name", "item_type", "materials", "material", "weight_grams",
+                "unit_of_measure", "supplier", "supplier_country", "lead_time_weeks",
+                "cost_type_id", "drawing_url", "comment", "external_reference"):
+        setattr(dst, col, getattr(src, col))
+    dst.updated_by = user
+    db.execute(
+        update(ChangeHistory)
+        .where(ChangeHistory.entity_type == "item", ChangeHistory.entity_id == src_id)
+        .values(entity_id=dst_id)
+    )
+    db.delete(src)
+    register_code(db, src_id)   # the vacated code stays retired
+    record_change(
+        db, entity_type="item", entity_id=dst_id, change_type="update",
+        field_changed="item_id", old_value=src_id, new_value=dst_id, changed_by=user,
+        change_reason=f"merged {src_id} onto {dst_id} (overwrite)",
+    )
+    db.flush()
+    return {"merged_from": src_id}
+
+
+@router.post("/items/{item_id}/code")
+def set_item_code(
+    item_id: str, body: SetCodeIn,
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Change an item's number — automatically, or to a code you type."""
+    from ..operations import (
+        UNIVERSALS, allocate_code, normalize_structure, number_is_free, register_code,
+        rename_item, resolve_rename,
+    )
+
+    it = _get_item(db, item_id)
+    cur = ITEM_NUMBER_RE.match(item_id)
+    if not cur:
+        raise HTTPException(400, f"{item_id} isn't a standard code, so its number can't be changed here")
+    suffix = cur.group("suffix")
+
+    if body.mode == "auto":
+        target = allocate_code(db, cur.group("module"), suffix)
+        if body.preview:
+            db.rollback()
+            return {"item_id": item_id, "target": target, "action": "rename", "conflict": None}
+    else:
+        target = (body.code or "").strip().upper()
+        m = ITEM_NUMBER_RE.match(target)
+        if not m:
+            raise HTTPException(400, f"“{target}” isn't a valid code — e.g. AEC042P.")
+        if m.group("suffix") != suffix:
+            raise HTTPException(
+                400,
+                f"{item_id} is a {'assembly' if suffix == 'A' else 'part'}, so the code must end "
+                f"in {suffix}. Change the type with Convert to assembly, not by typing a suffix.",
+            )
+        module = m.group("module")
+        if module != cur.group("module"):
+            allowed = allowed_modules(db, item_id)
+            if module not in allowed:
+                raise HTTPException(
+                    400,
+                    f"Module '{module}' isn't allowed here — choose from {allowed} (a part may "
+                    "only take a universal code or its parent assembly's system). Otherwise the "
+                    "naming engine would re-code it straight back.",
+                )
+        occupant = db.get(Item, target)
+        if occupant is None:
+            # free-looking, but a retired number must never be reissued
+            if not number_is_free(db, module, int(m.group("number"))):
+                raise HTTPException(
+                    409,
+                    f"{target} is retired — that number was used before and is never reissued, "
+                    "so an old drawing or PO can't come to mean a different part. Pick another.",
+                )
+        elif body.on_conflict != "merge":
+            raise HTTPException(
+                409,
+                f"{target} is already {occupant.item_name}. Keep it, or re-submit with "
+                "on_conflict=merge to overwrite it with this item's data.",
+            )
+
+    if target == item_id:
+        return {"item_id": item_id, "target": target, "action": "noop", "renamed": []}
+
+    occupant = db.get(Item, target)
+    if body.preview:
+        info = {"item_id": item_id, "target": target,
+                "action": "merge" if occupant is not None else "rename"}
+        if occupant is not None:
+            gained = sorted({
+                bl.parent_item_id
+                for bl in db.execute(select(BomLink).where(
+                    BomLink.child_item_id == item_id, BomLink.archived.is_(False))).scalars()
+            })
+            info["conflict"] = {
+                "occupant_name": occupant.item_name,
+                "discards_costs": len(db.execute(
+                    select(DecidedCost).where(DecidedCost.item_id == target)).scalars().all()),
+                "gains_parents": gained,
+            }
+        db.rollback()
+        return info
+
+    if occupant is not None:
+        _merge_into(db, item_id, target, user=user)
+    else:
+        register_code(db, target)
+        rename_item(db, item_id, target, user=user, reason=f"number changed to {target} (manual)")
+    db.flush()
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    return {
+        "item_id": resolve_rename(changes, target),
+        "target": target,
+        "action": "merge" if occupant is not None else "rename",
+        "renamed": changes,
+    }
 
 
 @router.post("/items/{item_id}/duplicate", status_code=201)

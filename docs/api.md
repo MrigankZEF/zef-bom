@@ -19,6 +19,8 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 
 ## M4 — edit / cost
 - `PATCH /items/{id}` — partial update; writes change_history
+- `POST /items/{id}/code` — `{mode: auto|manual, code, on_conflict: abort|merge, preview}`;
+  change an item's number. `preview` reports what would happen and writes nothing.
 - `POST /items/{id}/top-level` — `{is_top_level}`; promote/demote a BOM root. Validated
   (assembly with contents, no parents, system-coded) and runs the naming engine, returning
   any `renamed[]`. `is_top_level` is **not** settable via `PATCH /items/{id}`.

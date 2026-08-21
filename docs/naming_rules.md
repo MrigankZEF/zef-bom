@@ -137,6 +137,22 @@ only when that number was **never** used in the target module.
 
 Codes widen past 999 on their own (`AEC1000A`), so there is no hard ceiling.
 
+## 4d. Changing an item's number by hand
+`POST /items/{id}/code`, either **auto** (the lowest never-used code, §4c) or **manual**
+(you type it). A typed code is refused when:
+- the suffix doesn't match the item's type — change the type with *Convert to assembly*,
+  otherwise `normalize_type` just flips it back;
+- the module isn't in `allowed_modules` — otherwise the naming engine re-codes it straight
+  back at the next structural edit;
+- the number is **retired** — used before, so never reissued.
+
+If the code belongs to a live item you choose: keep the original, or **overwrite**, which
+**merges** onto that code. The code survives and takes the incoming item's name, fields
+and costs; the occupant's costs, labour, evidence and custom fields are discarded; BOM
+placements become the **union** of both, de-duplicated, so no assembly loses a component;
+both change histories end up on the code; and the vacated number is retired. `preview`
+returns the real figures so the confirmation can state them. Not automatically reversible.
+
 ## 5. Catalog — adding & editing
 - **Add a new item** — free-text name + type (part/assembly) + **module** (default **UN**).
   - **No accidental duplicates** — if a live item already has that name (compared after

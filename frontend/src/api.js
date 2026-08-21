@@ -102,6 +102,8 @@ export const api = {
   setTopLevel: (id, isTopLevel) =>
     request(`/items/${encodeURIComponent(id)}/top-level`, { method: "POST", body: JSON.stringify({ is_top_level: isTopLevel }) }),
   moduleOptions: (id) => request(`/items/${encodeURIComponent(id)}/module-options`),
+  setItemCode: (id, body) =>
+    request(`/items/${encodeURIComponent(id)}/code`, { method: "POST", body: JSON.stringify(body) }),
   setItemModule: (id, module) =>
     request(`/items/${encodeURIComponent(id)}/module`, { method: "POST", body: JSON.stringify({ module }) }),
   addChild: (parentId, body) =>

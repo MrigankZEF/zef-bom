@@ -166,6 +166,41 @@ def test_module_change_keeps_the_number_only_if_never_used():
     assert new_id.startswith("UN") and new_id.endswith("P")
 
 
+def test_code_merge_unions_links_and_keeps_history():
+    """Overwriting an occupied code must not drop a component from any assembly."""
+    from app.routers.edit import _merge_into
+    db = _db()
+    db.add(Item(item_id="AEC010A", item_name="Asm A", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC011A", item_name="Asm B", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC020P", item_name="Incoming", item_type="part", module_code="AEC"))
+    db.add(Item(item_id="AEC021P", item_name="Occupant", item_type="part", module_code="AEC"))
+    db.commit()
+    # both sit under AEC010A (a shared edge), and each has one parent of its own
+    db.add(BomLink(parent_item_id="AEC010A", child_item_id="AEC020P", quantity=2))
+    db.add(BomLink(parent_item_id="AEC010A", child_item_id="AEC021P", quantity=1))
+    db.add(BomLink(parent_item_id="AEC011A", child_item_id="AEC020P", quantity=3))
+    db.add(DecidedCost(item_id="AEC020P", volume_tier=1, unit_cost_eur=9))
+    db.add(DecidedCost(item_id="AEC021P", volume_tier=1, unit_cost_eur=99))
+    db.commit()
+
+    _merge_into(db, "AEC020P", "AEC021P", user="t")
+    db.commit()
+
+    assert db.get(Item, "AEC020P") is None                    # incoming code is gone
+    assert db.get(Item, "AEC021P").item_name == "Incoming"    # its data won
+    parents = sorted(
+        b.parent_item_id for b in db.execute(
+            select(BomLink).where(BomLink.child_item_id == "AEC021P")
+        ).scalars()
+    )
+    assert parents == ["AEC010A", "AEC011A"], parents         # union, and the shared edge deduped
+    costs = db.execute(select(DecidedCost).where(DecidedCost.item_id == "AEC021P")).scalars().all()
+    assert [float(c.unit_cost_eur) for c in costs] == [9.0]   # occupant's 99 discarded
+    # and the vacated number is retired, not free
+    from app.operations import number_is_free
+    assert not number_is_free(db, "AEC", 20)
+
+
 def test_cycle_prevention():
     import app.operations as ops
     db = _db()

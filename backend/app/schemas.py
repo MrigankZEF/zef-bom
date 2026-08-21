@@ -109,6 +109,13 @@ class UpdateLinkIn(BaseModel):
     quantity: float = Field(gt=0)
 
 
+class SetCodeIn(BaseModel):
+    mode: str = "auto"                 # "auto" = next per the ledger | "manual" = `code`
+    code: str | None = None
+    on_conflict: str = "abort"         # "abort" | "merge" (only when `code` is a live item)
+    preview: bool = False              # report what would happen, write nothing
+
+
 class DuplicateItemIn(BaseModel):
     item_name: str
     allow_duplicate: bool = False   # same guard the catalog applies to a new item

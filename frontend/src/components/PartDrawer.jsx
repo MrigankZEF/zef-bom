@@ -203,6 +203,52 @@ Create this copy anyway? It gets its own new code.`)) {
       setError(e.message);
     } finally { setBusy(false); }
   };
+  const changeCode = async (mode) => {
+    let payload = { mode };
+    if (mode === "manual") {
+      const typed = window.prompt(`New code for ${itemId} (e.g. ${itemId.slice(0, 3)}042${itemId.slice(-1)}):`, itemId);
+      if (!typed || typed.trim().toUpperCase() === itemId) return;
+      payload.code = typed.trim().toUpperCase();
+    }
+    setBusy(true);
+    try {
+      // Ask first: the merge branch discards the occupant's costs and is not reversible,
+      // so the confirmation has to state the real numbers rather than a generic warning.
+      const plan = await api.setItemCode(itemId, { ...payload, preview: true });
+      if (plan.action === "noop") return;
+      let ok;
+      if (plan.action === "merge") {
+        const c = plan.conflict || {};
+        ok = window.confirm(
+          `${plan.target} already exists — "${c.occupant_name}".
+
+` +
+          `Overwrite it with ${itemId}'s data?
+` +
+          `  · ${plan.target} keeps its code, but takes this item's name, fields and costs
+` +
+          `  · ${c.discards_costs || 0} decided cost row(s) on ${plan.target} are discarded
+` +
+          (c.gains_parents?.length ? `  · ${plan.target} is added to ${c.gains_parents.join(", ")}
+` : "") +
+          `  · ${itemId} stops existing, and its number is never reissued
+
+` +
+          `This cannot be undone automatically.`
+        );
+      } else {
+        ok = window.confirm(`Renumber ${itemId} to ${plan.target}?`);
+      }
+      if (!ok) return;
+      const r = await api.setItemCode(itemId, payload);
+      onChanged?.();
+      if (r.renamed?.length) {
+        setActionError(`${r.renamed.length} other item${r.renamed.length > 1 ? "s were" : " was"} re-coded to match: `
+          + r.renamed.slice(0, 6).map((c) => `${c.from} → ${c.to}`).join(", "));
+      }
+      onOpenPart(r.item_id);
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
   const restore = async () => {
     setBusy(true);
     try { await api.restoreItem(itemId); load(); onChanged?.(); }
@@ -294,6 +340,20 @@ Create this copy anyway? It gets its own new code.`)) {
               </div>
             )}
             <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} setTier={setTier} item={item} parents={parents} />
+
+            {!item.archived && (
+              <div className="card" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div className="card-title">Item number</div>
+                  <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+                    Renumber automatically to the lowest never-used code, or type one. A number
+                    that was used before is never reissued.
+                  </p>
+                </div>
+                <button className="btn ghost sm" disabled={busy} onClick={() => changeCode("auto")}>Renumber automatically</button>
+                <button className="btn ghost sm" disabled={busy} onClick={() => changeCode("manual")}>Type a code…</button>
+              </div>
+            )}
 
             {isAssembly && !item.archived && (
               <div className="card" style={{ display: "flex", alignItems: "center", gap: 12 }}>
