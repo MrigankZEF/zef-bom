@@ -7,8 +7,11 @@ export const colorFor = (key) => {
 };
 
 export function squarify(items, x, y, w, h) {
-  const total = items.reduce((s, i) => s + i.value, 0) || 1;
-  const scaled = items.map((i) => ({ ...i, area: (i.value / total) * (w * h) }));
+  // Biggest first — squarified layout fills from the top-left, so sorting descending puts the
+  // largest contributor in the top-left corner and walks down in order.
+  const sorted = [...items].sort((a, b) => b.value - a.value);
+  const total = sorted.reduce((s, i) => s + i.value, 0) || 1;
+  const scaled = sorted.map((i) => ({ ...i, area: (i.value / total) * (w * h) }));
   const out = [];
   let rect = { x, y, w, h };
   let row = [];
