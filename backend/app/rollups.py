@@ -50,9 +50,12 @@ class Rollup:
     assembly_cost: float = 0.0  # just the process cost added at this node (for breakdown)
     assembly_cost_min: float = 0.0
     assembly_cost_max: float = 0.0
-    covered: int = 0          # leaf instances with a decided cost
-    total: int = 0            # leaf instances in total
-    missing: list[str] = field(default_factory=list)
+    covered: int = 0          # priced inputs: leaves with a decided cost + priced assemblies
+    total: int = 0            # all inputs that need a cost
+    missing: list[str] = field(default_factory=list)          # leaf ids with no decided cost
+    missing_assembly: list[str] = field(default_factory=list)  # assembly ids with no process cost
+    # a descendant carrying its own assembly cost under an ancestor marked as covering it
+    covered_conflict: list[str] = field(default_factory=list)
     weight_grams: float | None = 0.0
     weight_missing: list[str] = field(default_factory=list)
 
@@ -92,11 +95,15 @@ class BomGraph:
             ).scalars()
         }
         # Assembly labour: minutes (min, likely, max) per item at this tier, + the €/h rates.
+        _labor_rows = list(db.execute(
+            select(AssemblyLabor).where(AssemblyLabor.volume_tier == volume_tier)
+        ).scalars())
         self.labor: dict[str, tuple[float | None, float, float | None]] = {
-            al.item_id: (al.time_min, al.time_likely, al.time_max)
-            for al in db.execute(
-                select(AssemblyLabor).where(AssemblyLabor.volume_tier == volume_tier)
-            ).scalars()
+            al.item_id: (al.time_min, al.time_likely, al.time_max) for al in _labor_rows
+        }
+        # "this assembly's cost already covers everything beneath it" (outsourced/bought-in)
+        self.covers_subs: set[str] = {
+            al.item_id for al in _labor_rows if al.covers_subassemblies
         }
         # Assembly cost types are reference values (category 'assembly_cost_type') with a
         # €/hour rate in meta; keyed by the reference value's id (= item.cost_type_id).
@@ -106,7 +113,7 @@ class BomGraph:
                 select(ReferenceValue).where(ReferenceValue.category == "assembly_cost_type")
             ).scalars()
         }
-        self._rollup_cache: dict[str, Rollup] = {}
+        self._rollup_cache: dict[tuple[str, bool], Rollup] = {}
 
     def assembly_cost(self, item) -> tuple[float, float, float]:
         """(min, likely, max) € to assemble this item at the current tier = minutes × €/min."""
@@ -145,9 +152,14 @@ class BomGraph:
             if p in self.items
         ]
 
-    def rollup(self, item_id: str, _seen: frozenset[str] = frozenset()) -> Rollup:
-        if item_id in self._rollup_cache:
-            return self._rollup_cache[item_id]
+    def rollup(
+        self, item_id: str, _seen: frozenset[str] = frozenset(), _asm_covered: bool = False
+    ) -> Rollup:
+        """`_asm_covered` = an ancestor is marked as covering the assembly work beneath it, so
+        nothing down here counts as missing an assembly cost."""
+        key = (item_id, _asm_covered)
+        if key in self._rollup_cache:
+            return self._rollup_cache[key]
         if item_id in _seen:  # circular reference guard
             return Rollup(total=0)
         kids = self.children.get(item_id, [])
@@ -164,18 +176,23 @@ class BomGraph:
                 weight_grams=w if w is not None else 0.0,
                 weight_missing=[] if w is not None else [item_id],
             )
-            self._rollup_cache[item_id] = r
+            self._rollup_cache[key] = r
             return r
         seen = _seen | {item_id}
         r = Rollup(weight_grams=0.0)
+        # Everything below a covering assembly is already paid for by this one quoted cost.
+        covers = item_id in self.covers_subs
+        child_covered = _asm_covered or covers
         for child, qty in kids:
-            cr = self.rollup(child, seen)
+            cr = self.rollup(child, seen, child_covered)
             r.cost += cr.cost * qty
             r.cost_min += cr.cost_min * qty
             r.cost_max += cr.cost_max * qty
             r.covered += cr.covered
             r.total += cr.total
             r.missing.extend(cr.missing)
+            r.missing_assembly.extend(cr.missing_assembly)
+            r.covered_conflict.extend(cr.covered_conflict)
             r.weight_grams = (r.weight_grams or 0.0) + (cr.weight_grams or 0.0) * qty
             r.weight_missing.extend(cr.weight_missing)
         # An assembly's own process cost (time × rate) is added ON TOP of the children.
@@ -186,7 +203,21 @@ class BomGraph:
         r.cost += alikely
         r.cost_min += amin
         r.cost_max += amax
-        self._rollup_cache[item_id] = r
+        # An assembly is a cost input in its own right. Counting only leaves meant an unpriced
+        # assembly was invisible and the row still read 100%.
+        priced = self.assembly_priced(item)
+        if _asm_covered:
+            # An ancestor's quoted cost covers this one, so it is not a gap. If someone has
+            # nevertheless entered a cost here, that is a contradiction worth surfacing.
+            if priced:
+                r.covered_conflict.append(item_id)
+        else:
+            r.total += 1
+            if priced:
+                r.covered += 1
+            else:
+                r.missing_assembly.append(item_id)
+        self._rollup_cache[key] = r
         return r
 
     def flatten_leaves(self, root: str) -> dict[str, float]:

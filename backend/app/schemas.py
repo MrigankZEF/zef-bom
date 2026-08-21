@@ -85,6 +85,8 @@ class AssemblyLaborIn(BaseModel):
     time_likely: float  # minutes, most-likely (required)
     time_min: float | None = None
     time_max: float | None = None
+    # one quoted cost already covers the work on everything beneath this assembly
+    covers_subassemblies: bool = False
 
 
 class AssemblyLaborOut(BaseModel):
@@ -95,6 +97,7 @@ class AssemblyLaborOut(BaseModel):
     time_min: float | None = None
     time_likely: float
     time_max: float | None = None
+    covers_subassemblies: bool = False
 
 
 class AddChildIn(BaseModel):

@@ -13,7 +13,7 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 ## M3 — read / tree / rollup
 - `GET /tree?root=&top_level_only=` — hierarchy (recursive)
 - `GET /items/{id}/where-used` — parent assemblies
-- `GET /rollup?root=&volume=` — `{cost, covered, total, coverage, missing[]}`
+- `GET /rollup?root=&volume=` — `{cost, covered, total, coverage, missing[], missing_assembly[], covered_conflict[]}` (coverage counts assemblies too)
 - `GET /costing/summary?volume=` — per-subsystem rollups + tier totals
 - `GET /catalog` — flat list; costs are the **rolled-up** figures per tier (same numbers the drawer shows), not raw `decided_costs`
 

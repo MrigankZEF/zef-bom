@@ -283,6 +283,10 @@ class AssemblyLabor(Base):
     time_min: Mapped[float | None] = mapped_column(Float)
     time_likely: Mapped[float] = mapped_column(Float, nullable=False)  # minutes, most-likely
     time_max: Mapped[float | None] = mapped_column(Float)
+    # "This assembly's cost already covers the work on everything beneath it" — an outsourced
+    # or bought-in unit. Per tier, because sourcing differs by volume (build @1, buy @10k).
+    # Affects coverage reporting only; the rollup arithmetic is untouched.
+    covers_subassemblies: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

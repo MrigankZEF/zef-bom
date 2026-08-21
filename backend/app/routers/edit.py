@@ -421,6 +421,7 @@ def set_assembly_labor(
     existing.time_likely = body.time_likely
     existing.time_min = body.time_min
     existing.time_max = body.time_max
+    existing.covers_subassemblies = body.covers_subassemblies
     existing.updated_by = user
     record_change(
         db, entity_type="assembly_labor", entity_id=item_id,

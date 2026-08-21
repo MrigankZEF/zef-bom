@@ -784,7 +784,7 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
     if (likely === "" || likely == null) return;
     setBusy(true);
     try {
-      await api.setAssemblyLabor(itemId, { volume_tier: vt, time_likely: toNum(likely), time_min: toNum(tval(vt, "time_min")), time_max: toNum(tval(vt, "time_max")) });
+      await api.setAssemblyLabor(itemId, { volume_tier: vt, time_likely: toNum(likely), time_min: toNum(tval(vt, "time_min")), time_max: toNum(tval(vt, "time_max")), covers_subassemblies: !!tval(vt, "covers_subassemblies") });
       reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
@@ -822,6 +822,23 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
               })}
             </div>
           </div>
+
+          {(() => {
+            // A descendant carrying its own assembly cost under an ancestor marked as covering
+            // it — the two statements contradict each other.
+            const conflicts = [...new Set(COST_TIERS.flatMap((t) => rollups[t]?.covered_conflict || []))];
+            return conflicts.length > 0 && (
+              <div className="card" style={{ borderColor: "var(--accent)" }}>
+                <div className="card-head"><span className="card-title">Conflicting assembly costs</span></div>
+                <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: 0 }}>
+                  {conflicts.join(", ")} {conflicts.length === 1 ? "carries" : "carry"} an assembly
+                  cost, but an assembly above {conflicts.length === 1 ? "it is" : "them are"} marked
+                  as already covering the work below. One of the two is wrong — either untick the
+                  cover, or clear the assembly cost below it.
+                </p>
+              </div>
+            );
+          })()}
 
           {decided.length > 0 && (
             <div className="card" style={{ borderColor: "var(--accent)" }}>
@@ -877,9 +894,19 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
                     <Field label="max"><NumInput value={tval(t, "time_max")} onChange={(v) => setT(t, "time_max", v)} /></Field>
                   </div>
                   <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveLabor(t)} disabled={busy}>set</button>
+                  <label style={{ gridColumn: "2 / 4", display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--ink-3)", cursor: "pointer", marginTop: -4 }}
+                         title="For an outsourced or bought-in assembly, where one quoted cost already includes the work on everything below. Sub-assemblies below stop counting as missing an assembly cost.">
+                    <input type="checkbox" checked={!!tval(t, "covers_subassemblies")}
+                           onChange={(e) => { setT(t, "covers_subassemblies", e.target.checked); }} />
+                    Assembly cost covers all sub-assemblies
+                  </label>
                 </div>
               ))}
             </div>
+            <p style={{ fontSize: 11, color: "var(--ink-3)", margin: "10px 0 0" }}>
+              Tick per tier, then press <strong>set</strong> — sourcing can differ by volume
+              (built in house at @1, outsourced at @10k).
+            </p>
           </div>
         </>
       ) : (
