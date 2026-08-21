@@ -746,8 +746,11 @@ body { background: var(--bg); }
 /* Each zone tints on its own hover, so you can see which half you are about to hit.
    Without this the details half looked inert. */
 .tree-name.expands:hover,
+.tree-name.dismisses:hover,
 .tree-row .tree-data:hover { background: var(--warm-3); }
-/* a leaf has no layer below, so the zone is inert and must NOT invite a click */
+/* A leaf has nothing to expand, so its left zone only ever dismisses the details panel —
+   it lights up exactly while there is one open, and is inert otherwise. Affordance follows
+   what the click will actually do. */
 .tree-name.inert { cursor: default; }
 .tree-name .num {
   font-family: var(--font-mono); font-size: 11px;

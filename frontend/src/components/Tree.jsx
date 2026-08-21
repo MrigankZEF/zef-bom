@@ -117,9 +117,9 @@ export default function Tree({ onOpenPart, focus, version }) {
   // The left zone is the structure zone: it moves the tree and dismisses the details panel,
   // which would otherwise sit there describing a part you have navigated away from.
   const expandZone = (n) => {
-    if (!(n.has_children && (n.children?.length ?? 0) > 0)) return;  // leaf: nothing below
     if (focus) onOpenPart(null);
-    toggle(n.item_id);
+    // A leaf has nothing below it, so dismissing the panel is the whole action.
+    if (n.has_children && (n.children?.length ?? 0) > 0) toggle(n.item_id);
   };
 
   const rows = [];
@@ -252,8 +252,8 @@ export default function Tree({ onOpenPart, focus, version }) {
                 </span>
               )}
               <div
-                className={`tree-name ${expandable ? "expands" : "inert"}`}
-                title={expandable ? (open ? "Collapse" : "Expand one level") : ""}
+                className={`tree-name ${expandable ? "expands" : focus ? "dismisses" : "inert"}`}
+                title={expandable ? (open ? "Collapse" : "Expand one level") : focus ? "Close details" : ""}
                 onClick={(e) => { e.stopPropagation(); expandZone(n); }}
               >
                 <button
