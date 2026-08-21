@@ -71,12 +71,14 @@ class ItemLinkOut(BaseModel):
 
 
 class CostEvidenceIn(BaseModel):
-    source_type: str  # quote | invoice | estimate_math | estimate_web | estimate_ai
+    """Everything is optional: a row may be a quote, or just a note about the costing."""
+
+    source_type: str | None = None  # quote | invoice | estimate_math | estimate_web | estimate_ai
     supplier_name: str | None = None
     supplier_country: str | None = None
     currency: str = "EUR"
-    unit_cost: float
-    volume_tier: int
+    unit_cost: float | None = None
+    volume_tier: int = 100
     effective_date: date | None = None
     confidence: str | None = None
     cost_min: float | None = None
@@ -201,11 +203,11 @@ class CostEvidenceOut(BaseModel):
 
     id: int
     item_id: str
-    source_type: str
+    source_type: str | None = None
     supplier_name: str | None = None
     supplier_country: str | None = None
     currency: str
-    unit_cost: float
+    unit_cost: float | None = None
     volume_tier: int
     effective_date: date | None = None
     confidence: str | None = None

@@ -34,7 +34,9 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 - `POST /items/{id}/links` — `{link_type, url, label, sort_order}`; `link_type` is a
   `reference_values` value (category `link_type`), so the kinds are admin-managed
 - `DELETE /items/{id}/links/{link_id}`
-- `GET|POST|PATCH|DELETE /items/{id}/cost-evidence`
+- `GET|POST|PATCH|DELETE /items/{id}/cost-evidence` — every field is optional, but a POST
+  needs at least one of price / note / link (422 otherwise): a row may be a quote *or* just
+  a costing note
 - `GET|PUT /items/{id}/decided-cost?volume=`
 - `DELETE /items/{id}/decided-cost?volume=` — drop a decided cost (e.g. one stranded on an assembly)
 - `PUT /items/{id}/field-values`

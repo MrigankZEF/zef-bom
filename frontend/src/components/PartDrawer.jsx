@@ -1142,13 +1142,25 @@ function DecidedCostCard({ itemId, decided, totalQty, reload, setError }) {
 // bought-in assembly has quotes like any part.
 function CostEvidenceCard({ itemId, evidence, reload, setError }) {
   const [busy, setBusy] = useState(false);
-  const [ev, setEv] = useState({ source_type: "quote", unit_cost: "", volume_tier: 100, supplier_name: "", confidence: "high", note: "" });
+  const blank = { source_type: "", unit_cost: "", volume_tier: 100, supplier_name: "", confidence: "high", note: "", attachment_url: "" };
+  const [ev, setEv] = useState(blank);
+  // Costing produces two kinds of row: a quote with a price, and a plain note ("asked them,
+  // waiting on a price"). Nothing here is required on its own — one of the three is.
+  const hasSomething = !!(ev.unit_cost || ev.note.trim() || ev.attachment_url.trim());
   const addEvidence = async () => {
-    if (!ev.unit_cost) return;
+    if (!hasSomething) return;
     setBusy(true);
     try {
-      await api.addCostEvidence(itemId, { ...ev, unit_cost: toNum(ev.unit_cost), volume_tier: toNum(ev.volume_tier) });
-      setEv({ ...ev, unit_cost: "", supplier_name: "", note: "" }); reload();
+      await api.addCostEvidence(itemId, {
+        ...ev,
+        source_type: ev.source_type || null,
+        unit_cost: ev.unit_cost === "" ? null : toNum(ev.unit_cost),
+        volume_tier: toNum(ev.volume_tier) ?? 100,
+        supplier_name: ev.supplier_name || null,
+        note: ev.note.trim() || null,
+        attachment_url: ev.attachment_url.trim() || null,
+      });
+      setEv({ ...blank, volume_tier: ev.volume_tier, source_type: ev.source_type }); reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   return (
@@ -1157,22 +1169,36 @@ function CostEvidenceCard({ itemId, evidence, reload, setError }) {
         {evidence.map((q) => (
           <div key={q.id} style={{ borderTop: "1px solid var(--hair-faint)", padding: "8px 0", fontSize: 12.5 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <Pill kind={q.source_type === "invoice" ? "ok" : q.source_type?.startsWith("estimate") ? "warm" : "info"}>{(q.source_type || "").replace("estimate_", "est·")}</Pill>
-              <span style={{ flex: 1 }}>{q.supplier_name || <em style={{ color: "var(--ink-3)" }}>—</em>}</span>
-              <span className="mono">{q.currency} {q.unit_cost} @{q.volume_tier}</span>
+              <Pill kind={q.source_type === "invoice" ? "ok" : q.source_type?.startsWith("estimate") ? "warm" : "info"}>
+                {q.source_type ? q.source_type.replace("estimate_", "est·") : "note"}
+              </Pill>
+              <span style={{ flex: 1, minWidth: 0 }}>{q.supplier_name || <em style={{ color: "var(--ink-3)" }}>—</em>}</span>
+              <span className="mono">
+                {q.unit_cost != null ? `${q.currency} ${q.unit_cost} @${q.volume_tier}` : "—"}
+              </span>
               <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
             </div>
             {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
+            {q.attachment_url && (
+              <a href={extUrl(q.attachment_url)} target="_blank" rel="noreferrer" className="mono" title={q.attachment_url}
+                style={{ display: "block", marginTop: 3, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 11.5 }}>
+                {q.attachment_url}
+              </a>
+            )}
           </div>
         ))}
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 80px 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
-          <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
+          <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}><option value="">— note —</option>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
           <Field label="Supplier"><RefSelect category="supplier" value={ev.supplier_name} onChange={(v) => setEv({ ...ev, supplier_name: v })} placeholder="—" /></Field>
           <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
           <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>
         </div>
         <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button className="btn sm" onClick={addEvidence} disabled={busy}><Icon name="check" /> add evidence</button></div>
+        <div style={{ marginTop: 8 }}><Field label="Link (quote, product page…)"><input className="input mono" value={ev.attachment_url} placeholder="https://…" onChange={(e) => setEv({ ...ev, attachment_url: e.target.value })} /></Field></div>
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 10 }}>
+          <span style={{ fontSize: 11, color: "var(--ink-3)" }}>a price, a note or a link — any one is enough</span>
+          <button className="btn sm" onClick={addEvidence} disabled={busy || !hasSomething}><Icon name="check" /> add evidence</button>
+        </div>
       </div>
     </Accordion>
   );

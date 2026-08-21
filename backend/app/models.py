@@ -175,12 +175,13 @@ class CostEvidence(Base):
     item_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("items.item_id"), nullable=False, index=True
     )
-    # quote | invoice | estimate_math | estimate_web | estimate_ai
-    source_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    # quote | invoice | estimate_math | estimate_web | estimate_ai — nullable, because a
+    # row can also be a plain costing note with no source and no price behind it.
+    source_type: Mapped[str | None] = mapped_column(String(24))
     supplier_name: Mapped[str | None] = mapped_column(Text)
     supplier_country: Mapped[str | None] = mapped_column(String(64))
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
-    unit_cost: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)
+    unit_cost: Mapped[float | None] = mapped_column(Numeric(14, 4))
     volume_tier: Mapped[int] = mapped_column(Integer, nullable=False)
     effective_date: Mapped[date | None] = mapped_column(Date)
     confidence: Mapped[str | None] = mapped_column(String(8))  # high | medium | low
