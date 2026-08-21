@@ -194,12 +194,14 @@ export default function Tree({ onOpenPart, focus, version }) {
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
         <div className="tree-head">
           <div>Part / assembly</div>
-          <div className="right">Qty</div>
-          <div className="right">Cost @ {tierLabel(tier)}</div>
-          <div className="right">Total</div>
-          <div className="right">Coverage</div>
-          <div className="right">Module</div>
-          <div></div>
+          <div className="tree-data">
+            <div className="right">Qty</div>
+            <div className="right">Cost @ {tierLabel(tier)}</div>
+            <div className="right">Total</div>
+            <div className="right">Coverage</div>
+            <div className="right">Module</div>
+            <div></div>
+          </div>
         </div>
         <div className="tree">
           {rows.map(({ n, depth, open, key, anc, isLast }) => {
@@ -257,6 +259,7 @@ export default function Tree({ onOpenPart, focus, version }) {
                 <span className={`lbl ${n.item_type === "assembly" ? "assembly" : ""}`}>{n.item_name}</span>
                 {n.item_type === "assembly" && <Pill kind="warm">asm</Pill>}
               </div>
+              <div className="tree-data" title="Open details">
               <div className="qty">× {n.quantity}</div>
               <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}>
                 {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost) : "—"}
@@ -285,6 +288,7 @@ export default function Tree({ onOpenPart, focus, version }) {
               >
                 <Icon name="chevR" size={13} />
               </button>
+              </div>
             </div>
             );
           })}
