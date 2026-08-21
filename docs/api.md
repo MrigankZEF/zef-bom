@@ -19,6 +19,9 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 
 ## M4 — edit / cost
 - `PATCH /items/{id}` — partial update; writes change_history
+- `POST /items/{id}/top-level` — `{is_top_level}`; promote/demote a BOM root. Validated
+  (assembly with contents, no parents, system-coded) and runs the naming engine, returning
+  any `renamed[]`. `is_top_level` is **not** settable via `PATCH /items/{id}`.
 - `POST /items/{id}/duplicate`
 - `PATCH /items/{parent}/children/{child}` — set a link's quantity (no re-code; writes change_history)
 - `GET|POST|PATCH|DELETE /items/{id}/cost-evidence`

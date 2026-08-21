@@ -157,6 +157,25 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
     } catch (e) { setActionError(e.message); } finally { setBusy(false); }
   };
 
+  const setTopLevel = async (want) => {
+    const msg = want
+      ? `Make ${itemId} a top-level BOM? It becomes a root in Browse, and everything inside it counts as in use.`
+      : `${itemId} will stop being a top-level BOM. Its contents stay, but nothing will treat it as a root.`;
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      const r = await api.setTopLevel(itemId, want);
+      onChanged?.();
+      // Codes below may have followed the change of owning system — say so rather than
+      // letting ids change silently.
+      if (r.renamed?.length) {
+        setActionError(`${r.renamed.length} item${r.renamed.length > 1 ? "s were" : " was"} re-coded to match: `
+          + r.renamed.slice(0, 6).map((c) => `${c.from} → ${c.to}`).join(", ")
+          + (r.renamed.length > 6 ? " …" : ""));
+      }
+      load();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
   const restore = async () => {
     setBusy(true);
     try { await api.restoreItem(itemId); load(); onChanged?.(); }
@@ -247,6 +266,26 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
               </div>
             )}
             <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} setTier={setTier} item={item} parents={parents} />
+
+            {isAssembly && !item.archived && (
+              <div className="card" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div className="card-title">Top-level BOM</div>
+                  <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+                    {item.is_top_level
+                      ? "This assembly is a BOM root — it appears at the top of Browse and everything inside it counts as in use."
+                      : parents.length
+                        ? `Not available: ${itemId} sits inside ${parents.map((p) => p.parent).join(", ")}. Remove it from there first, or it would appear twice in the tree.`
+                        : "Make this assembly a root of its own BOM."}
+                  </p>
+                </div>
+                <button className="btn ghost sm"
+                        disabled={busy || (!item.is_top_level && parents.length > 0)}
+                        onClick={() => setTopLevel(!item.is_top_level)}>
+                  {item.is_top_level ? "Make it normal" : "Make top-level"}
+                </button>
+              </div>
+            )}
 
             <Accordion title="Add / edit" meta="fill in item data">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, paddingTop: 14 }}>

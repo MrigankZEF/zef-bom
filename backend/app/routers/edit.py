@@ -82,6 +82,61 @@ def module_options(item_id: str, db: Session = Depends(get_db)) -> dict:
     return {"current": m.group("module") if m else None, "options": allowed_modules(db, item_id)}
 
 
+@router.post("/items/{item_id}/top-level")
+def set_top_level(
+    item_id: str, body: dict = Body(default=None),
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Promote an assembly to a top-level BOM root, or demote it back.
+
+    A dedicated endpoint rather than PATCH: `is_top_level` decides which system owns every
+    item beneath it (`containing_root_modules` -> `recode_item`) and whether a drag-and-drop
+    move is "within the same BOM" (`containing_roots`), so it cannot be a blind field write.
+    """
+    from ..operations import UNIVERSALS, normalize_structure
+
+    it = _get_item(db, item_id)
+    want = True if body is None else bool(body.get("is_top_level", True))
+
+    if want and not it.is_top_level:
+        if not db.execute(
+            select(BomLink).where(BomLink.parent_item_id == item_id, BomLink.archived.is_(False))
+        ).first():
+            raise HTTPException(400, f"{item_id} has no contents — only an assembly can be a BOM root.")
+        parents = db.execute(
+            select(BomLink).where(BomLink.child_item_id == item_id, BomLink.archived.is_(False))
+        ).scalars().all()
+        if parents:
+            raise HTTPException(
+                409,
+                f"{item_id} sits inside {', '.join(sorted(p.parent_item_id for p in parents))}. "
+                "Remove it from there first — otherwise it would appear twice in the tree, "
+                "once as its own root and once nested.",
+            )
+        if (it.module_code or "") in UNIVERSALS:
+            raise HTTPException(
+                400,
+                f"{item_id} is universal ({it.module_code}). A BOM root is a system, so give it "
+                "a system code (AEC, DAC, …) with the module picker first.",
+            )
+
+    if it.is_top_level == want:
+        return {"item_id": item_id, "is_top_level": want, "renamed": []}
+
+    it.is_top_level = want
+    it.updated_by = user
+    record_change(
+        db, entity_type="item", entity_id=item_id, change_type="update",
+        field_changed="is_top_level", old_value=not want, new_value=want, changed_by=user,
+        change_reason="promoted to top-level BOM" if want else "demoted from top-level BOM",
+    )
+    db.flush()
+    # Ownership of everything beneath just changed, so codes may need to follow.
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    return {"item_id": item_id, "is_top_level": want, "renamed": changes}
+
+
 @router.post("/items/{item_id}/module")
 def change_module(
     item_id: str,

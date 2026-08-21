@@ -99,6 +99,8 @@ export const api = {
   patchItem: (id, patch) =>
     request(`/items/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   promoteItem: (id) => request(`/items/${encodeURIComponent(id)}/promote`, { method: "POST" }),
+  setTopLevel: (id, isTopLevel) =>
+    request(`/items/${encodeURIComponent(id)}/top-level`, { method: "POST", body: JSON.stringify({ is_top_level: isTopLevel }) }),
   moduleOptions: (id) => request(`/items/${encodeURIComponent(id)}/module-options`),
   setItemModule: (id, module) =>
     request(`/items/${encodeURIComponent(id)}/module`, { method: "POST", body: JSON.stringify({ module }) }),

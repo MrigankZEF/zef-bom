@@ -35,7 +35,8 @@ class ItemPatch(BaseModel):
 
     item_name: str | None = None
     item_type: str | None = None
-    is_top_level: bool | None = None
+    # is_top_level is deliberately NOT patchable — it re-codes the whole subtree.
+    # Use POST /items/{id}/top-level, which validates and runs the naming engine.
     material: str | None = None
     materials: list[str] | None = None
     weight_grams: float | None = None

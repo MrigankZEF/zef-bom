@@ -107,6 +107,21 @@ Atomically, in one transaction: create new items · rename items whose name chan
 remove / change-quantity on the links · flag the root as **top-level** (even if the item
 already existed) · then run the **naming engine** (section 6) to make everything consistent.
 
+## 4b. Promoting an assembly to a top-level BOM
+`is_top_level` is not cosmetic: it decides which system owns every item beneath it
+(`containing_root_modules` → `recode_item`) and whether a drag-and-drop move counts as
+"the same BOM" (`containing_roots`). It is set through `POST /items/{id}/top-level`,
+never a blind field write, and the rules are:
+- must be an **assembly with contents** — a leaf part cannot be a root;
+- must have **no parents** — otherwise it would appear twice in Browse, once as its own
+  root and once nested. Remove it from its parent first;
+- must be **system-coded**, not UN/UNP — a BOM root *is* a system (same rule `POST /bom`
+  applies). Change the module first with the module picker.
+
+Promoting runs the naming engine and reports any re-codes. Two roots sharing a component
+is fine and expected: the shared part becomes **UN**, and universals are never re-coded
+again. Demoting is the same call with `is_top_level: false`.
+
 ## 5. Catalog — adding & editing
 - **Add a new item** — free-text name + type (part/assembly) + **module** (default **UN**).
   - **No accidental duplicates** — if a live item already has that name (compared after
