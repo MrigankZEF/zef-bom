@@ -36,7 +36,9 @@ some parts have several, some none.
 The number the user **commits to** as an educated call: `unit_cost_eur` at a
 `volume_tier` (1 / 100 / 10000…), with `confidence`, `basis_note`, and an optional
 pointer to the evidence row that informed it. **Rollups sum these decided numbers**
-— they never auto-pick a quote. Unique on (item, volume_tier).
+— they never auto-pick a quote. A decided cost is only ever read for an item with
+**no live children**: once something has contents it is costed from those contents plus
+its assembly labour, and any decided cost stored on it is ignored (the drawer flags this). Unique on (item, volume_tier).
 
 ## Custom fields — addable without migration
 

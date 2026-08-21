@@ -118,6 +118,8 @@ export const api = {
   decidedCost: (id) => request(`/items/${encodeURIComponent(id)}/decided-cost`),
   setDecidedCost: (id, body) =>
     request(`/items/${encodeURIComponent(id)}/decided-cost`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteDecidedCost: (id, volume) =>
+    request(`/items/${encodeURIComponent(id)}/decided-cost?volume=${volume}`, { method: "DELETE" }),
   assemblyLabor: (id) => request(`/items/${encodeURIComponent(id)}/assembly-labor`),
   setAssemblyLabor: (id, body) =>
     request(`/items/${encodeURIComponent(id)}/assembly-labor`, { method: "PUT", body: JSON.stringify(body) }),

@@ -15,6 +15,7 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 - `GET /items/{id}/where-used` — parent assemblies
 - `GET /rollup?root=&volume=` — `{cost, covered, total, coverage, missing[]}`
 - `GET /costing/summary?volume=` — per-subsystem rollups + tier totals
+- `GET /catalog` — flat list; costs are the **rolled-up** figures per tier (same numbers the drawer shows), not raw `decided_costs`
 
 ## M4 — edit / cost
 - `PATCH /items/{id}` — partial update; writes change_history
@@ -22,6 +23,7 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 - `PATCH /items/{parent}/children/{child}` — set a link's quantity (no re-code; writes change_history)
 - `GET|POST|PATCH|DELETE /items/{id}/cost-evidence`
 - `GET|PUT /items/{id}/decided-cost?volume=`
+- `DELETE /items/{id}/decided-cost?volume=` — drop a decided cost (e.g. one stranded on an assembly)
 - `PUT /items/{id}/field-values`
 - `POST /field-definitions`
 

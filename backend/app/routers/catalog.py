@@ -14,22 +14,37 @@ from ..auth import current_user
 from ..db import get_db
 from ..history import record_change
 from ..models import BomLink, DecidedCost, Item
-from ..rollups import top_level_reachable
+from ..rollups import BomGraph, top_level_reachable
 from ..schemas import NewItemIn
 
 router = APIRouter(tags=["catalog"])
 
+# The volume tiers the catalog renders a column for; mirrors TIERS in Catalog.jsx.
+CATALOG_TIERS = (1, 100, 10000)
+
 
 @router.get("/catalog")
 def catalog(db: Session = Depends(get_db)) -> list[dict]:
-    """Every non-archived item, flat, with decided costs (min/likely/max) per tier."""
+    """Every non-archived item, flat, with its ROLLED-UP cost (min/likely/max) per tier.
+
+    Deliberately the rollup, not the raw `decided_costs` row: `rollups` only consults a
+    decided cost for a childless item, so for an assembly the stored figure is ignored and the
+    real cost is contents + assembly labour. Reading decided_costs here made the catalog
+    disagree with the drawer for every assembly. A leaf is unaffected — its rollup IS its
+    decided cost.
+    """
     costs: dict[str, dict] = {}
-    for dc in db.execute(select(DecidedCost)).scalars():
-        costs.setdefault(dc.item_id, {})[dc.volume_tier] = {
-            "min": float(dc.cost_min) if dc.cost_min is not None else None,
-            "likely": float(dc.unit_cost_eur),
-            "max": float(dc.cost_max) if dc.cost_max is not None else None,
-        }
+    for tier in CATALOG_TIERS:
+        g = BomGraph(db, volume_tier=tier)
+        for iid in g.items:
+            r = g.rollup(iid)
+            if r.covered == 0 and not r.cost:
+                continue  # nothing priced anywhere below — show an em dash, not € 0.00
+            costs.setdefault(iid, {})[tier] = {
+                "min": round(r.cost_min, 2),
+                "likely": round(r.cost, 2),
+                "max": round(r.cost_max, 2),
+            }
     linked: set[str] = set()
     for bl in db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars():
         linked.add(bl.parent_item_id)

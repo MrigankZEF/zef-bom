@@ -6,7 +6,7 @@ Auth is deferred to M6; for now the editor identity comes from an optional
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -364,6 +364,33 @@ def set_decided_cost(
     db.commit()
     db.refresh(existing)
     return existing
+
+
+@router.delete("/items/{item_id}/decided-cost")
+def delete_decided_cost(
+    item_id: str, volume: int = Query(...),
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Remove the decided cost at one tier.
+
+    Mainly for costs stranded on an assembly: `rollups` only reads a decided cost for a
+    childless item, so once an item gains children its stored figure is ignored and just
+    misleads whoever reads it."""
+    _get_item(db, item_id)
+    row = db.execute(
+        select(DecidedCost).where(DecidedCost.item_id == item_id, DecidedCost.volume_tier == volume)
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, f"{item_id} has no decided cost at volume {volume}")
+    old = row.unit_cost_eur
+    db.delete(row)
+    record_change(
+        db, entity_type="decided_cost", entity_id=item_id, change_type="remove",
+        field_changed=f"decided_cost@{volume}", old_value=old, new_value=None,
+        changed_by=user, change_reason="removed — ignored by the rollup",
+    )
+    db.commit()
+    return {"item_id": item_id, "volume_tier": volume, "deleted": True}
 
 
 # ── assembly labour (minutes → cost via the item's cost type) ────────────────

@@ -788,6 +788,12 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
       reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
+  const dropDecided = async (vt) => {
+    if (!window.confirm(`Remove the decided cost at @${tierLabel(vt)} from ${itemId}? The rollup already ignores it.`)) return;
+    setBusy(true);
+    try { await api.deleteDecidedCost(itemId, vt); reload(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
   const addEvidence = async () => {
     if (!ev.unit_cost) return;
     setBusy(true);
@@ -816,6 +822,27 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
               })}
             </div>
           </div>
+
+          {decided.length > 0 && (
+            <div className="card" style={{ borderColor: "var(--accent)" }}>
+              <div className="card-head"><span className="card-title">Unused decided cost</span></div>
+              <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "0 0 10px" }}>
+                A decided cost is stored on this item but <strong>ignored</strong> — an assembly is
+                costed from its contents plus assembly labour, so only a part with no contents
+                uses one. It was probably set before this item gained contents.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {decided.map((dc) => (
+                  <div key={dc.volume_tier} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--ink-3)" }}>@ {tierLabel(dc.volume_tier)}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", flex: 1 }}>{fmtEURcompact(dc.unit_cost_eur)}</span>
+                    <button className="btn ghost sm danger" disabled={busy}
+                            onClick={() => dropDecided(dc.volume_tier)}>remove it</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="card">
             <div className="card-head"><span className="card-title">Assembly cost type</span></div>
