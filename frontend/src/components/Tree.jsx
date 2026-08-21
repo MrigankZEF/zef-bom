@@ -114,6 +114,14 @@ export default function Tree({ onOpenPart, focus, version }) {
   // its guide line runs straight through. The last column is always the elbow into this
   // row, shaped by `isLast`. Both are computed over the *visible* children, so the rails
   // stay honest when a filter hides siblings.
+  // The left zone is the structure zone: it moves the tree and dismisses the details panel,
+  // which would otherwise sit there describing a part you have navigated away from.
+  const expandZone = (n) => {
+    if (!(n.has_children && (n.children?.length ?? 0) > 0)) return;  // leaf: nothing below
+    if (focus) onOpenPart(null);
+    toggle(n.item_id);
+  };
+
   const rows = [];
   const walk = (n, depth, pathKey, anc, isLast) => {
     const open = expanded.has(n.item_id) || (filtering && forceOpen.has(n.item_id));
@@ -246,12 +254,12 @@ export default function Tree({ onOpenPart, focus, version }) {
               <div
                 className={`tree-name ${expandable ? "expands" : "inert"}`}
                 title={expandable ? (open ? "Collapse" : "Expand one level") : ""}
-                onClick={(e) => { e.stopPropagation(); if (expandable) toggle(n.item_id); }}
+                onClick={(e) => { e.stopPropagation(); expandZone(n); }}
               >
                 <button
                   className={`tree-toggle ${expandable ? "" : "is-leaf"}`}
                   tabIndex={expandable ? 0 : -1}
-                  onClick={(e) => { e.stopPropagation(); if (expandable) toggle(n.item_id); }}
+                  onClick={(e) => { e.stopPropagation(); expandZone(n); }}
                 >
                   <Icon name={open ? "chevD" : "chevR"} size={12} />
                 </button>
