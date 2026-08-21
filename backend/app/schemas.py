@@ -20,6 +20,7 @@ class ItemOut(BaseModel):
     unit_of_measure: str
     supplier: str | None = None
     supplier_country: str | None = None
+    supplier_part_number: str | None = None
     lead_time_weeks: float | None = None
     cost_type_id: int | None = None
     drawing_url: str | None = None
@@ -43,11 +44,30 @@ class ItemPatch(BaseModel):
     unit_of_measure: str | None = None
     supplier: str | None = None
     supplier_country: str | None = None
+    supplier_part_number: str | None = None
     lead_time_weeks: float | None = None
     cost_type_id: int | None = None
     drawing_url: str | None = None
     comment: str | None = None
     change_reason: str | None = None
+
+
+class ItemLinkIn(BaseModel):
+    link_type: str
+    url: str
+    label: str | None = None
+    sort_order: int = 0
+
+
+class ItemLinkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    item_id: str
+    link_type: str
+    url: str
+    label: str | None = None
+    sort_order: int = 0
 
 
 class CostEvidenceIn(BaseModel):

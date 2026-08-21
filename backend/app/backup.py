@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from . import drive
 from .models import (
     AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldDefinition,
-    FieldValue, Item, ReferenceValue, UploadBatch, User,
+    FieldValue, Item, ItemLink, ReferenceValue, UploadBatch, User,
 )
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -35,6 +35,7 @@ BACKUP_SHEETS = [
     ("AssemblyLabor", AssemblyLabor),
     ("FieldDefinitions", FieldDefinition),
     ("FieldValues", FieldValue),
+    ("ItemLinks", ItemLink),
     ("Reference", ReferenceValue),
     ("UploadBatches", UploadBatch),
     ("ChangeHistory", ChangeHistory),
@@ -150,6 +151,7 @@ RESTORE_ORDER = [
     ("DecidedCosts", DecidedCost),
     ("AssemblyLabor", AssemblyLabor),
     ("FieldValues", FieldValue),
+    ("ItemLinks", ItemLink),
     ("BomLinks", BomLink),
     ("ChangeHistory", ChangeHistory),
 ]

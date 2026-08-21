@@ -29,6 +29,11 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
   Does **not** copy cost evidence or Drive files (they document the original part).
   An assembly copies shallow — links to the same children. Lands in the catalog only.
 - `PATCH /items/{parent}/children/{child}` — set a link's quantity (no re-code; writes change_history)
+- `GET /items/{id}/links` — outward links (supplier page, alternative supplier, shop, …),
+  ordered by `sort_order`
+- `POST /items/{id}/links` — `{link_type, url, label, sort_order}`; `link_type` is a
+  `reference_values` value (category `link_type`), so the kinds are admin-managed
+- `DELETE /items/{id}/links/{link_id}`
 - `GET|POST|PATCH|DELETE /items/{id}/cost-evidence`
 - `GET|PUT /items/{id}/decided-cost?volume=`
 - `DELETE /items/{id}/decided-cost?volume=` — drop a decided cost (e.g. one stranded on an assembly)

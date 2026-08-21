@@ -20,7 +20,7 @@ from ..db import get_db
 from ..history import record_change
 from ..models import (
     AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item,
-    ReferenceValue, UploadBatch, User,
+    ItemLink, ReferenceValue, UploadBatch, User,
 )
 from ..schemas import ReferenceIn, UserIn, UserRoleIn
 
@@ -167,6 +167,7 @@ def purge_item(item_id: str, db: Session = Depends(get_db), user: str = Depends(
     db.execute(delete(DecidedCost).where(DecidedCost.item_id == item_id))
     db.execute(delete(FieldValue).where(FieldValue.item_id == item_id))
     db.execute(delete(AssemblyLabor).where(AssemblyLabor.item_id == item_id))
+    db.execute(delete(ItemLink).where(ItemLink.item_id == item_id))
     db.delete(item)
     db.flush()
     from ..operations import normalize_structure

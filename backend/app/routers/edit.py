@@ -18,6 +18,7 @@ from ..db import get_db
 from ..history import record_change
 from ..models import (
     AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldDefinition, FieldValue, Item,
+    ItemLink,
 )
 from ..schemas import (
     AddChildIn,
@@ -30,6 +31,8 @@ from ..schemas import (
     DecidedCostIn,
     DecidedCostOut,
     FieldValueIn,
+    ItemLinkIn,
+    ItemLinkOut,
     ItemOut,
     ItemPatch,
     DuplicateItemIn,
@@ -100,7 +103,7 @@ def _merge_into(db: Session, src_id: str, dst_id: str, *, user: str) -> dict:
         for bl in db.execute(select(BomLink).where(BomLink.child_item_id == dst_id)).scalars()
     }
     # the occupant's own data goes; the code keeps only its identity
-    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue):
+    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue, ItemLink):
         db.execute(sa_delete(model).where(model.item_id == dst_id))
     db.flush()
 
@@ -122,12 +125,12 @@ def _merge_into(db: Session, src_id: str, dst_id: str, *, user: str) -> dict:
     db.flush()
 
     # the incoming item's data wins on the surviving code
-    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue):
+    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue, ItemLink):
         db.execute(update(model).where(model.item_id == src_id).values(item_id=dst_id))
     src = db.get(Item, src_id)
     for col in ("item_name", "item_type", "materials", "material", "weight_grams",
-                "unit_of_measure", "supplier", "supplier_country", "lead_time_weeks",
-                "cost_type_id", "drawing_url", "comment", "external_reference"):
+                "unit_of_measure", "supplier", "supplier_country", "supplier_part_number",
+                "lead_time_weeks", "cost_type_id", "drawing_url", "comment", "external_reference"):
         setattr(dst, col, getattr(src, col))
     dst.updated_by = user
     db.execute(
@@ -293,7 +296,8 @@ def duplicate_item(
 
     COPY_FIELDS = (
         "item_type", "module_code", "materials", "material", "weight_grams", "unit_of_measure",
-        "supplier", "supplier_country", "lead_time_weeks", "cost_type_id", "drawing_url", "comment",
+        "supplier", "supplier_country", "supplier_part_number", "lead_time_weeks",
+        "cost_type_id", "drawing_url", "comment",
     )
     db.add(Item(
         item_id=new_id, item_name=name, is_top_level=False, created_by=user, updated_by=user,
@@ -316,6 +320,9 @@ def duplicate_item(
         ))
     for fv in db.execute(select(FieldValue).where(FieldValue.item_id == item_id)).scalars():
         db.add(FieldValue(item_id=new_id, field_key=fv.field_key, value=fv.value))
+    for lk in db.execute(select(ItemLink).where(ItemLink.item_id == item_id)).scalars():
+        db.add(ItemLink(item_id=new_id, link_type=lk.link_type, url=lk.url, label=lk.label,
+                        sort_order=lk.sort_order, created_by=user))
     # shallow: the same children, not copies of them
     for bl in db.execute(select(BomLink).where(
         BomLink.parent_item_id == item_id, BomLink.archived.is_(False)
@@ -701,6 +708,59 @@ def delete_decided_cost(
     )
     db.commit()
     return {"item_id": item_id, "volume_tier": volume, "deleted": True}
+
+
+# ── outward links (supplier page, alternative supplier, shop, datasheet, …) ───
+@router.get("/items/{item_id}/links", response_model=list[ItemLinkOut])
+def list_item_links(item_id: str, db: Session = Depends(get_db)) -> list[ItemLink]:
+    _get_item(db, item_id)
+    return list(
+        db.execute(
+            select(ItemLink)
+            .where(ItemLink.item_id == item_id)
+            .order_by(ItemLink.sort_order, ItemLink.id)
+        ).scalars()
+    )
+
+
+@router.post("/items/{item_id}/links", response_model=ItemLinkOut, status_code=201)
+def add_item_link(
+    item_id: str, body: ItemLinkIn, db: Session = Depends(get_db), user: str = Depends(current_user)
+) -> ItemLink:
+    _get_item(db, item_id)
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(422, "A link needs a URL")
+    link = ItemLink(
+        item_id=item_id, link_type=(body.link_type or "info").strip(), url=url,
+        label=(body.label or None), sort_order=body.sort_order, created_by=user,
+    )
+    db.add(link)
+    record_change(
+        db, entity_type="item_link", entity_id=item_id, change_type="create",
+        field_changed=link.link_type, new_value=url, changed_by=user,
+    )
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+@router.delete("/items/{item_id}/links/{link_id}")
+def delete_item_link(
+    item_id: str, link_id: int, db: Session = Depends(get_db), user: str = Depends(current_user)
+) -> dict:
+    link = db.execute(
+        select(ItemLink).where(ItemLink.id == link_id, ItemLink.item_id == item_id)
+    ).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(404, "Link not found")
+    record_change(
+        db, entity_type="item_link", entity_id=item_id, change_type="remove",
+        field_changed=link.link_type, old_value=link.url, changed_by=user,
+    )
+    db.delete(link)
+    db.commit()
+    return {"item_id": item_id, "link_id": link_id, "deleted": True}
 
 
 # ── assembly labour (minutes → cost via the item's cost type) ────────────────

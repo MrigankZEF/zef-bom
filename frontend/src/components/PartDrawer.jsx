@@ -73,11 +73,12 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
       safe(api.itemHistory(itemId), []),
       safe(api.assemblyLabor(itemId), []),
       safe(api.costTypes(), []),
+      safe(api.itemLinks(itemId), []),
     ])
-      .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes]) => {
+      .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes, links]) => {
         const rollups = { 1: r1, 100: r100, 10000: r10k };
         setActionError(null);   // a successful reload means the last action went through
-        setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes });
+        setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes, links });
         setForm({ ...item, materials: item.materials || (item.material ? [item.material] : []) });
       })
       .catch((e) => setLoadError(e.message));
@@ -87,7 +88,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   if (loadError) return <Shell><p className="err" style={{ padding: 24 }}>{loadError}</p></Shell>;
   if (!d) return <Shell><p className="muted" style={{ padding: 24 }}>Loading…</p></Shell>;
 
-  const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes } = d;
+  const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes, links } = d;
   const isAssembly = item.item_type === "assembly";
   const isLeaf = !node.has_children;
   const set = (k, v) => { setSaved(false); setForm((f) => ({ ...f, [k]: v })); };
@@ -96,7 +97,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const saveDetails = async () => {
     const patch = { change_reason: reason || undefined };
     const fields = ["item_name", "weight_grams", "supplier", "supplier_country",
-      "lead_time_weeks", "drawing_url", "comment"];
+      "supplier_part_number", "lead_time_weeks", "drawing_url", "comment"];
     let dirty = false;
     for (const k of fields) {
       let v = form[k];
@@ -332,7 +333,7 @@ Create this copy anyway? It gets its own new code.`)) {
 
         {tab === "overview" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} setTier={setTier} item={item} parents={parents} />
+            <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} setTier={setTier} item={item} parents={parents} links={links} />
             <WhereUsed itemId={itemId} parents={parents} onOpenPart={onOpenPart}
               onMoved={(r) => { onChanged?.(); onOpenPart(r.child_id); }} setError={setError} />
             {node.children.length > 0 && (
@@ -394,11 +395,16 @@ Create this copy anyway? It gets its own new code.`)) {
                     <div style={{ gridColumn: "1 / -1" }}><Field label="Materials (one or more)"><MultiRef category="material" values={form.materials} onChange={(v) => set("materials", v)} /></Field></div>
                     <Field label="Supplier"><RefSelect category="supplier" value={form.supplier} onChange={(v) => set("supplier", v)} placeholder="— supplier —" /></Field>
                     <Field label="Supplier country"><RefSelect category="country" value={form.supplier_country} onChange={(v) => set("supplier_country", v)} placeholder="— country —" /></Field>
+                    <Field label="Supplier part number"><input className="input mono" value={form.supplier_part_number ?? ""} placeholder="e.g. DTM04-4P" onChange={(e) => set("supplier_part_number", e.target.value)} /></Field>
                     <Field label="Lead time (wk)"><NumInput value={form.lead_time_weeks} onChange={(v) => set("lead_time_weeks", v)} /></Field>
                   </>
                 )}
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Drawing / CAD URL"><input className="input mono" value={form.drawing_url ?? ""} placeholder="https://…" onChange={(e) => set("drawing_url", e.target.value)} /></Field></div>
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Notes"><textarea className="input" style={{ height: 56, padding: 8 }} value={form.comment ?? ""} onChange={(e) => set("comment", e.target.value)} /></Field></div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <LinksEditor itemId={itemId} links={links}
+                    reload={() => { load(); onChanged?.(); }} setError={setError} />
+                </div>
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Change comment (audit)"><input className="input" value={reason} placeholder="why this change…" onChange={(e) => setReason(e.target.value)} /></Field></div>
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, marginTop: 14 }}>
@@ -534,7 +540,64 @@ function extUrl(u) {
   return `https://${s}`;
 }
 
-function Readouts({ isAssembly, rollups, tier, setTier, item, parents }) {
+// One outward link. The URL is shown as far as it fits and cut with an ellipsis — a supplier
+// URL is routinely 200 characters, and the whole thing in the tooltip is enough.
+function LinkRow({ label, url }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+      <span className="label" style={{ minWidth: 96 }}>{label}</span>
+      <a href={extUrl(url)} target="_blank" rel="noreferrer" className="mono" title={url}
+        style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 12 }}>
+        {url}
+      </a>
+      <a href={extUrl(url)} target="_blank" rel="noreferrer" className="btn ghost sm">Open ↗</a>
+    </div>
+  );
+}
+
+// Links are their own rows, so add/remove writes straight away rather than waiting for the
+// item's Save — said plainly in the card, because every other field here is staged.
+function LinksEditor({ itemId, links, reload, setError }) {
+  const [type, setType] = useState("supplier");
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const add = async () => {
+    if (!url.trim()) return;
+    setBusy(true);
+    try { await api.addItemLink(itemId, { link_type: type, url: url.trim() }); setUrl(""); reload(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  const remove = async (id) => {
+    try { await api.deleteItemLink(itemId, id); reload(); }
+    catch (e) { setError(e.message); }
+  };
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <span className="input-label">Links</span>
+        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>saved as you add them, not on Save changes</span>
+      </div>
+      {(links || []).map((l) => (
+        <div key={l.id} style={{ display: "grid", gridTemplateColumns: "110px minmax(0, 1fr) 28px", gap: 8, alignItems: "center", padding: "4px 0" }}>
+          <Pill kind="warm">{l.link_type}</Pill>
+          <a href={extUrl(l.url)} target="_blank" rel="noreferrer" className="mono" title={l.url}
+            style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 12 }}>
+            {l.url}
+          </a>
+          <button className="btn ghost sm danger" title="Remove this link" onClick={() => remove(l.id)}><Icon name="close" size={11} /></button>
+        </div>
+      ))}
+      <div style={{ display: "grid", gridTemplateColumns: "140px minmax(0, 1fr) 64px", gap: 8, marginTop: 6, alignItems: "center" }}>
+        <RefSelect category="link_type" value={type} onChange={setType} placeholder="— kind —" />
+        <input className="input mono" value={url} placeholder="https://…"
+               onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <button className="btn sm" onClick={add} disabled={busy || !url.trim()}>+ add</button>
+      </div>
+    </div>
+  );
+}
+
+function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) {
   const rollup = rollups[tier] || {};
   const hasRange = rollup.cost_min != null && (rollup.cost_min < rollup.cost || rollup.cost_max > rollup.cost);
   const rng = hasRange ? `${fmtEURcompact(rollup.cost_min)}–${fmtEURcompact(rollup.cost_max)}` : null;
@@ -567,18 +630,10 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents }) {
         )}
       </div>
 
-      {(item.drawing_url || item.drive_folder_url || item.supplier || item.comment) && (
+      {(item.drawing_url || item.drive_folder_url || item.supplier || item.supplier_part_number
+        || (links || []).length || item.comment) && (
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--hair-faint)", display: "grid", gap: 10 }}>
-          {item.drawing_url && (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
-              <span className="label" style={{ minWidth: 96 }}>Drawing / CAD</span>
-              <a href={extUrl(item.drawing_url)} target="_blank" rel="noreferrer" className="mono"
-                style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 12 }}>
-                {item.drawing_url}
-              </a>
-              <a href={extUrl(item.drawing_url)} target="_blank" rel="noreferrer" className="btn ghost sm">Open ↗</a>
-            </div>
-          )}
+          {item.drawing_url && <LinkRow label="Drawing / CAD" url={item.drawing_url} />}
           {item.drive_folder_url && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
               <span className="label" style={{ minWidth: 96 }}>Drive folder</span>
@@ -592,6 +647,13 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents }) {
               <span style={{ flex: 1, color: "var(--ink-2)" }}>{item.supplier}{item.supplier_country ? ` · ${item.supplier_country}` : ""}</span>
             </div>
           )}
+          {item.supplier_part_number && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+              <span className="label" style={{ minWidth: 96 }}>Supplier PN</span>
+              <span className="mono" style={{ flex: 1, minWidth: 0, color: "var(--ink-2)", fontSize: 12, overflowWrap: "anywhere" }}>{item.supplier_part_number}</span>
+            </div>
+          )}
+          {(links || []).map((l) => <LinkRow key={l.id} label={l.link_type} url={l.url} />)}
           {item.comment && (
             <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
               <span className="label" style={{ minWidth: 96, paddingTop: 2 }}>Notes</span>
