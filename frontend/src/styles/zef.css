@@ -746,6 +746,9 @@ body { background: var(--bg); }
   border-radius: 3px 0 0 3px;
 }
 .tree-head .tree-data { margin: 0; padding: 0; }
+/* Flattened view: one extra column (share of the BOM), so its own track list. Header and
+   rows both take .flat, which is what keeps them aligned. */
+.tree-data.flat { grid-template-columns: 70px 90px 100px 62px 90px 90px 28px; }
 
 /* Each zone tints on its own hover, so you can see which half you are about to hit.
    Without this the details half looked inert. */
