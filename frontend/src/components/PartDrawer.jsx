@@ -25,45 +25,18 @@ const Field = ({ label, children }) => (
   <div><span className="input-label">{label}</span>{children}</div>
 );
 
-// Inline quantity editor for one contents row. Commits on blur or Enter, reverts on
-// Escape, and stays quiet when the value didn't actually change.
-function ChildQty({ parentId, childId, quantity, onSaved, setError }) {
-  const [draft, setDraft] = useState(String(quantity));
-  const [busy, setBusy] = useState(false);
-  const skip = useRef(false);   // Escape blurs the field; don't let that blur commit
-  useEffect(() => { setDraft(String(quantity)); }, [quantity]);
-
-  const revert = () => setDraft(String(quantity));
-  const commit = async () => {
-    if (skip.current) { skip.current = false; revert(); return; }
-    const n = toNum(draft);
-    if (n === null || n <= 0 || n === quantity) { revert(); return; }
-    setBusy(true);
-    try { await api.setChildQuantity(parentId, childId, n); onSaved(); }
-    catch (e) { setError(e.message); revert(); }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <span style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
-      <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>×</span>
-      <NumInput
-        value={draft} onChange={setDraft} disabled={busy} onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") { skip.current = true; e.currentTarget.blur(); }
-        }}
-        title="How many of this item sit in this assembly"
-        style={{ width: 54, textAlign: "right", padding: "3px 6px", fontSize: 12 }}
-      />
-    </span>
-  );
-}
-
 export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const [tab, setTab] = useState("details");
   const [tier, setTier] = useState(100);
   const [addingChild, setAddingChild] = useState(false);
+  // Quantities are read-only until you explicitly enter edit mode, matching the
+  // "Add / edit" + "Save changes" pattern the details section already uses. Nothing is
+  // written until Save, so a stray click can't change a BOM.
+  const [editQty, setEditQty] = useState(false);
+  const [qtyDraft, setQtyDraft] = useState({});   // { child_id: "raw string" }
+  // Kept separate from `error`: that one replaces the whole drawer body, which would
+  // throw away the edits still staged in this card.
+  const [qtyError, setQtyError] = useState(null);
   const [d, setD] = useState(null);
   const [form, setForm] = useState({});
   const [reason, setReason] = useState("");
@@ -105,7 +78,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
       })
       .catch((e) => setError(e.message));
   };
-  useEffect(() => { setD(null); setTab("details"); setAddingChild(false); load(); /* eslint-disable-next-line */ }, [itemId]);
+  useEffect(() => { setD(null); setTab("details"); setAddingChild(false); setEditQty(false); setQtyDraft({}); setQtyError(null); load(); /* eslint-disable-next-line */ }, [itemId]);
 
   if (error) return <Shell><p className="err" style={{ padding: 24 }}>{error}</p></Shell>;
   if (!d) return <Shell><p className="muted" style={{ padding: 24 }}>Loading…</p></Shell>;
@@ -156,6 +129,31 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
       if (r?.parent && r.parent !== itemId) onOpenPart(r.parent); else load();  // parent may have demoted A→P
     } catch (e) { setError(e.message); }
   };
+  // ── contents quantity editing ──────────────────────────────────────────────
+  // A row is "changed" only when it parses to a valid, different, positive number.
+  const qtyRaw = (c) => qtyDraft[c.item_id] ?? String(c.quantity);
+  const qtyBad = (c) => { const n = toNum(qtyRaw(c)); return n === null || n <= 0; };
+  const qtyChanged = (c) => !qtyBad(c) && toNum(qtyRaw(c)) !== c.quantity;
+  const qtyEdits = () => (node.children || []).filter(qtyChanged);
+  const qtyInvalid = () => (node.children || []).filter(qtyBad);
+
+  const cancelQty = () => { setQtyDraft({}); setEditQty(false); setQtyError(null); };
+  const saveQty = async () => {
+    const bad = qtyInvalid();
+    if (bad.length) {
+      setQtyError(`Quantity must be a number greater than 0 — check ${bad.map((c) => c.item_id).join(", ")}.`);
+      return;
+    }
+    const edits = qtyEdits();
+    if (!edits.length) { cancelQty(); return; }
+    setBusy(true); setQtyError(null);
+    try {
+      for (const c of edits) await api.setChildQuantity(itemId, c.item_id, toNum(qtyRaw(c)));
+      setQtyDraft({}); setEditQty(false);
+      load(); onChanged?.();
+    } catch (e) { setQtyError(e.message); } finally { setBusy(false); }
+  };
+
   const restore = async () => {
     setBusy(true);
     try { await api.restoreItem(itemId); load(); onChanged?.(); }
@@ -289,15 +287,50 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
 
             {isAssembly && node.children.length > 0 && (
               <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-                <div className="card-head" style={{ padding: "14px 18px 10px" }}><span className="card-title">Contents · {node.children.length}</span></div>
+                <div className="card-head" style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="card-title" style={{ flex: 1 }}>Contents · {node.children.length}</span>
+                  {!item.archived && (editQty ? (
+                    <>
+                      <button className="btn ghost sm" onClick={cancelQty} disabled={busy}>Cancel</button>
+                      <button className="btn sm" onClick={saveQty} disabled={busy || qtyEdits().length === 0}>
+                        <Icon name="check" size={11} />
+                        {busy ? " Saving…" : qtyEdits().length ? ` Save ${qtyEdits().length} change${qtyEdits().length > 1 ? "s" : ""}` : " Save"}
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn ghost sm" onClick={() => setEditQty(true)} title="Change how many of each item this assembly holds">
+                      Edit quantities
+                    </button>
+                  ))}
+                </div>
+                {editQty && (
+                  <div style={{ padding: "0 18px 10px", fontSize: 11.5, color: qtyError ? "var(--accent)" : "var(--ink-3)" }}>
+                    {qtyError || "Nothing is written until you press Save. Cancel discards every change."}
+                  </div>
+                )}
                 {node.children.map((c) => (
-                  <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px 1fr 78px 80px 28px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+                  <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px 1fr 78px 80px 28px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, background: editQty && qtyChanged(c) ? "var(--accent-soft)" : undefined }}>
                     <span className="mono" style={{ fontSize: 12, cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_id}</span>
                     <span style={{ cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_name}</span>
-                    <ChildQty parentId={itemId} childId={c.item_id} quantity={c.quantity}
-                              onSaved={() => { load(); onChanged?.(); }} setError={setError} />
+                    {editQty ? (
+                      <span style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>×</span>
+                        <NumInput
+                          value={qtyRaw(c)}
+                          onChange={(v) => setQtyDraft((q) => ({ ...q, [c.item_id]: v }))}
+                          onKeyDown={(e) => { if (e.key === "Escape") cancelQty(); }}
+                          title={`How many ${c.item_id} sit in ${itemId} (was ${c.quantity})`}
+                          style={{ width: 54, textAlign: "right", padding: "3px 6px", fontSize: 12,
+                                   borderColor: qtyBad(c) ? "var(--accent)" : undefined }}
+                        />
+                      </span>
+                    ) : (
+                      <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {c.quantity}</span>
+                    )}
                     <span style={{ textAlign: "right" }}><ModulePill code={c.module_code} /></span>
-                    <button className="btn ghost sm danger" title="Remove from this assembly" onClick={() => removeChild(c.item_id)}><Icon name="close" size={11} /></button>
+                    {editQty
+                      ? <span />
+                      : <button className="btn ghost sm danger" title="Remove from this assembly" onClick={() => removeChild(c.item_id)}><Icon name="close" size={11} /></button>}
                   </div>
                 ))}
               </div>
