@@ -536,6 +536,34 @@ body { background: var(--bg); }
 .btn.sm { height: 26px; padding: 0 10px; font-size: 11px; }
 .btn .ico { width: 14px; height: 14px; }
 
+/* ---------- segmented control ----------
+   For a short, mutually exclusive set where the options matter more than the space they
+   cost: every choice is readable at once, and the one in force is visible without opening
+   anything. Replaces the selects that used to crop their own labels inside the 680px
+   drawer ("made to order (our specs)" in a 78px column). */
+.seg {
+  display: inline-flex; max-width: 100%;
+  border: 1px solid var(--hair-strong); border-radius: 4px;
+  overflow: hidden; background: var(--bg-raised);
+}
+.seg button {
+  border: 0; background: transparent; cursor: pointer;
+  height: 25px; padding: 0 10px;
+  font-family: var(--font-display); font-size: 11px; color: var(--ink-3);
+  border-right: 1px solid var(--hair-faint);
+  white-space: nowrap; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.seg button:last-child { border-right: 0; }
+.seg button:hover { background: var(--warm-3); color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); font-weight: 500; }
+/* The two states that change what a number means get their own colour, so a tier that is
+   quoted rather than built reads at a glance instead of by reading the label. */
+.seg button[aria-pressed="true"].seg-quoted  { background: var(--info); }
+.seg button[aria-pressed="true"].seg-covered { background: var(--ok); }
+.seg button[disabled] { opacity: 0.4; cursor: not-allowed; }
+
 /* ---------- inputs ---------- */
 .input {
   height: 32px; padding: 0 10px;

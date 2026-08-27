@@ -477,6 +477,123 @@ def test_flatten_survives_a_cycle():
     assert {r["item_id"] for r in rows} <= {"AEC911A", "AEC910A"}
 
 
+# ── the cost boundary: an assembly bought as one quoted unit ─────────────────
+def _boundary_fixture(covers: str = "all", quote: float | None = 40.0):
+    """BOAT ×1 → HARNESS ×2 → {TERMINAL ×10 @ €1, BRANCH ×1 (assembly) → WIRE ×3 @ €2}
+
+    Built up from below the harness costs 10×1 + 3×2 = €16 per harness. Quoted, it costs
+    whatever the supplier says — €40 by default, deliberately different from the build-up
+    so that a test cannot pass by accident with the two confused.
+    """
+    db = _db()
+    db.add(Item(item_id="AEC920A", item_name="Boat", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC921A", item_name="Harness", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC922A", item_name="Branch", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC923P", item_name="Terminal", item_type="part", module_code="AEC", weight_grams=5))
+    db.add(Item(item_id="AEC924P", item_name="Wire", item_type="part", module_code="AEC", weight_grams=20))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC920A", child_item_id="AEC921A", quantity=2))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC923P", quantity=10))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC922A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC922A", child_item_id="AEC924P", quantity=3))
+    db.add(DecidedCost(item_id="AEC923P", volume_tier=100, unit_cost_eur=1))
+    db.add(DecidedCost(item_id="AEC924P", volume_tier=100, unit_cost_eur=2))
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers=covers))
+    if quote is not None:
+        db.add(DecidedCost(item_id="AEC921A", volume_tier=100, unit_cost_eur=quote))
+    db.commit()
+    return db
+
+
+def test_a_quote_replaces_the_whole_subtree():
+    """The reason the boundary exists: the supplier's price wins over the build-up."""
+    from app.rollups import BomGraph
+    g = BomGraph(_boundary_fixture(), volume_tier=100)
+    r = g.rollup("AEC920A")
+    assert r.cost == 80.0, r.cost               # 2 × €40, NOT 2 × €16
+    assert g.rollup("AEC921A").cost == 40.0
+
+
+def test_a_quoted_assembly_is_one_covered_input():
+    from app.rollups import BomGraph
+    g = BomGraph(_boundary_fixture(), volume_tier=100)
+    r = g.rollup("AEC921A")
+    assert (r.covered, r.total) == (1, 1), (r.covered, r.total)
+    assert r.coverage == 1.0
+    assert r.missing == [] and r.missing_assembly == []
+    # The contents are not gaps, but they are not invisible either.
+    assert set(r.below_boundary) == {"AEC922A", "AEC923P", "AEC924P"}
+
+
+def test_a_quoted_assembly_without_a_quote_is_a_gap():
+    """The state the old model could only express as a silent EUR 0."""
+    from app.rollups import BomGraph
+    g = BomGraph(_boundary_fixture(quote=None), volume_tier=100)
+    r = g.rollup("AEC921A")
+    assert r.cost == 0.0
+    assert (r.covered, r.total) == (0, 1)
+    assert r.missing_quote == ["AEC921A"], r.missing_quote
+
+
+def test_labor_cover_still_rolls_up_the_parts():
+    """'labor' is not a boundary — it excuses the work below, never the parts."""
+    from app.rollups import BomGraph
+    g = BomGraph(_boundary_fixture(covers="labor"), volume_tier=100)
+    r = g.rollup("AEC921A")
+    assert r.cost == 16.0, r.cost               # 10x1 + 3x2, the quote ignored
+    assert set(r.below_boundary) == set()
+    rows = {x["item_id"] for x in g.flat_rows("AEC921A")}
+    assert "AEC924P" in rows, "a labour cover must not stop the explosion"
+
+
+def test_flatten_stops_at_a_boundary_but_still_sums():
+    from app.rollups import BomGraph
+    g = BomGraph(_boundary_fixture(), volume_tier=100)
+    rows = {r["item_id"]: r for r in g.flat_rows("AEC920A")}
+    assert set(rows) == {"AEC921A"}, set(rows)  # one line: the harness, at its quote
+    assert rows["AEC921A"]["count"] == 2 and rows["AEC921A"]["cost"] == 80.0
+    assert rows["AEC921A"]["is_boundary"] is True
+    # The invariant flat_rows exists to keep: the rows reconcile to the rollup. Stated in
+    # full — leaves plus assembly rows plus the root's own process cost — because the leaves
+    # alone only match once no assembly in between charges for its time, which is true of
+    # this fixture and of nothing in the real BOM.
+    rl = g.rollup("AEC920A")
+    total = (sum(r["cost"] for r in rows.values() if r["is_leaf"])
+             + sum(r["cost"] for r in rows.values() if not r["is_leaf"])
+             + rl.assembly_cost)
+    assert round(total, 2) == round(rl.cost, 2), (total, rl.cost)
+
+
+def test_where_used_walks_through_a_boundary():
+    """Which boats need this terminal is a question about the physical tree, and the
+    answer does not change because a harness shop is the one placing the order."""
+    from app.rollups import BomGraph
+    g = BomGraph(_boundary_fixture(), volume_tier=100)
+    assert {r["root"]: r["count"] for r in g.roots_reaching("AEC923P")} == {"AEC920A": 20}
+    assert {r["root"]: r["count"] for r in g.roots_reaching("AEC924P")} == {"AEC920A": 6}
+
+
+def test_weight_ignores_the_boundary():
+    """Cost is a procurement fact; weight is a physical one and rolls up regardless."""
+    from app.rollups import BomGraph
+    g = BomGraph(_boundary_fixture(), volume_tier=100)
+    assert g.rollup("AEC921A").weight_grams == 110.0   # 10x5 + 3x20
+    assert g.rollup("AEC920A").weight_grams == 220.0
+
+
+def test_bought_in_time_is_not_our_time():
+    from app.rollups import BomGraph
+    db = _boundary_fixture()
+    db.add(AssemblyLabor(item_id="AEC922A", volume_tier=100, time_likely=15))
+    db.commit()
+    g = BomGraph(db, volume_tier=100)
+    assert g.assembly_time_total("AEC920A") == 0.0
+    # The same 15 minutes counts in full once the harness is built in house again.
+    g2 = BomGraph(_boundary_fixture(covers="none"), volume_tier=100)
+    g2.labor["AEC922A"] = (None, 15, None)
+    assert g2.assembly_time_total("AEC920A") == 30.0
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed, failed = 0, 0

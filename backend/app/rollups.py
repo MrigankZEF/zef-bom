@@ -56,6 +56,13 @@ class Rollup:
     missing_assembly: list[str] = field(default_factory=list)  # assembly ids with no process cost
     # a descendant carrying its own assembly cost under an ancestor marked as covering it
     covered_conflict: list[str] = field(default_factory=list)
+    # covers='all' assemblies with no decided cost at this tier. A quoted assembly whose
+    # quote was never entered is a real gap, not a silent €0 — it gets its own list rather
+    # than joining `missing_assembly`, because the fix is a price, not a time.
+    missing_quote: list[str] = field(default_factory=list)
+    # Everything documented under a covers='all' assembly: real items, deliberately not
+    # costed, so the UI can say "14 items under 2 quoted assemblies" instead of hiding them.
+    below_boundary: list[str] = field(default_factory=list)
     weight_grams: float | None = 0.0
     weight_missing: list[str] = field(default_factory=list)
 
@@ -98,12 +105,19 @@ class BomGraph:
         _labor_rows = list(db.execute(
             select(AssemblyLabor).where(AssemblyLabor.volume_tier == volume_tier)
         ).scalars())
+        # A row with no most-likely time carries no labour — that is the normal state of a
+        # covers='all' assembly, which is bought as a finished unit — so it is left out
+        # entirely rather than stored as a None that every caller has to re-check.
         self.labor: dict[str, tuple[float | None, float, float | None]] = {
-            al.item_id: (al.time_min, al.time_likely, al.time_max) for al in _labor_rows
+            al.item_id: (al.time_min, al.time_likely, al.time_max)
+            for al in _labor_rows
+            if al.time_likely is not None
         }
-        # "this assembly's cost already covers everything beneath it" (outsourced/bought-in)
-        self.covers_subs: set[str] = {
-            al.item_id for al in _labor_rows if al.covers_subassemblies
+        # How far each assembly's cost reaches down: 'none' | 'labor' | 'all'. See
+        # AssemblyLabor.covers — 'labor' excuses the work below, 'all' replaces the whole
+        # subtree with one quoted price.
+        self.covers: dict[str, str] = {
+            al.item_id: al.covers for al in _labor_rows if al.covers != "none"
         }
         # Assembly cost types are reference values (category 'assembly_cost_type') with a
         # €/hour rate in meta; keyed by the reference value's id (= item.cost_type_id).
@@ -140,6 +154,29 @@ class BomGraph:
             and bool(self.rates.get(item.cost_type_id))
             and item.item_id in self.labor
         )
+
+    # ── the cost boundary ────────────────────────────────────────────────────
+    def is_boundary(self, item_id: str) -> bool:
+        """True for an assembly bought as one quoted unit at this tier.
+
+        Its own decided cost is the whole cost; the subtree below it is documentation.
+        Deliberately independent of whether the quote has actually been entered — an
+        unpriced boundary is a gap to report, not a licence to start summing the contents
+        again behind the user's back.
+        """
+        return bool(self.children.get(item_id)) and self.covers.get(item_id) == "all"
+
+    def descendants(self, item_id: str) -> set[str]:
+        """Every item below `item_id`, boundaries included. Cycle-safe."""
+        out: set[str] = set()
+        stack = [c for c, _ in self.children.get(item_id, [])]
+        while stack:
+            cur = stack.pop()
+            if cur in out or cur not in self.items:
+                continue
+            out.add(cur)
+            stack.extend(c for c, _ in self.children.get(cur, []))
+        return out
 
     # ── structure ────────────────────────────────────────────────────────────
     def roots(self) -> list[Item]:
@@ -179,10 +216,39 @@ class BomGraph:
             self._rollup_cache[key] = r
             return r
         seen = _seen | {item_id}
+        covers = self.covers.get(item_id, "none")
+
+        if covers == "all":
+            # A bought-in assembly: one supplier price for the finished unit, covering the
+            # parts and the labour below it. The subtree is still walked — for weight, which
+            # is physical and owes nothing to how the thing was procured — but every cost
+            # and coverage number it produces is discarded, because this one price replaced
+            # all of them.
+            est = self.decided.get((item_id, self.volume))
+            cmin, likely, cmax = est if est is not None else (0.0, 0.0, 0.0)
+            w, wmissing = 0.0, []
+            for child, qty in kids:
+                cr = self.rollup(child, seen, True)
+                w += (cr.weight_grams or 0.0) * qty
+                wmissing.extend(cr.weight_missing)
+            if w == 0.0 and item is not None and item.weight_grams is not None:
+                # Nothing below was ever weighed, but the finished unit was — which is the
+                # normal case for something that arrives from a supplier in one box.
+                w, wmissing = float(item.weight_grams), []
+            r = Rollup(
+                cost=likely, cost_min=cmin, cost_max=cmax,
+                covered=1 if est is not None else 0,
+                total=1,
+                missing_quote=[] if est is not None else [item_id],
+                below_boundary=sorted(self.descendants(item_id)),
+                weight_grams=w, weight_missing=wmissing,
+            )
+            self._rollup_cache[key] = r
+            return r
+
         r = Rollup(weight_grams=0.0)
         # Everything below a covering assembly is already paid for by this one quoted cost.
-        covers = item_id in self.covers_subs
-        child_covered = _asm_covered or covers
+        child_covered = _asm_covered or covers == "labor"
         for child, qty in kids:
             cr = self.rollup(child, seen, child_covered)
             r.cost += cr.cost * qty
@@ -193,6 +259,8 @@ class BomGraph:
             r.missing.extend(cr.missing)
             r.missing_assembly.extend(cr.missing_assembly)
             r.covered_conflict.extend(cr.covered_conflict)
+            r.missing_quote.extend(cr.missing_quote)
+            r.below_boundary.extend(cr.below_boundary)
             r.weight_grams = (r.weight_grams or 0.0) + (cr.weight_grams or 0.0) * qty
             r.weight_missing.extend(cr.weight_missing)
         # An assembly's own process cost (time × rate) is added ON TOP of the children.
@@ -220,14 +288,21 @@ class BomGraph:
         self._rollup_cache[key] = r
         return r
 
-    def flatten_leaves(self, root: str) -> dict[str, float]:
-        """Effective quantity of each leaf part within `root` (qty multiplied along
-        every path, summed across shared usages). Powers the cost/weight treemaps."""
+    def flatten_leaves(self, root: str, explode_boundaries: bool = False) -> dict[str, float]:
+        """Effective quantity of each priced leaf within `root` (qty multiplied along
+        every path, summed across shared usages). Powers the cost/weight treemaps.
+
+        A bought-in assembly counts as a leaf: it carries the one price, and descending
+        past it would emit rows that cannot add up to that price. `explode_boundaries`
+        walks through anyway, for the views that want the physical explosion — where-used,
+        engineering, materials — rather than the costing one.
+        """
         acc: dict[str, float] = {}
 
         def walk(item_id: str, qty: float, seen: frozenset[str]) -> None:
             kids = self.children.get(item_id, [])
-            if not kids:
+            stop = not explode_boundaries and item_id != root and self.is_boundary(item_id)
+            if not kids or stop:
                 acc[item_id] = acc.get(item_id, 0.0) + qty
                 return
             inner = seen | {item_id}
@@ -240,14 +315,20 @@ class BomGraph:
             walk(root, 1.0, frozenset())
         return acc
 
-    def flatten_assemblies(self, root: str) -> dict[str, float]:
+    def flatten_assemblies(self, root: str, explode_boundaries: bool = False) -> dict[str, float]:
         """Effective quantity of each assembly (non-leaf) within `root` — including the
-        root itself. Powers per-assembly cost contributions in the treemap."""
+        root itself. Powers per-assembly cost contributions in the treemap.
+
+        A bought-in assembly is skipped: `flatten_leaves` already emitted it as the priced
+        row, and counting it here too would bill its quote twice.
+        """
         acc: dict[str, float] = {}
 
         def walk(item_id: str, qty: float, seen: frozenset[str]) -> None:
             kids = self.children.get(item_id, [])
             if not kids:
+                return
+            if not explode_boundaries and item_id != root and self.is_boundary(item_id):
                 return
             acc[item_id] = acc.get(item_id, 0.0) + qty
             inner = seen | {item_id}
@@ -270,6 +351,10 @@ class BomGraph:
         Leaf rows carry a price and add up to the root's parts cost; assembly rows carry
         their own process cost (time × rate × count) and would double-count if summed with
         the leaves, hence the `is_leaf` flag for the caller to filter on.
+
+        A bought-in assembly appears once, as a priced row with its quote, and its contents
+        do not appear at all — the supplier is the one buying them. `is_boundary` marks it
+        so the row can be badged rather than read as an ordinary part.
         """
         rollup = self.rollup(root)
         parts_total = sum(
@@ -289,6 +374,7 @@ class BomGraph:
             rows.append({
                 "item_id": leaf, "item_name": it.item_name, "item_type": it.item_type,
                 "module_code": it.module_code, "is_leaf": True,
+                "is_boundary": self.is_boundary(leaf),
                 "count": round(qty, 3),
                 "unit_cost": float(unit) if unit is not None else None,
                 "cost": round(cost, 2),
@@ -304,7 +390,7 @@ class BomGraph:
             cost = unit * qty
             rows.append({
                 "item_id": aid, "item_name": it.item_name, "item_type": it.item_type,
-                "module_code": it.module_code, "is_leaf": False,
+                "module_code": it.module_code, "is_leaf": False, "is_boundary": False,
                 "count": round(qty, 3),
                 "unit_cost": round(unit, 4) if unit else None,
                 "cost": round(cost, 2),
@@ -320,19 +406,27 @@ class BomGraph:
 
         The inverse of `flat_rows`, for the drawer: an extended total only means something
         when exactly one BOM is asking for the part.
+
+        Boundaries are exploded here. "Which boats need this connector" is a question about
+        the physical tree, and the answer does not change because a harness shop is the one
+        placing the order.
         """
         out = []
         for root in self.roots():
-            qty = self.flatten_leaves(root.item_id).get(item_id)
+            qty = self.flatten_leaves(root.item_id, explode_boundaries=True).get(item_id)
             if qty is None:
-                qty = self.flatten_assemblies(root.item_id).get(item_id)
+                qty = self.flatten_assemblies(root.item_id, explode_boundaries=True).get(item_id)
             if qty and root.item_id != item_id:
                 out.append({"root": root.item_id, "root_name": root.item_name, "count": round(qty, 3)})
         return out
 
     def assembly_time_total(self, item_id: str, _seen: frozenset[str] = frozenset()) -> float:
-        """Recursive most-likely assembly minutes at the current tier."""
-        if item_id in _seen:
+        """Recursive most-likely assembly minutes at the current tier.
+
+        A bought-in assembly contributes nothing: neither its own minutes nor its contents'
+        are hours our plant ever spends.
+        """
+        if item_id in _seen or self.is_boundary(item_id):
             return 0.0
         t = self.labor.get(item_id)
         total = float(t[1]) if t else 0.0  # time_likely at this tier
@@ -368,6 +462,10 @@ class BomGraph:
             "assembly_cost_min": round(r.assembly_cost_min, 2),
             "assembly_cost_max": round(r.assembly_cost_max, 2),
             "assembly_priced": self.assembly_priced(item) if self.children.get(item_id) else None,
+            # 'none' | 'labor' | 'all' at the graph's tier — the tree badges a bought-in
+            # assembly rather than drawing it as one more station we build.
+            "covers": self.covers.get(item_id, "none") if self.children.get(item_id) else None,
+            "quote_missing": item_id in r.missing_quote,
             "coverage": round(r.coverage, 4),
             "rollup_weight_grams": round(r.weight_grams, 2) if r.weight_grams is not None else None,
             "children": children,

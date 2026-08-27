@@ -118,6 +118,11 @@ def get_rollup(
         "missing": sorted(set(r.missing)),
         "missing_assembly": sorted(set(r.missing_assembly)),
         "covered_conflict": sorted(set(r.covered_conflict)),
+        # A quoted assembly whose quote was never entered — a gap the old model could only
+        # express as a silent €0.
+        "missing_quote": sorted(set(r.missing_quote)),
+        # Documented under a bought-in assembly: real items, deliberately not costed.
+        "below_boundary": sorted(set(r.below_boundary)),
         "weight_grams": round(r.weight_grams, 2) if r.weight_grams is not None else None,
         "assembly_time_min": round(g.assembly_time_total(root), 2),
     }
@@ -247,8 +252,11 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
     for dc in db.execute(select(DecidedCost)).scalars():
         costed_tiers.setdefault(dc.item_id, set()).add(dc.volume_tier)
     labored_tiers: dict[str, set] = {}
+    covers_at: dict[str, dict[int, str]] = {}
     for al in db.execute(select(AssemblyLabor)).scalars():
-        labored_tiers.setdefault(al.item_id, set()).add(al.volume_tier)
+        if al.time_likely is not None:
+            labored_tiers.setdefault(al.item_id, set()).add(al.volume_tier)
+        covers_at.setdefault(al.item_id, {})[al.volume_tier] = al.covers
 
     out = []
     for it in items.values():
@@ -271,10 +279,22 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
                     missing.append(lbl)
         else:  # assembly
             have_t = labored_tiers.get(it.item_id, set())
-            for tier, lbl in ((1, "asm_time@1"), (100, "asm_time@100"), (10000, "asm_time@10k")):
-                if tier not in have_t:
-                    missing.append(lbl)
-            if it.cost_type_id is None:
+            have_c = costed_tiers.get(it.item_id, set())
+            cov = covers_at.get(it.item_id, {})
+            # A bought-in assembly is waiting on a supplier quote, not on an assembly time.
+            # Asking for minutes on something nobody here assembles is a gap that can never
+            # be closed, and it kept the queue permanently red.
+            for tier, tlbl, qlbl in (
+                (1, "asm_time@1", "quote@1"),
+                (100, "asm_time@100", "quote@100"),
+                (10000, "asm_time@10k", "quote@10k"),
+            ):
+                if cov.get(tier) == "all":
+                    if tier not in have_c:
+                        missing.append(qlbl)
+                elif tier not in have_t:
+                    missing.append(tlbl)
+            if it.cost_type_id is None and any(cov.get(t) != "all" for t in (1, 100, 10000)):
                 missing.append("cost_type")
         if missing:
             out.append({

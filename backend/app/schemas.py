@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -102,13 +103,18 @@ class DecidedCostIn(BaseModel):
     change_reason: str | None = None
 
 
+COVERS = Literal["none", "labor", "all"]
+
+
 class AssemblyLaborIn(BaseModel):
     volume_tier: int
-    time_likely: float  # minutes, most-likely (required)
+    # Minutes, most-likely. Optional now: a covers='all' assembly is bought as a finished
+    # unit, so it has a supplier price instead of a time.
+    time_likely: float | None = None
     time_min: float | None = None
     time_max: float | None = None
-    # one quoted cost already covers the work on everything beneath this assembly
-    covers_subassemblies: bool = False
+    # How far this row's cost reaches down — see AssemblyLabor.covers.
+    covers: COVERS = "none"
 
 
 class AssemblyLaborOut(BaseModel):
@@ -117,9 +123,9 @@ class AssemblyLaborOut(BaseModel):
     item_id: str
     volume_tier: int
     time_min: float | None = None
-    time_likely: float
+    time_likely: float | None = None
     time_max: float | None = None
-    covers_subassemblies: bool = False
+    covers: COVERS = "none"
 
 
 class AddChildIn(BaseModel):

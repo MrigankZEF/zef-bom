@@ -70,6 +70,13 @@ for tier in TIERS:
         v = dc.cost_min if which == "min" else dc.cost_max
         return float(v) if v is not None else likely
 
+    def bought_in(iid: str) -> bool:
+        """Assembly bought as one quoted unit at this tier: its own price is the whole cost
+        and nothing beneath it is billed. Recomputed here rather than asked of BomGraph —
+        the point of this script is to check the graph, not to trust it."""
+        al = labor.get(iid)
+        return bool(kids.get(iid)) and al is not None and al.covers == "all"
+
     def asm_cost(iid: str, which: str) -> float:
         """Process cost = minutes x EUR/min, straight from AssemblyLabor + the rate."""
         it = items[iid]
@@ -77,7 +84,7 @@ for tier in TIERS:
             return 0.0
         rate = rates.get(it.cost_type_id)
         al = labor.get(iid)
-        if not rate or al is None:
+        if not rate or al is None or al.time_likely is None:
             return 0.0
         t = {"likely": al.time_likely,
              "min": al.time_min if al.time_min is not None else al.time_likely,
@@ -92,7 +99,9 @@ for tier in TIERS:
         while stack:
             iid, q, seen = stack.pop()
             ch = kids.get(iid, [])
-            if not ch:
+            # A bought-in assembly is a priced terminal, exactly as BomGraph.flatten_leaves
+            # treats it — the root itself always expands, or there would be nothing to show.
+            if not ch or (iid != root and bought_in(iid)):
                 leaf_qty[iid] += q
                 continue
             asm_qty[iid] += q
@@ -113,7 +122,7 @@ for tier in TIERS:
         if iid in seen:
             return 0.0
         ch = kids.get(iid, [])
-        if not ch:
+        if not ch or bought_in(iid):
             v = unit_cost(iid, which) or 0.0
         else:
             inner = seen | {iid}

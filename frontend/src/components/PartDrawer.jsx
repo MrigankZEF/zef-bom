@@ -25,6 +25,41 @@ const Field = ({ label, children }) => (
   <div><span className="input-label">{label}</span>{children}</div>
 );
 
+// A short, mutually exclusive choice, shown in full rather than hidden behind a select.
+// Both places this replaced a dropdown had the same problem: the labels ("made to order
+// (our specs)") were longer than any column that fits three price inputs beside them, so
+// the closed control cropped and the setting in force could not be read at a glance.
+const Seg = ({ value, options, onChange, disabled, label }) => (
+  <div className="seg" role="group" aria-label={label}>
+    {options.map((o) => (
+      <button key={o.value} type="button" className={o.className || ""} title={o.title}
+              disabled={disabled} aria-pressed={value === o.value}
+              onClick={() => onChange(o.value)}>
+        {o.label}
+      </button>
+    ))}
+  </div>
+);
+
+// How far an assembly's cost reaches down the tree, per volume tier. Mirrors
+// AssemblyLabor.covers on the backend.
+const COVERS_OPTS = [
+  { value: "none", label: "Rolled up",
+    title: "Contents roll up, and this assembly's own time × rate is added on top. The default." },
+  { value: "labor", label: "Labour covers below", className: "seg-covered",
+    title: "One time estimate here covers the assembly work on everything below. Parts below are still priced individually and still roll up." },
+  { value: "all", label: "Supplier quote", className: "seg-quoted",
+    title: "Bought as one finished unit: this quote covers the parts AND the labour below. The contents stay in the BOM for reference but cost nothing." },
+];
+
+// How we get a part at a given volume — the single source of truth for sourcing.
+const SOURCING_OPTS = [
+  { value: "", label: "—", title: "Not decided yet." },
+  { value: "buy", label: "Buy", title: "Off the shelf, as catalogued." },
+  { value: "made-to-order", label: "Made to order", title: "A supplier builds it to our specs." },
+  { value: "make", label: "Make", title: "Built in house." },
+];
+
 export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const [tab, setTab] = useState("overview");
   const [tier, setTier] = useState(100);
@@ -256,9 +291,9 @@ Create this copy anyway? It gets its own new code.`)) {
     try { await api.restoreItem(itemId); load(); onChanged?.(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
-  const exportBom = async (fmt) => {
+  const exportBom = async (fmt, filename) => {
     setBusy(true);
-    try { await api.exportBom(itemId, fmt); }
+    try { await api.exportBom(itemId, fmt, filename); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   const convertToAssembly = async () => {
@@ -361,13 +396,14 @@ Create this copy anyway? It gets its own new code.`)) {
             {/* The three tier figures are a header, not a fold-out: they are what you check
                 while editing everything below them. Every card under here collapses, and
                 Item data is the one that starts open. */}
-            <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} usage={usage} />
+            <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} labor={labor} usage={usage} />
 
             {!isLeaf && <AssemblyCostWarnings itemId={itemId} rollups={rollups} decided={decided}
-              reload={() => { load(); onChanged?.(); }} setError={setError} />}
+              labor={labor} reload={() => { load(); onChanged?.(); }} setError={setError} />}
 
             {!isLeaf && (
-              <AssemblyCostCard itemId={itemId} item={item} labor={labor} costTypes={costTypes}
+              <AssemblyCostCard itemId={itemId} item={item} labor={labor} decided={decided}
+                evidence={evidence} costTypes={costTypes}
                 reload={() => { load(); onChanged?.(); }} setError={setError} />
             )}
 
@@ -991,8 +1027,9 @@ function FilesTab({ itemId, thumbnailFileId, onThumbnailChanged, setError: setDr
 // The three volume tiers side by side, read-only — the figure the cards below it edit.
 // A leaf shows its own decided unit cost; an assembly shows the rolled-up cost split into
 // the parts beneath it plus its own assembly labour.
-function CostOverviewCard({ isLeaf, rollups, decided, usage }) {
+function CostOverviewCard({ isLeaf, rollups, decided, labor, usage }) {
   const byTier = Object.fromEntries(decided.map((x) => [x.volume_tier, x]));
+  const coversByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l.covers]));
   return (
     <div className="card">
       <div className="card-head">
@@ -1004,7 +1041,12 @@ function CostOverviewCard({ isLeaf, rollups, decided, usage }) {
           const r = rollups[t] || {};
           const dc = byTier[t];
           const unit = dc?.unit_cost_eur != null ? Number(dc.unit_cost_eur) : null;
-          const value = isLeaf ? unit : (r.cost > 0 ? r.cost : null);
+          // A bought-in assembly is priced like a part — one number from a supplier — so it
+          // reads off the decided cost, not off a parts + assembly breakdown that no longer
+          // describes where the money goes.
+          const quoted = !isLeaf && coversByTier[t] === "all";
+          const value = isLeaf || quoted ? unit : (r.cost > 0 ? r.cost : null);
+          const inside = (r.below_boundary || []).length;
           // What this part costs the BOM at this tier. Only shown when a single top-level
           // BOM needs it — across two products no one total is the right answer.
           const count = usage && !usage.shared ? usage.total_count : null;
@@ -1018,8 +1060,18 @@ function CostOverviewCard({ isLeaf, rollups, decided, usage }) {
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>
                 {isLeaf
                   ? (unit == null ? "no decided cost" : "decided unit cost")
-                  : `parts ${fmtEURcompact(r.parts_cost || 0)} + assembly ${fmtEURcompact(r.assembly_cost || 0)}`}
+                  : quoted
+                    ? (unit == null
+                        ? "bought in — no quote yet"
+                        : `supplier quote · ${inside} item${inside === 1 ? "" : "s"} inside`)
+                    : `parts ${fmtEURcompact(r.parts_cost || 0)} + assembly ${fmtEURcompact(r.assembly_cost || 0)}`}
               </span>
+              {!isLeaf && !quoted && inside > 0 && (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--info)" }}
+                      title="Documented under a bought-in assembly: real items, deliberately not costed here because a supplier's price already covers them.">
+                  {inside} item{inside === 1 ? "" : "s"} inside quotes
+                </span>
+              )}
               {isLeaf && extended != null && (
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}
                       title={`${usage.roots[0]?.root} needs ${count.toLocaleString()} of these`}>
@@ -1037,7 +1089,7 @@ function CostOverviewCard({ isLeaf, rollups, decided, usage }) {
 // Everything that prices an assembly: the warnings, the cost type and the time per tier.
 // Two contradictions worth interrupting for. Deliberately NOT collapsible: a warning nobody
 // can see is not a warning.
-function AssemblyCostWarnings({ itemId, rollups, decided, reload, setError }) {
+function AssemblyCostWarnings({ itemId, rollups, decided, labor, reload, setError }) {
   const [busy, setBusy] = useState(false);
   const dropDecided = async (vt) => {
     if (!window.confirm(`Remove the decided cost at @${tierLabel(vt)} from ${itemId}? The rollup already ignores it.`)) return;
@@ -1047,7 +1099,11 @@ function AssemblyCostWarnings({ itemId, rollups, decided, reload, setError }) {
   };
   // A descendant carrying its own assembly cost under an ancestor marked as covering it.
   const conflicts = [...new Set(COST_TIERS.flatMap((t) => rollups[t]?.covered_conflict || []))];
-  if (!conflicts.length && !decided.length) return null;
+  // On a quoted tier the decided cost IS the cost, so it is the opposite of unused. Without
+  // this filter the card would flag the quote the user had just entered and offer to delete it.
+  const coversByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l.covers]));
+  const stray = decided.filter((dc) => coversByTier[dc.volume_tier] !== "all");
+  if (!conflicts.length && !stray.length) return null;
   return (
     <>
       {conflicts.length > 0 && (
@@ -1061,16 +1117,17 @@ function AssemblyCostWarnings({ itemId, rollups, decided, reload, setError }) {
           </p>
         </div>
       )}
-      {decided.length > 0 && (
+      {stray.length > 0 && (
         <div className="card" style={{ borderColor: "var(--accent)" }}>
           <div className="card-head"><span className="card-title">Unused decided cost</span></div>
           <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "0 0 10px" }}>
-            A decided cost is stored on this item but <strong>ignored</strong> — an assembly is
-            costed from its contents plus assembly labour, so only a part with no contents
-            uses one. It was probably set before this item gained contents.
+            A decided cost is stored on this item at a tier that is <strong>not</strong> a
+            supplier quote, so the rollup <strong>ignores</strong> it — that tier is costed from
+            the contents plus assembly labour. Either set the tier to <em>Supplier quote</em>
+            above, which makes this price the cost of the whole assembly, or remove it.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {decided.map((dc) => (
+            {stray.map((dc) => (
               <div key={dc.volume_tier} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
                 <span style={{ fontFamily: "var(--font-mono)", color: "var(--ink-3)" }}>@ {tierLabel(dc.volume_tier)}</span>
                 <span style={{ fontFamily: "var(--font-mono)", flex: 1 }}>{fmtEURcompact(dc.unit_cost_eur)}</span>
@@ -1085,16 +1142,23 @@ function AssemblyCostWarnings({ itemId, rollups, decided, reload, setError }) {
   );
 }
 
-// What an assembly costs to put together: the rate it is charged at, and the minutes per
-// tier. One card, because a time without a rate prices nothing.
-function AssemblyCostCard({ itemId, item, labor, costTypes, reload, setError }) {
+// How an assembly is costed, per volume tier: the basis, and the numbers that basis needs.
+// One card, because the three are one decision — a time without a rate prices nothing, and
+// a quote replaces both. Sourcing genuinely differs by volume, so the basis is per tier:
+// hand-built at @1, quoted by a harness shop at @10k.
+function AssemblyCostCard({ itemId, item, labor, decided, evidence, costTypes, reload, setError }) {
   const laborByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l]));
+  const decidedByTier = Object.fromEntries((decided || []).map((d) => [d.volume_tier, d]));
   const [tdraft, setTdraft] = useState({});
   const [adding, setAdding] = useState(false);
   const [ctName, setCtName] = useState("");
   const [ctRate, setCtRate] = useState("");
   const [busy, setBusy] = useState(false);
   const rate = (costTypes || []).find((c) => c.id === item.cost_type_id)?.meta?.rate_eur_h;
+
+  const covers = (vt) => laborByTier[vt]?.covers || "none";
+  const quotedTiers = COST_TIERS.filter((t) => covers(t) === "all");
+  const allQuoted = quotedTiers.length === COST_TIERS.length;
 
   const setCostType = async (id) => {
     setBusy(true);
@@ -1110,29 +1174,69 @@ function AssemblyCostCard({ itemId, item, labor, costTypes, reload, setError }) 
       setAdding(false); setCtName(""); setCtRate(""); reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
+
+  // Time fields come off the labour row, price fields off the decided cost — the basis
+  // decides which of the two the row is showing, but both are kept, so flipping a tier back
+  // and forth never silently throws away the numbers behind the other basis.
   const tval = (vt, key) => (tdraft[vt]?.[key] ?? (laborByTier[vt]?.[key] ?? ""));
+  const cval = (vt, key) => (tdraft[vt]?.[key] ?? (decidedByTier[vt]?.[key] ?? ""));
   const setT = (vt, key, v) => setTdraft((d) => ({ ...d, [vt]: { ...d[vt], [key]: v } }));
-  const saveLabor = async (vt) => {
-    const likely = tval(vt, "time_likely");
-    if (likely === "" || likely == null) return;
+
+  // The basis commits on click, like the cost type above it — it is one discrete choice, and
+  // the evidence block it reveals writes straight to the server, so leaving it as an unsaved
+  // draft would let a quote be filed against a tier that is not actually quoted.
+  const setCovers = async (vt, value) => {
     setBusy(true);
     try {
-      await api.setAssemblyLabor(itemId, { volume_tier: vt, time_likely: toNum(likely), time_min: toNum(tval(vt, "time_min")), time_max: toNum(tval(vt, "time_max")), covers_subassemblies: !!tval(vt, "covers_subassemblies") });
+      const l = laborByTier[vt];
+      await api.setAssemblyLabor(itemId, {
+        volume_tier: vt, covers: value,
+        time_likely: l?.time_likely ?? null, time_min: l?.time_min ?? null, time_max: l?.time_max ?? null,
+      });
+      reload();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  const saveTier = async (vt) => {
+    const quoted = covers(vt) === "all";
+    setBusy(true);
+    try {
+      if (quoted) {
+        const likely = cval(vt, "unit_cost_eur");
+        if (likely === "" || likely == null) return;
+        await api.setDecidedCost(itemId, {
+          volume_tier: vt, unit_cost_eur: toNum(likely),
+          cost_min: toNum(cval(vt, "cost_min")), cost_max: toNum(cval(vt, "cost_max")),
+          // An assembly a supplier builds to our drawings is made to order by definition, so
+          // the sourcing field answers itself rather than being one more thing to remember.
+          make_or_buy: decidedByTier[vt]?.make_or_buy || "made-to-order",
+          confidence: decidedByTier[vt]?.confidence || "medium",
+        });
+      } else {
+        const likely = tval(vt, "time_likely");
+        if (likely === "" || likely == null) return;
+        await api.setAssemblyLabor(itemId, {
+          volume_tier: vt, covers: covers(vt), time_likely: toNum(likely),
+          time_min: toNum(tval(vt, "time_min")), time_max: toNum(tval(vt, "time_max")),
+        });
+      }
+      setTdraft((d) => ({ ...d, [vt]: {} }));
       reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
   return (
-    <Accordion title="Assembly cost" meta={rate ? `€${rate}/h · time per tier` : "cost type + time per tier"}>
+    <Accordion title="How this assembly is costed"
+               meta={allQuoted ? "quoted at every tier" : rate ? `€${rate}/h · per tier` : "cost type + time per tier"}>
       <div style={{ paddingTop: 14, display: "flex", flexDirection: "column", gap: 14 }}>
-        <div>
+        <div style={{ opacity: allQuoted ? 0.45 : 1 }}>
           <span className="input-label">Cost type</span>
           <div style={{ display: "flex", gap: 8 }}>
-            <select className="select" value={item.cost_type_id ?? ""} onChange={(e) => setCostType(e.target.value)} disabled={busy} style={{ flex: 1 }}>
+            <select className="select" value={item.cost_type_id ?? ""} onChange={(e) => setCostType(e.target.value)} disabled={busy || allQuoted} style={{ flex: 1 }}>
               <option value="">— pick a cost type —</option>
               {(costTypes || []).map((c) => <option key={c.id} value={c.id}>{c.value} (€{c.meta?.rate_eur_h}/h)</option>)}
             </select>
-            <button className="btn ghost sm" onClick={() => setAdding((a) => !a)} disabled={busy}>+ add</button>
+            <button className="btn ghost sm" onClick={() => setAdding((a) => !a)} disabled={busy || allQuoted}>+ add</button>
           </div>
           {adding && (
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 100px 48px", gap: 8, marginTop: 8, alignItems: "end" }}>
@@ -1142,43 +1246,142 @@ function AssemblyCostCard({ itemId, item, labor, costTypes, reload, setError }) 
             </div>
           )}
           <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "8px 0 0" }}>
-            Assembly cost = time × this rate (labour, machine, …). Also editable in <strong>Admin → Reference data → Assembly cost types</strong>.
+            {allQuoted
+              ? "Every tier is quoted, so no in-house time is priced and the rate goes unused."
+              : <>Assembly cost = time × this rate (labour, machine, …). Only the tiers you build
+                 yourself use it. Also editable in <strong>Admin → Reference data → Assembly cost types</strong>.</>}
           </p>
         </div>
 
         <div style={{ borderTop: "1px solid var(--hair-faint)", paddingTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-            <span className="input-label" style={{ margin: 0 }}>Assembly time — minutes</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
+            <span className="input-label" style={{ margin: 0 }}>Costing basis — per volume tier</span>
             <span className="card-meta">min · likely · max</span>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {COST_TIERS.map((t) => (
-              <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 44px", gap: 8, alignItems: "end" }}>
-                <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>{t.toLocaleString()}</span></Field>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
-                  <Field label="min"><NumInput value={tval(t, "time_min")} onChange={(v) => setT(t, "time_min", v)} /></Field>
-                  <Field label="likely*"><NumInput value={tval(t, "time_likely")} onChange={(v) => setT(t, "time_likely", v)} /></Field>
-                  <Field label="max"><NumInput value={tval(t, "time_max")} onChange={(v) => setT(t, "time_max", v)} /></Field>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {COST_TIERS.map((t) => {
+              const quoted = covers(t) === "all";
+              const fields = quoted
+                ? [["cost_min", "min €"], ["unit_cost_eur", "likely €*"], ["cost_max", "max €"]]
+                : [["time_min", "min"], ["time_likely", "likely*"], ["time_max", "max"]];
+              const read = quoted ? cval : tval;
+              return (
+                <div key={t} style={{ display: "grid", gridTemplateColumns: "62px minmax(0, 1fr) 46px", gap: 8, alignItems: "end", padding: "10px 0 12px", borderBottom: "1px solid var(--hair-faint)" }}>
+                  <div style={{ gridColumn: 1, gridRow: "1 / span 2", alignSelf: "start", paddingTop: 3 }}>
+                    <span style={{ fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 700, display: "block" }}>@ {tierLabel(t)}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--ink-4)" }}>{t.toLocaleString()} pcs</span>
+                  </div>
+                  <div style={{ gridColumn: "2 / span 2", gridRow: 1, marginBottom: 2 }}>
+                    <Seg value={covers(t)} options={COVERS_OPTS} disabled={busy}
+                         label={`Costing basis at ${t} pcs`} onChange={(v) => setCovers(t, v)} />
+                  </div>
+                  <div style={{ gridColumn: 2, gridRow: 2, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
+                    {fields.map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        <NumInput value={read(t, key)} onChange={(v) => setT(t, key, v)} />
+                      </Field>
+                    ))}
+                  </div>
+                  <div style={{ gridColumn: 3, gridRow: 2 }}>
+                    <button className="btn sm" style={{ width: "100%", marginBottom: 1 }} onClick={() => saveTier(t)} disabled={busy}>set</button>
+                  </div>
+                  {quoted && (
+                    <div style={{ gridColumn: "2 / span 2", gridRow: 3, marginTop: 12 }}>
+                      {/* The quote and the PDF behind it are the same conversation, so the
+                          evidence for a quoted tier sits under that tier — not in a separate
+                          card where it would have to be matched back up by volume. */}
+                      <EvidenceBlock itemId={itemId} evidence={evidence} tier={t}
+                                     reload={reload} setError={setError} />
+                    </div>
+                  )}
                 </div>
-                <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveLabor(t)} disabled={busy}>set</button>
-                <label style={{ gridColumn: "2 / 4", display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--ink-3)", cursor: "pointer", marginTop: -4 }}
-                       title="For an outsourced or bought-in assembly, where one quoted cost already includes the work on everything below. Sub-assemblies below stop counting as missing an assembly cost.">
-                  <input type="checkbox" checked={!!tval(t, "covers_subassemblies")}
-                         onChange={(e) => { setT(t, "covers_subassemblies", e.target.checked); }} />
-                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    Assembly cost covers all sub-assemblies
-                  </span>
-                </label>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <p style={{ fontSize: 11, color: "var(--ink-3)", margin: "10px 0 0" }}>
-            Tick per tier, then press <strong>set</strong> — sourcing can differ by volume
-            (built in house at @1, outsourced at @10k).
+            Pick a basis per tier, then press <strong>set</strong>. A <strong>supplier quote</strong> is
+            the price of the whole assembly — its contents stay in the BOM for reference but stop
+            costing anything, and stop counting as missing prices.
           </p>
         </div>
       </div>
     </Accordion>
+  );
+}
+
+// The quotes, invoices and estimates behind a price. Shared, because two cards need it for
+// the same reason: a leaf part's price and a bought-in assembly's quote are both numbers
+// someone has to justify later. Given a `tier`, it narrows to that volume and files new rows
+// against it — which is what the assembly card wants, where the block sits under one tier.
+function EvidenceBlock({ itemId, evidence, tier = null, reload, setError }) {
+  const [busy, setBusy] = useState(false);
+  const rows = tier == null ? evidence : evidence.filter((q) => q.volume_tier === tier);
+  const blank = { source_type: "", unit_cost: "", volume_tier: tier ?? 100, supplier_name: "", confidence: "high", note: "", attachment_url: "" };
+  const [ev, setEv] = useState(blank);
+  // Costing produces two kinds of row: a quote with a price, and a plain note ("asked them,
+  // waiting on a price"). Nothing here is required on its own — one of the three is.
+  const hasSomething = !!(ev.unit_cost || ev.note.trim() || ev.attachment_url.trim());
+  const addEvidence = async () => {
+    if (!hasSomething) return;
+    setBusy(true);
+    try {
+      await api.addCostEvidence(itemId, {
+        ...ev,
+        source_type: ev.source_type || null,
+        unit_cost: ev.unit_cost === "" ? null : toNum(ev.unit_cost),
+        volume_tier: tier ?? (toNum(ev.volume_tier) ?? 100),
+        supplier_name: ev.supplier_name || null,
+        note: ev.note.trim() || null,
+        attachment_url: ev.attachment_url.trim() || null,
+      });
+      setEv({ ...blank, volume_tier: tier ?? ev.volume_tier, source_type: ev.source_type }); reload();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <span className="input-label" style={{ margin: 0 }}>
+          {tier == null ? "Evidence" : `Quote evidence · @ ${tierLabel(tier)}`}
+        </span>
+        <span className="card-meta">{rows.length} on file</span>
+      </div>
+      {rows.map((q) => (
+        <div key={q.id} style={{ borderTop: "1px solid var(--hair-faint)", padding: "8px 0", fontSize: 12.5 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <Pill kind={q.source_type === "invoice" ? "ok" : q.source_type?.startsWith("estimate") ? "warm" : "info"}>
+              {q.source_type ? q.source_type.replace("estimate_", "est·") : "note"}
+            </Pill>
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {q.supplier_name || <em style={{ color: "var(--ink-3)" }}>—</em>}
+            </span>
+            <span className="mono">
+              {q.unit_cost != null ? `${q.currency} ${q.unit_cost} @${q.volume_tier}` : "—"}
+            </span>
+            <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
+          </div>
+          {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
+          {q.attachment_url && (
+            <a href={extUrl(q.attachment_url)} target="_blank" rel="noreferrer" className="mono" title={q.attachment_url}
+              style={{ display: "block", marginTop: 3, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 11.5 }}>
+              {q.attachment_url}
+            </a>
+          )}
+        </div>
+      ))}
+      <div style={{ display: "grid", gridTemplateColumns: tier == null ? "minmax(0, 1fr) minmax(0, 1fr) 80px 80px" : "minmax(0, 1fr) minmax(0, 1fr) 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
+        <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}><option value="">— note —</option>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
+        <Field label="Supplier"><RefSelect category="supplier" value={ev.supplier_name} onChange={(v) => setEv({ ...ev, supplier_name: v })} placeholder="—" /></Field>
+        <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
+        {tier == null && <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>}
+      </div>
+      <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
+      <div style={{ marginTop: 8 }}><Field label="Link (quote, product page…)"><input className="input mono" value={ev.attachment_url} placeholder="https://…" onChange={(e) => setEv({ ...ev, attachment_url: e.target.value })} /></Field></div>
+      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 10 }}>
+        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>a price, a note or a link — any one is enough</span>
+        <button className="btn sm" onClick={addEvidence} disabled={busy || !hasSomething}><Icon name="check" /> add evidence</button>
+      </div>
+    </>
   );
 }
 
@@ -1202,29 +1405,8 @@ function UnitCostCard({ itemId, decided, evidence, totalQty, reload, setError })
         basis_note: dval(vt, "basis_note", "") || null,
         confidence: dval(vt, "confidence", "medium"),
       });
+      setDraft((d) => ({ ...d, [vt]: {} }));
       reload();
-    } catch (e) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  const blank = { source_type: "", unit_cost: "", volume_tier: 100, supplier_name: "", confidence: "high", note: "", attachment_url: "" };
-  const [ev, setEv] = useState(blank);
-  // Costing produces two kinds of row: a quote with a price, and a plain note ("asked them,
-  // waiting on a price"). Nothing here is required on its own — one of the three is.
-  const hasSomething = !!(ev.unit_cost || ev.note.trim() || ev.attachment_url.trim());
-  const addEvidence = async () => {
-    if (!hasSomething) return;
-    setBusy(true);
-    try {
-      await api.addCostEvidence(itemId, {
-        ...ev,
-        source_type: ev.source_type || null,
-        unit_cost: ev.unit_cost === "" ? null : toNum(ev.unit_cost),
-        volume_tier: toNum(ev.volume_tier) ?? 100,
-        supplier_name: ev.supplier_name || null,
-        note: ev.note.trim() || null,
-        attachment_url: ev.attachment_url.trim() || null,
-      });
-      setEv({ ...blank, volume_tier: ev.volume_tier, source_type: ev.source_type }); reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -1235,71 +1417,38 @@ function UnitCostCard({ itemId, decided, evidence, totalQty, reload, setError })
           Price of <strong>one piece</strong> (qty is multiplied automatically). <strong>Most-likely</strong> is
           required; <strong>min/max</strong> are optional and give a cost range. The tier is the production-volume scenario.
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column" }}>
           {COST_TIERS.map((t) => (
-            <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 78px 44px", gap: 8, alignItems: "end" }}>
-              <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>~{(totalQty * t).toLocaleString()}</span></Field>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
+            // Same shape as the assembly card: the choice on its own line above the numbers
+            // it qualifies. It used to share the row, in a column too narrow to read it in —
+            // and narrow enough that the 'set' button sat on top of it.
+            <div key={t} style={{ display: "grid", gridTemplateColumns: "62px minmax(0, 1fr) 46px", gap: 8, alignItems: "end", padding: "10px 0 12px", borderBottom: "1px solid var(--hair-faint)" }}>
+              <div style={{ gridColumn: 1, gridRow: "1 / span 2", alignSelf: "start", paddingTop: 3 }}>
+                <span style={{ fontFamily: "var(--font-display)", fontSize: 12.5, fontWeight: 700, display: "block" }}>@ {tierLabel(t)}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--ink-4)" }}>~{(totalQty * t).toLocaleString()}</span>
+              </div>
+              <div style={{ gridColumn: "2 / span 2", gridRow: 1, marginBottom: 2 }}>
+                <Seg value={dval(t, "make_or_buy", "") || ""} options={SOURCING_OPTS} disabled={busy}
+                     label={`Sourcing at ${t} pcs`} onChange={(v) => setD(t, "make_or_buy", v)} />
+              </div>
+              <div style={{ gridColumn: 2, gridRow: 2, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
                 <Field label="min €"><NumInput value={dval(t, "cost_min", "")} onChange={(v) => setD(t, "cost_min", v)} /></Field>
                 <Field label="likely €*"><NumInput value={dval(t, "unit_cost_eur", "")} onChange={(v) => setD(t, "unit_cost_eur", v)} /></Field>
                 <Field label="max €"><NumInput value={dval(t, "cost_max", "")} onChange={(v) => setD(t, "cost_max", v)} /></Field>
               </div>
-              <Field label="Sourcing">
-                {/* The option labels are longer than any column that fits three price inputs
-                    beside them, so the closed select crops — the open list reads in full. */}
-                <select className="select" value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}
-                        title="How we get this part at this volume. It can differ by tier — a prototype made in house at @1 may be bought at @10k.">
-                  <option value="">—</option>
-                  <option value="buy">buy (off the shelf)</option>
-                  <option value="made-to-order">made to order (our specs)</option>
-                  <option value="make">make in house</option>
-                </select>
-              </Field>
-              <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveTier(t)} disabled={busy}>set</button>
+              <div style={{ gridColumn: 3, gridRow: 2 }}>
+                <button className="btn sm" style={{ width: "100%", marginBottom: 1 }} onClick={() => saveTier(t)} disabled={busy}>set</button>
+              </div>
             </div>
           ))}
         </div>
+        <p style={{ fontSize: 11, color: "var(--ink-3)", margin: "10px 0 0" }}>
+          Sourcing can differ by tier — a prototype made in house at @1 may be bought at @10k.
+          It saves with the row, on <strong>set</strong>.
+        </p>
 
         <div style={{ borderTop: "1px solid var(--hair-faint)", marginTop: 16, paddingTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <span className="input-label" style={{ margin: 0 }}>Evidence</span>
-            <span className="card-meta">{evidence.length} on file</span>
-          </div>
-          {evidence.map((q) => (
-            <div key={q.id} style={{ borderTop: "1px solid var(--hair-faint)", padding: "8px 0", fontSize: 12.5 }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <Pill kind={q.source_type === "invoice" ? "ok" : q.source_type?.startsWith("estimate") ? "warm" : "info"}>
-                  {q.source_type ? q.source_type.replace("estimate_", "est·") : "note"}
-                </Pill>
-                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {q.supplier_name || <em style={{ color: "var(--ink-3)" }}>—</em>}
-                </span>
-                <span className="mono">
-                  {q.unit_cost != null ? `${q.currency} ${q.unit_cost} @${q.volume_tier}` : "—"}
-                </span>
-                <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
-              </div>
-              {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
-              {q.attachment_url && (
-                <a href={extUrl(q.attachment_url)} target="_blank" rel="noreferrer" className="mono" title={q.attachment_url}
-                  style={{ display: "block", marginTop: 3, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 11.5 }}>
-                  {q.attachment_url}
-                </a>
-              )}
-            </div>
-          ))}
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 80px 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
-            <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}><option value="">— note —</option>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
-            <Field label="Supplier"><RefSelect category="supplier" value={ev.supplier_name} onChange={(v) => setEv({ ...ev, supplier_name: v })} placeholder="—" /></Field>
-            <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
-            <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>
-          </div>
-          <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
-          <div style={{ marginTop: 8 }}><Field label="Link (quote, product page…)"><input className="input mono" value={ev.attachment_url} placeholder="https://…" onChange={(e) => setEv({ ...ev, attachment_url: e.target.value })} /></Field></div>
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 10 }}>
-            <span style={{ fontSize: 11, color: "var(--ink-3)" }}>a price, a note or a link — any one is enough</span>
-            <button className="btn sm" onClick={addEvidence} disabled={busy || !hasSomething}><Icon name="check" /> add evidence</button>
-          </div>
+          <EvidenceBlock itemId={itemId} evidence={evidence} reload={reload} setError={setError} />
         </div>
       </div>
     </Accordion>
@@ -1382,6 +1531,24 @@ function AdvancedOptions({ itemId, item, isAssembly, parents, busy, changeCode, 
             <span className="card-title" style={{ flex: 1 }}>Export this {item.is_top_level ? "BOM" : "assembly"}</span>
             <button className="btn ghost sm" onClick={() => exportBom("opml")} disabled={busy}><Icon name="box" size={12} /> OPML</button>
             <button className="btn ghost sm" onClick={() => exportBom("csv")} disabled={busy}><Icon name="box" size={12} /> CSV</button>
+          </div>
+        )}
+
+        {isAssembly && (
+          <div style={row}>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div className="card-title">Export assembly flow chart</div>
+              <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+                The same tree read as a production plan: a Mermaid flow chart where every
+                assembly is a station, every part an input feeding it, and every arrow points
+                downstream at the finished {item.item_name || itemId}. A .md file — GitHub,
+                Notion and Obsidian draw it as a diagram.
+              </p>
+            </div>
+            <button className="btn ghost sm" disabled={busy}
+                    onClick={() => exportBom("flowchart", `${itemId}-assembly-flow.md`)}>
+              <Icon name="download" size={12} /> Flow chart (.md)
+            </button>
           </div>
         )}
 
