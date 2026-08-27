@@ -209,8 +209,12 @@ def export_flowchart(root: str = Query(...), db: Session = Depends(get_db)):
     if root not in g.items:
         raise HTTPException(404, f"Item {root} not found")
 
-    nodes: list[str] = []          # declarations, children before parents
-    edges: list[str] = []
+    # The two charts are the same graph seen at two zoom levels, so the walk records
+    # nodes and links once and each chart is a filter over them.
+    order: list[str] = []          # declaration order — children before parents
+    decls: dict[str, str] = {}     # item_id → its Mermaid node declaration
+    kind: dict[str, str] = {}      # item_id → station | supplied | part
+    links: list[tuple[str, str, float]] = []   # child, parent, qty
     stations: list[tuple[int, str, list[tuple[str, str, str]]]] = []  # no, item_id, inputs
     visited: dict[str, str] = {}   # item_id → mermaid node id (an item shared by two
                                    # parents is one station feeding both, not a copy)
@@ -235,35 +239,55 @@ def export_flowchart(root: str = Query(...), db: Session = Depends(get_db)):
         visited[item_id] = nid
 
         label = f"{_mermaid_label(item_id)}<br/>{_mermaid_label(it.item_name)}"
+        order.append(item_id)
         if kids:
             counter[0] += 1
             no = counter[0]
             verb = "Final assembly" if item_id == root else "Assemble"
             cls = "product" if item_id == root else "station"
             shape = ('(["', '"])') if item_id == root else ('[["', '"]]')
-            nodes.append(f'    {nid}{shape[0]}S{no:02d} · {verb}<br/>{label}{shape[1]}:::{cls}')
+            kind[item_id] = "station"
+            decls[item_id] = f'    {nid}{shape[0]}S{no:02d} · {verb}<br/>{label}{shape[1]}:::{cls}'
             stations.append((no, item_id, [
                 (c, _cell(g.items[c].item_name), _qty(q)) for _, q, c in children
             ]))
         elif boundary:
             inside = len(g.descendants(item_id))
-            nodes.append(
+            kind[item_id] = "supplied"
+            decls[item_id] = (
                 f'    {nid}[/"Supplied<br/>{label}<br/>{inside} item{"s" if inside != 1 else ""} inside"/]:::supplied'
             )
             supplied.append(item_id)
         else:
-            nodes.append(f'    {nid}("{label}"):::part')
+            kind[item_id] = "part"
+            decls[item_id] = f'    {nid}("{label}"):::part'
 
-        for cid, q, _c in children:
-            arrow = f'-->|"× {_qty(q)}"|' if float(q or 1) != 1 else "-->"
-            edges.append(f"    {cid} {arrow} {nid}")
+        for _cid, q, c in children:
+            links.append((c, item_id, q))
         return nid
 
     visit(root, frozenset())
 
+    def chart(keep) -> list[str]:
+        """One fenced Mermaid block over the nodes `keep` accepts, and nothing else.
+
+        A link survives only when both ends do, so dropping the loose parts leaves the
+        station-to-station spine intact instead of dangling arrows.
+        """
+        kept = [i for i in order if keep(i)]
+        in_chart = set(kept)
+        out = ["```mermaid", "flowchart LR", *(decls[i] for i in kept), ""]
+        for child, parent, q in links:
+            if child in in_chart and parent in in_chart:
+                arrow = f'-->|"× {_qty(q)}"|' if float(q or 1) != 1 else "-->"
+                out.append(f"    {_node_id(child)} {arrow} {_node_id(parent)}")
+        out += [_MERMAID_CLASSES.rstrip("\n"), "```", ""]
+        return out
+
     it = g.items[root]
     title = f"{root} — {(it.item_name or '').strip()}"
-    part_count = sum(1 for iid in visited if not g.children.get(iid))
+    part_count = sum(1 for k in kind.values() if k == "part")
+    line_count = sum(1 for k in kind.values() if k in ("station", "supplied"))
 
     lines = [
         f"# Assembly flow — {title}",
@@ -277,17 +301,34 @@ def export_flowchart(root: str = Query(...), db: Session = Depends(get_db)):
         "",
         *(([
             "A dashed node arrives finished from a supplier. Its contents are in the BOM for "
-            f"reference, but they are built on someone else's floor, so no station is drawn "
+            "reference, but they are built on someone else's floor, so no station is drawn "
             f"for them: {', '.join('`' + s + '`' for s in supplied)}.",
             "",
         ]) if supplied else []),
-        "```mermaid",
-        "flowchart LR",
-        *nodes,
+        "Two diagrams follow. Each sits alone in a fenced Mermaid block — everything "
+        "between the fence lines pastes straight into mermaid.live, a Markdown viewer or a "
+        "Miro Mermaid widget, and no line outside a fence belongs to a diagram.",
         "",
-        *edges,
-        _MERMAID_CLASSES.rstrip("\n"),
-        "```",
+        "---",
+        "",
+        "## 1 · Full production flow",
+        "",
+        f"Every input in the tree: {len(stations)} station{'s' if len(stations) != 1 else ''} "
+        f"with all {part_count} part{'s' if part_count != 1 else ''} feeding in. This is the "
+        "complete picture and the busiest of the two.",
+        "",
+        *chart(lambda i: True),
+        "---",
+        "",
+        "## 2 · Assembly line only",
+        "",
+        f"The same flow with the loose parts stripped out — {line_count} block"
+        f"{'s' if line_count != 1 else ''}, station to station. It answers what each station "
+        "hands the next one; a station with no arrow coming in is fed only by parts and can "
+        "start on day one.",
+        "",
+        *chart(lambda i: kind[i] in ("station", "supplied")),
+        "---",
         "",
         "## Stations, in build order",
         "",
