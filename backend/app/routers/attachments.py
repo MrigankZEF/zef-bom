@@ -93,7 +93,22 @@ async def upload_attachment(
 # bytes are proxied here. Fetching them on every drawer open would mean a Drive round trip
 # per render, hence a small in-process cache keyed by file id.
 _THUMB_TTL = 10 * 60  # seconds
+# Bounded on purpose: the cache holds raw image bytes and the server runs in a small
+# container, so without a cap every part ever viewed would keep its picture resident for
+# the life of the process.
+_THUMB_CACHE_MAX = 100
 _thumb_cache: dict[str, tuple[float, bytes, str]] = {}
+
+
+def _thumb_cache_put(fid: str, now: float, content: bytes, mime: str) -> None:
+    """Cache one thumbnail, first dropping everything expired and then the oldest entries
+    until the cache is under its cap."""
+    for stale in [k for k, v in _thumb_cache.items() if now - v[0] >= _THUMB_TTL]:
+        _thumb_cache.pop(stale, None)
+    _thumb_cache.pop(fid, None)  # re-insert so this one counts as the newest
+    while len(_thumb_cache) >= _THUMB_CACHE_MAX:
+        _thumb_cache.pop(next(iter(_thumb_cache)))  # dicts keep insertion order: oldest first
+    _thumb_cache[fid] = (now, content, mime)
 
 
 @router.put("/items/{item_id}/thumbnail")
@@ -107,6 +122,17 @@ def set_thumbnail(
     item = _get_item(db, item_id)
     old = item.thumbnail_file_id
     new = (file_id or "").strip() or None
+    # A Drive file id is only accepted if it really sits in THIS item's attachments folder.
+    # Otherwise any file id the caller can guess could be pinned as a part's picture, and the
+    # thumbnail proxy would serve it back with our service-account credentials.
+    if new and new != old:
+        _require_drive()
+        try:
+            listing = drive.list_files(item_id, item.drive_folder_url)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Drive lookup failed: {exc}") from exc
+        if new not in {f["id"] for f in listing["files"]}:
+            raise HTTPException(400, "That file isn't in this item's attachments folder.")
     if new != old:
         item.thumbnail_file_id = new
         record_change(db, entity_type="item", entity_id=item_id, change_type="update",
@@ -132,5 +158,5 @@ async def get_thumbnail(item_id: str, db: Session = Depends(get_db)) -> Response
     if got is None:
         raise HTTPException(404, "Drive has no thumbnail for that file")
     content, mime = got
-    _thumb_cache[fid] = (now, content, mime)
+    _thumb_cache_put(fid, now, content, mime)
     return Response(content=content, media_type=mime)
