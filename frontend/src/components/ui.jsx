@@ -41,6 +41,33 @@ export function ModulePill({ code }) {
   return <span className={`module-pill ${code || ""}`}>{code || "—"}</span>;
 }
 
+// ── numbers in ──────────────────────────────────────────────────────────────
+// We never write a thousands separator, so a comma can only ever mean a decimal
+// point. `type="number"` can't hold one — the browser reports value "" and the
+// typed digits vanish silently — so these fields are text + inputMode="decimal"
+// (keeps the numeric keypad on touch) and we rewrite the comma as it's typed.
+export function NumInput({ value, onChange, className = "input mono", ...rest }) {
+  return (
+    <input
+      {...rest}
+      type="text"
+      inputMode="decimal"
+      className={className}
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value.replace(",", "."))}
+    />
+  );
+}
+
+// The single parse helper for anything typed into a NumInput. Blank → null so a
+// cleared field clears the stored value; a comma that arrived by paste (never
+// through onChange) is still handled; garbage → null rather than NaN.
+export const toNum = (v) => {
+  if (v === "" || v == null) return null;
+  const n = Number(String(v).replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+};
+
 // ── formatters ──────────────────────────────────────────────────────────────
 export const fmtEUR = (v) =>
   v == null ? "—" : "€ " + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });

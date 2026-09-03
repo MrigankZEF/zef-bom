@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { Icon, ModulePill, Pill, fmtEURcompact, fmtPct, fmtWeight } from "./ui";
+import { Icon, ModulePill, NumInput, Pill, fmtEURcompact, fmtPct, fmtWeight, toNum } from "./ui";
 import { RefSelect, MultiRef } from "./RefInputs.jsx";
 
 const COST_TIERS = [1, 100, 10000];
@@ -29,12 +29,22 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const [tab, setTab] = useState("details");
   const [tier, setTier] = useState(100);
   const [addingChild, setAddingChild] = useState(false);
+  // Quantities are read-only until you explicitly enter edit mode, matching the
+  // "Add / edit" + "Save changes" pattern the details section already uses. Nothing is
+  // written until Save, so a stray click can't change a BOM.
+  const [editQty, setEditQty] = useState(false);
+  const [qtyDraft, setQtyDraft] = useState({});   // { child_id: "raw string" }
   const [d, setD] = useState(null);
   const [form, setForm] = useState({});
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [error, setError] = useState(null);
+  // Two separate channels. `loadError` means the drawer has no data to show, so it
+  // legitimately replaces the body. `actionError` means an action failed while the drawer is
+  // perfectly usable — replacing the body there would throw away unsaved input.
+  const [loadError, setLoadError] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const setError = setActionError;   // every action, and every sub-component, funnels here
   const [modOpts, setModOpts] = useState({ current: null, options: [] });
   const [pendingMod, setPendingMod] = useState(null);  // staged module; applied on Save
   useEffect(() => {
@@ -44,7 +54,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   }, [itemId]);
 
   const load = () => {
-    setError(null);
+    setLoadError(null);
     // Archived items aren't in the live tree/rollup graph, so those calls 404 —
     // fail-soft to empty so an archived item still opens with its saved data.
     const safe = (p, fallback) => p.catch(() => fallback);
@@ -65,14 +75,15 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
     ])
       .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes]) => {
         const rollups = { 1: r1, 100: r100, 10000: r10k };
+        setActionError(null);   // a successful reload means the last action went through
         setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes });
         setForm({ ...item, materials: item.materials || (item.material ? [item.material] : []) });
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setLoadError(e.message));
   };
-  useEffect(() => { setD(null); setTab("details"); setAddingChild(false); load(); /* eslint-disable-next-line */ }, [itemId]);
+  useEffect(() => { setD(null); setTab("details"); setAddingChild(false); setEditQty(false); setQtyDraft({}); setActionError(null); load(); /* eslint-disable-next-line */ }, [itemId]);
 
-  if (error) return <Shell><p className="err" style={{ padding: 24 }}>{error}</p></Shell>;
+  if (loadError) return <Shell><p className="err" style={{ padding: 24 }}>{loadError}</p></Shell>;
   if (!d) return <Shell><p className="muted" style={{ padding: 24 }}>Loading…</p></Shell>;
 
   const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes } = d;
@@ -88,8 +99,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
     let dirty = false;
     for (const k of fields) {
       let v = form[k];
-      if (["weight_grams", "lead_time_weeks"].includes(k))
-        v = v === "" || v == null ? null : Number(v);
+      if (["weight_grams", "lead_time_weeks"].includes(k)) v = toNum(v);
       if (v !== item[k]) { patch[k] = v; dirty = true; }
     }
     const curMats = item.materials || (item.material ? [item.material] : []);
@@ -122,6 +132,31 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
       if (r?.parent && r.parent !== itemId) onOpenPart(r.parent); else load();  // parent may have demoted A→P
     } catch (e) { setError(e.message); }
   };
+  // ── contents quantity editing ──────────────────────────────────────────────
+  // A row is "changed" only when it parses to a valid, different, positive number.
+  const qtyRaw = (c) => qtyDraft[c.item_id] ?? String(c.quantity);
+  const qtyBad = (c) => { const n = toNum(qtyRaw(c)); return n === null || n <= 0; };
+  const qtyChanged = (c) => !qtyBad(c) && toNum(qtyRaw(c)) !== c.quantity;
+  const qtyEdits = () => (node.children || []).filter(qtyChanged);
+  const qtyInvalid = () => (node.children || []).filter(qtyBad);
+
+  const cancelQty = () => { setQtyDraft({}); setEditQty(false); setActionError(null); };
+  const saveQty = async () => {
+    const bad = qtyInvalid();
+    if (bad.length) {
+      setActionError(`Quantity must be a number greater than 0 — check ${bad.map((c) => c.item_id).join(", ")}.`);
+      return;
+    }
+    const edits = qtyEdits();
+    if (!edits.length) { cancelQty(); return; }
+    setBusy(true); setActionError(null);
+    try {
+      for (const c of edits) await api.setChildQuantity(itemId, c.item_id, toNum(qtyRaw(c)));
+      setQtyDraft({}); setEditQty(false);
+      load(); onChanged?.();
+    } catch (e) { setActionError(e.message); } finally { setBusy(false); }
+  };
+
   const restore = async () => {
     setBusy(true);
     try { await api.restoreItem(itemId); load(); onChanged?.(); }
@@ -170,6 +205,17 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
         </div>
       </div>
 
+      {actionError && (
+        <div role="alert" style={{ flex: "0 0 auto", margin: "0 24px 4px", padding: "10px 12px", border: "1px solid var(--accent)", borderRadius: 4, background: "var(--accent-soft)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <span style={{ fontSize: 13, color: "var(--accent)" }}>
+            <Icon name="alert" size={13} /> {actionError}
+          </span>
+          <button className="btn ghost sm" title="Dismiss" onClick={() => setActionError(null)}>
+            <Icon name="close" size={11} />
+          </button>
+        </div>
+      )}
+
       <div className="drawer-body">
         {item.archived && (
           <div className="card" style={{ marginBottom: 12, borderColor: "var(--accent)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -179,7 +225,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
         )}
         {!isAssembly && !isLeaf && !item.archived && (
           <div className="card" style={{ marginBottom: 12, borderColor: "var(--accent)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 13, color: "var(--accent)" }}><Icon name="alert" size={13} /> This part has children — by the naming rule it should be an assembly.</span>
+            <span style={{ fontSize: 13, color: "var(--accent)" }}><Icon name="alert" size={13} /> This part has components — by the naming rule it should be an assembly.</span>
             <button className="btn sm" onClick={convertToAssembly} disabled={busy}>Convert to assembly</button>
           </div>
         )}
@@ -226,7 +272,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
                 </div>
                 {!isAssembly && (
                   <>
-                    <Field label="Weight (g)"><input className="input mono" type="number" value={form.weight_grams ?? ""} onChange={(e) => set("weight_grams", e.target.value)} /></Field>
+                    <Field label="Weight (g)"><NumInput value={form.weight_grams} onChange={(v) => set("weight_grams", v)} /></Field>
                     <Field label="Make / buy">
                       <select className="select" value={form.make_or_buy ?? ""} onChange={(e) => set("make_or_buy", e.target.value)}>
                         <option value="">—</option><option>make</option><option>buy</option><option>modified-buy</option>
@@ -235,7 +281,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
                     <div style={{ gridColumn: "1 / -1" }}><Field label="Materials (one or more)"><MultiRef category="material" values={form.materials} onChange={(v) => set("materials", v)} /></Field></div>
                     <Field label="Supplier"><RefSelect category="supplier" value={form.supplier} onChange={(v) => set("supplier", v)} placeholder="— supplier —" /></Field>
                     <Field label="Supplier country"><RefSelect category="country" value={form.supplier_country} onChange={(v) => set("supplier_country", v)} placeholder="— country —" /></Field>
-                    <Field label="Lead time (wk)"><input className="input mono" type="number" value={form.lead_time_weeks ?? ""} onChange={(e) => set("lead_time_weeks", e.target.value)} /></Field>
+                    <Field label="Lead time (wk)"><NumInput value={form.lead_time_weeks} onChange={(v) => set("lead_time_weeks", v)} /></Field>
                   </>
                 )}
                 {isAssembly && (
@@ -255,14 +301,50 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
 
             {isAssembly && node.children.length > 0 && (
               <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-                <div className="card-head" style={{ padding: "14px 18px 10px" }}><span className="card-title">Children · {node.children.length}</span></div>
+                <div className="card-head" style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="card-title" style={{ flex: 1 }}>Contents · {node.children.length}</span>
+                  {!item.archived && (editQty ? (
+                    <>
+                      <button className="btn ghost sm" onClick={cancelQty} disabled={busy}>Cancel</button>
+                      <button className="btn sm" onClick={saveQty} disabled={busy || qtyEdits().length === 0}>
+                        <Icon name="check" size={11} />
+                        {busy ? " Saving…" : qtyEdits().length ? ` Save ${qtyEdits().length} change${qtyEdits().length > 1 ? "s" : ""}` : " Save"}
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn ghost sm" onClick={() => setEditQty(true)} title="Change how many of each item this assembly holds">
+                      Edit quantities
+                    </button>
+                  ))}
+                </div>
+                {editQty && (
+                  <div style={{ padding: "0 18px 10px", fontSize: 11.5, color: "var(--ink-3)" }}>
+                    Nothing is written until you press Save. Cancel discards every change.
+                  </div>
+                )}
                 {node.children.map((c) => (
-                  <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px 1fr 60px 80px 28px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+                  <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px 1fr 78px 80px 28px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, background: editQty && qtyChanged(c) ? "var(--accent-soft)" : undefined }}>
                     <span className="mono" style={{ fontSize: 12, cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_id}</span>
                     <span style={{ cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_name}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {c.quantity}</span>
+                    {editQty ? (
+                      <span style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>×</span>
+                        <NumInput
+                          value={qtyRaw(c)}
+                          onChange={(v) => setQtyDraft((q) => ({ ...q, [c.item_id]: v }))}
+                          onKeyDown={(e) => { if (e.key === "Escape") cancelQty(); }}
+                          title={`How many ${c.item_id} sit in ${itemId} (was ${c.quantity})`}
+                          style={{ width: 54, textAlign: "right", padding: "3px 6px", fontSize: 12,
+                                   borderColor: qtyBad(c) ? "var(--accent)" : undefined }}
+                        />
+                      </span>
+                    ) : (
+                      <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {c.quantity}</span>
+                    )}
                     <span style={{ textAlign: "right" }}><ModulePill code={c.module_code} /></span>
-                    <button className="btn ghost sm danger" title="Remove from this assembly" onClick={() => removeChild(c.item_id)}><Icon name="close" size={11} /></button>
+                    {editQty
+                      ? <span />
+                      : <button className="btn ghost sm danger" title="Remove from this assembly" onClick={() => removeChild(c.item_id)}><Icon name="close" size={11} /></button>}
                   </div>
                 ))}
               </div>
@@ -275,7 +357,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
                 setError={setError}
               />
             ) : (
-              <button className="btn ghost sm" onClick={() => setAddingChild(true)} style={{ alignSelf: "flex-start" }}>+ Add child</button>
+              <button className="btn ghost sm" onClick={() => setAddingChild(true)} style={{ alignSelf: "flex-start" }}>+ Add component</button>
             ))}
             <WhereUsed itemId={itemId} parents={parents} onOpenPart={onOpenPart}
               onMoved={(r) => { onChanged?.(); onOpenPart(r.child_id); }} setError={setError} />
@@ -440,7 +522,7 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
 
   const addExisting = async (childId) => {
     setBusy(true);
-    try { const r = await api.addChild(parentId, { child_id: childId, quantity: Number(qty) || 1 }); onAdded(r); }
+    try { const r = await api.addChild(parentId, { child_id: childId, quantity: toNum(qty) || 1 }); onAdded(r); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
@@ -449,7 +531,7 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
     setBusy(true); setError(null);
     try {
       const created = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype, module: nmod, allow_duplicate: force });
-      const r = await api.addChild(parentId, { child_id: created.item_id, quantity: Number(qty) || 1 });
+      const r = await api.addChild(parentId, { child_id: created.item_id, quantity: toNum(qty) || 1 });
       onAdded(r);
     } catch (e) {
       // Same duplicate-name guard as the catalog: confirm to add a genuinely separate part.
@@ -466,7 +548,7 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
   return (
     <div className="card" style={{ padding: 12 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-        <span className="card-title" style={{ flex: 1 }}>Add child</span>
+        <span className="card-title" style={{ flex: 1 }}>Add component</span>
         <div style={{ display: "inline-flex", gap: 4 }}>
           {[["catalog", "From catalog"], ["new", "Create new"]].map(([v, label]) => (
             <button key={v} className={`btn sm ${mode === v ? "" : "ghost"}`} onClick={() => setMode(v)}>{label}</button>
@@ -479,7 +561,7 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
             <input className="input" placeholder="Search catalog by code or name…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus style={{ flex: 1 }} />
-            <input className="input mono" type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: 64 }} title="quantity" />
+            <NumInput value={qty} onChange={setQty} style={{ width: 64 }} title="quantity" />
           </div>
           <div style={{ maxHeight: 240, overflowY: "auto" }}>
             {!cat && <div style={{ padding: 10, color: "var(--ink-3)", fontSize: 12 }}>Loading catalog…</div>}
@@ -499,14 +581,14 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
           <Field label="Name"><input className="input" value={nm} autoFocus placeholder="e.g. Bracket" onChange={(e) => setNm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createAndAdd()} /></Field>
           <Field label="Type"><select className="select" value={ntype} onChange={(e) => setNtype(e.target.value)}><option value="part">part</option><option value="assembly">assembly</option></select></Field>
           <Field label="Module"><select className="select" value={nmod} onChange={(e) => setNmod(e.target.value)}>{modOptions.map((m) => <option key={m} value={m}>{m}</option>)}</select></Field>
-          <Field label="Qty"><input className="input mono" type="number" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
+          <Field label="Qty"><NumInput value={qty} onChange={setQty} /></Field>
           <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end" }}>
             <button className="btn sm" onClick={() => createAndAdd()} disabled={busy}><Icon name="check" size={12} /> {busy ? "Adding…" : "Create & add"}</button>
           </div>
         </div>
       )}
       <p style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8 }}>
-        Adding makes this an assembly; the child's code may change to match its usage (system code, or UN if used across systems).
+        Adding makes this an assembly; the component's code may change to match its usage (system code, or UN if used across systems).
       </p>
     </div>
   );
@@ -669,12 +751,11 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
   const saveTier = async (vt) => {
     const cost = dval(vt, "unit_cost_eur", byTier[vt]?.unit_cost_eur);
     if (cost === "" || cost == null) return;
-    const num = (k) => { const v = dval(vt, k, ""); return v === "" || v == null ? null : Number(v); };
     setBusy(true);
     try {
       await api.setDecidedCost(itemId, {
-        volume_tier: vt, unit_cost_eur: Number(cost),
-        cost_min: num("cost_min"), cost_max: num("cost_max"),
+        volume_tier: vt, unit_cost_eur: toNum(cost),
+        cost_min: toNum(dval(vt, "cost_min", "")), cost_max: toNum(dval(vt, "cost_max", "")),
         make_or_buy: dval(vt, "make_or_buy", "") || null,
         basis_note: dval(vt, "basis_note", "") || null,
         confidence: dval(vt, "confidence", "medium"),
@@ -691,7 +772,7 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
     if (!ctName.trim() || ctRate === "") return;
     setBusy(true);
     try {
-      const r = await api.addCostType(ctName.trim(), Number(ctRate));
+      const r = await api.addCostType(ctName.trim(), toNum(ctRate));
       await api.patchItem(itemId, { cost_type_id: r.id });
       setAdding(false); setCtName(""); setCtRate(""); reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
@@ -701,18 +782,23 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
   const saveLabor = async (vt) => {
     const likely = tval(vt, "time_likely");
     if (likely === "" || likely == null) return;
-    const num = (k) => { const v = tval(vt, k); return v === "" || v == null ? null : Number(v); };
     setBusy(true);
     try {
-      await api.setAssemblyLabor(itemId, { volume_tier: vt, time_likely: Number(likely), time_min: num("time_min"), time_max: num("time_max") });
+      await api.setAssemblyLabor(itemId, { volume_tier: vt, time_likely: toNum(likely), time_min: toNum(tval(vt, "time_min")), time_max: toNum(tval(vt, "time_max")) });
       reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  const dropDecided = async (vt) => {
+    if (!window.confirm(`Remove the decided cost at @${tierLabel(vt)} from ${itemId}? The rollup already ignores it.`)) return;
+    setBusy(true);
+    try { await api.deleteDecidedCost(itemId, vt); reload(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   const addEvidence = async () => {
     if (!ev.unit_cost) return;
     setBusy(true);
     try {
-      await api.addCostEvidence(itemId, { ...ev, unit_cost: Number(ev.unit_cost), volume_tier: Number(ev.volume_tier) });
+      await api.addCostEvidence(itemId, { ...ev, unit_cost: toNum(ev.unit_cost), volume_tier: toNum(ev.volume_tier) });
       setEv({ ...ev, unit_cost: "", supplier_name: "", note: "" }); reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
@@ -737,6 +823,27 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
             </div>
           </div>
 
+          {decided.length > 0 && (
+            <div className="card" style={{ borderColor: "var(--accent)" }}>
+              <div className="card-head"><span className="card-title">Unused decided cost</span></div>
+              <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "0 0 10px" }}>
+                A decided cost is stored on this item but <strong>ignored</strong> — an assembly is
+                costed from its contents plus assembly labour, so only a part with no contents
+                uses one. It was probably set before this item gained contents.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {decided.map((dc) => (
+                  <div key={dc.volume_tier} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", color: "var(--ink-3)" }}>@ {tierLabel(dc.volume_tier)}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", flex: 1 }}>{fmtEURcompact(dc.unit_cost_eur)}</span>
+                    <button className="btn ghost sm danger" disabled={busy}
+                            onClick={() => dropDecided(dc.volume_tier)}>remove it</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="card">
             <div className="card-head"><span className="card-title">Assembly cost type</span></div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -749,7 +856,7 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
             {adding && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 48px", gap: 8, marginTop: 8, alignItems: "end" }}>
                 <Field label="name (e.g. machine-A)"><input className="input" value={ctName} onChange={(e) => setCtName(e.target.value)} /></Field>
-                <Field label="€/hour"><input className="input mono" type="number" value={ctRate} onChange={(e) => setCtRate(e.target.value)} /></Field>
+                <Field label="€/hour"><NumInput value={ctRate} onChange={setCtRate} /></Field>
                 <button className="btn sm" style={{ marginBottom: 1 }} onClick={addCostTypeInline} disabled={busy}>add</button>
               </div>
             )}
@@ -765,9 +872,9 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
                 <div key={t} style={{ display: "grid", gridTemplateColumns: "60px 1fr 44px", gap: 8, alignItems: "end" }}>
                   <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>{t.toLocaleString()}</span></Field>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-                    <Field label="min"><input className="input mono" type="number" value={tval(t, "time_min")} onChange={(e) => setT(t, "time_min", e.target.value)} /></Field>
-                    <Field label="likely*"><input className="input mono" type="number" value={tval(t, "time_likely")} onChange={(e) => setT(t, "time_likely", e.target.value)} /></Field>
-                    <Field label="max"><input className="input mono" type="number" value={tval(t, "time_max")} onChange={(e) => setT(t, "time_max", e.target.value)} /></Field>
+                    <Field label="min"><NumInput value={tval(t, "time_min")} onChange={(v) => setT(t, "time_min", v)} /></Field>
+                    <Field label="likely*"><NumInput value={tval(t, "time_likely")} onChange={(v) => setT(t, "time_likely", v)} /></Field>
+                    <Field label="max"><NumInput value={tval(t, "time_max")} onChange={(v) => setT(t, "time_max", v)} /></Field>
                   </div>
                   <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveLabor(t)} disabled={busy}>set</button>
                 </div>
@@ -787,9 +894,9 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
               <div key={t} style={{ display: "grid", gridTemplateColumns: "60px 1fr 70px 44px", gap: 8, alignItems: "end" }}>
                 <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>~{(totalQty * t).toLocaleString()}</span></Field>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-                  <Field label="min €"><input className="input mono" type="number" value={dval(t, "cost_min", "")} onChange={(e) => setD(t, "cost_min", e.target.value)} /></Field>
-                  <Field label="likely €*"><input className="input mono" type="number" value={dval(t, "unit_cost_eur", "")} onChange={(e) => setD(t, "unit_cost_eur", e.target.value)} /></Field>
-                  <Field label="max €"><input className="input mono" type="number" value={dval(t, "cost_max", "")} onChange={(e) => setD(t, "cost_max", e.target.value)} /></Field>
+                  <Field label="min €"><NumInput value={dval(t, "cost_min", "")} onChange={(v) => setD(t, "cost_min", v)} /></Field>
+                  <Field label="likely €*"><NumInput value={dval(t, "unit_cost_eur", "")} onChange={(v) => setD(t, "unit_cost_eur", v)} /></Field>
+                  <Field label="max €"><NumInput value={dval(t, "cost_max", "")} onChange={(v) => setD(t, "cost_max", v)} /></Field>
                 </div>
                 <Field label="make/buy">
                   <select className="select" value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}>
@@ -819,8 +926,8 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 80px 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
             <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
             <Field label="Supplier"><RefSelect category="supplier" value={ev.supplier_name} onChange={(v) => setEv({ ...ev, supplier_name: v })} placeholder="—" /></Field>
-            <Field label="€/unit"><input className="input mono" type="number" value={ev.unit_cost} onChange={(e) => setEv({ ...ev, unit_cost: e.target.value })} /></Field>
-            <Field label="Volume"><input className="input mono" type="number" value={ev.volume_tier} onChange={(e) => setEv({ ...ev, volume_tier: e.target.value })} /></Field>
+            <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
+            <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>
           </div>
           <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button className="btn sm" onClick={addEvidence} disabled={busy}><Icon name="check" /> add evidence</button></div>

@@ -27,6 +27,7 @@ export default function Catalog({ onOpenPart, version }) {
   const [fMod, setFMod] = useState("all");
   const [fType, setFType] = useState("all");
   const [fCost, setFCost] = useState("all");
+  const [fTop, setFTop] = useState(true);   // default: only what's actually in a BOM
   const [error, setError] = useState(null);
   const [adding, setAdding] = useState(false);
   const [nm, setNm] = useState("");
@@ -50,6 +51,9 @@ export default function Catalog({ onOpenPart, version }) {
     try {
       const r = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype, module: nmod, allow_duplicate: force });
       setNm(""); setAdding(false); setError(null);
+      // A brand-new item is in no BOM yet, so the default filter would hide the code the
+      // user just created. Drop the filter so they can see it.
+      setFTop(false);
       api.catalog().then(setRows);
       onOpenPart?.(r.item_id);
     } catch (e) {
@@ -77,9 +81,10 @@ export default function Catalog({ onOpenPart, version }) {
       if (fType !== "all" && r.item_type !== fType) return false;
       if (fCost === "costed" && !Object.keys(r.costs || {}).length) return false;
       if (fCost === "uncosted" && Object.keys(r.costs || {}).length) return false;
+      if (fTop && !r.in_top_level_bom) return false;
       return true;
     });
-  }, [rows, q, fMod, fType, fCost]);
+  }, [rows, q, fMod, fType, fCost, fTop]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
   if (!rows) return <div className="page"><p className="muted">Loading…</p></div>;
@@ -126,6 +131,11 @@ export default function Catalog({ onOpenPart, version }) {
         <select className="select" value={fCost} onChange={(e) => setFCost(e.target.value)}>
           <option value="all">All</option><option value="costed">Costed</option><option value="uncosted">Uncosted</option>
         </select>
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--ink-3)", cursor: "pointer", userSelect: "none" }}
+               title="Hide catalog-only items and orphans — show only what a live top-level BOM actually uses">
+          <input type="checkbox" checked={fTop} onChange={(e) => setFTop(e.target.checked)} />
+          used in a top-level assembly
+        </label>
         <span style={{ fontSize: 11.5, color: "var(--ink-3)", fontFamily: "var(--font-mono)" }}>{filtered.length}/{rows.length}</span>
       </div>
 
@@ -146,7 +156,12 @@ export default function Catalog({ onOpenPart, version }) {
               {TIERS.map((t) => <span key={t} style={{ textAlign: "right" }}><CostCell c={r.costs?.[t]} /></span>)}
             </div>
           ))}
-          {filtered.length === 0 && <div style={{ padding: 18, color: "var(--ink-3)" }}>No items match “{q}”.</div>}
+          {filtered.length === 0 && (
+            <div style={{ padding: 18, color: "var(--ink-3)" }}>
+              {q ? <>No items match “{q}”.</> : "No items match these filters."}
+              {fTop && <> Untick <strong>used in a top-level assembly</strong> to include catalog-only items.</>}
+            </div>
+          )}
         </div>
       </div>
     </div>

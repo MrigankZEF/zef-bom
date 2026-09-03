@@ -104,6 +104,9 @@ export const api = {
     request(`/items/${encodeURIComponent(id)}/module`, { method: "POST", body: JSON.stringify({ module }) }),
   addChild: (parentId, body) =>
     request(`/items/${encodeURIComponent(parentId)}/children`, { method: "POST", body: JSON.stringify(body) }),
+  setChildQuantity: (parentId, childId, quantity) =>
+    request(`/items/${encodeURIComponent(parentId)}/children/${encodeURIComponent(childId)}`,
+      { method: "PATCH", body: JSON.stringify({ quantity }) }),
   createBom: (body) => request("/bom", { method: "POST", body: JSON.stringify(body) }),
   moveItem: (childId, body) =>
     request(`/items/${encodeURIComponent(childId)}/move`, { method: "POST", body: JSON.stringify(body) }),
@@ -115,6 +118,8 @@ export const api = {
   decidedCost: (id) => request(`/items/${encodeURIComponent(id)}/decided-cost`),
   setDecidedCost: (id, body) =>
     request(`/items/${encodeURIComponent(id)}/decided-cost`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteDecidedCost: (id, volume) =>
+    request(`/items/${encodeURIComponent(id)}/decided-cost?volume=${volume}`, { method: "DELETE" }),
   assemblyLabor: (id) => request(`/items/${encodeURIComponent(id)}/assembly-labor`),
   setAssemblyLabor: (id, body) =>
     request(`/items/${encodeURIComponent(id)}/assembly-labor`, { method: "PUT", body: JSON.stringify(body) }),

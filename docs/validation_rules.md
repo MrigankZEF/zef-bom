@@ -14,5 +14,6 @@ naming:
   capitalization: title_case
 
 bom_links:
-  quantity_min: 0
+  # strictly greater than zero: a 0-qty link is a data bug — remove the child instead
+  quantity_min_exclusive: 0
   prevent_circular_references: true

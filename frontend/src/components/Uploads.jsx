@@ -434,7 +434,7 @@ export default function Uploads({ onApplied }) {
         })}
       </Section>
       <Section title="Possible name-merges" count={cn.merges} tone="var(--warn)">
-        {d.merges?.map((m, i) => <Row key={i}><strong>{m.name}</strong><span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>same name, {m.child_variants?.length} different child sets — split in Miro if these are distinct</span></Row>)}
+        {d.merges?.map((m, i) => <Row key={i}><strong>{m.name}</strong><span style={{ color: "var(--ink-3)", fontSize: 11.5 }}>same name, {m.child_variants?.length} different component sets — split in Miro if these are distinct</span></Row>)}
       </Section>
 
       {pending && (
