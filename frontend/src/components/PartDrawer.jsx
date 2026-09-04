@@ -94,7 +94,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
 
   const saveDetails = async () => {
     const patch = { change_reason: reason || undefined };
-    const fields = ["item_name", "weight_grams", "supplier", "supplier_country", "make_or_buy",
+    const fields = ["item_name", "weight_grams", "supplier", "supplier_country",
       "lead_time_weeks", "drawing_url", "comment"];
     let dirty = false;
     for (const k of fields) {
@@ -273,11 +273,6 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
                 {!isAssembly && (
                   <>
                     <Field label="Weight (g)"><NumInput value={form.weight_grams} onChange={(v) => set("weight_grams", v)} /></Field>
-                    <Field label="Make / buy">
-                      <select className="select" value={form.make_or_buy ?? ""} onChange={(e) => set("make_or_buy", e.target.value)}>
-                        <option value="">—</option><option>make</option><option>buy</option><option>modified-buy</option>
-                      </select>
-                    </Field>
                     <div style={{ gridColumn: "1 / -1" }}><Field label="Materials (one or more)"><MultiRef category="material" values={form.materials} onChange={(v) => set("materials", v)} /></Field></div>
                     <Field label="Supplier"><RefSelect category="supplier" value={form.supplier} onChange={(v) => set("supplier", v)} placeholder="— supplier —" /></Field>
                     <Field label="Supplier country"><RefSelect category="country" value={form.supplier_country} onChange={(v) => set("supplier_country", v)} placeholder="— country —" /></Field>
@@ -925,9 +920,13 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
                   <Field label="likely €*"><NumInput value={dval(t, "unit_cost_eur", "")} onChange={(v) => setD(t, "unit_cost_eur", v)} /></Field>
                   <Field label="max €"><NumInput value={dval(t, "cost_max", "")} onChange={(v) => setD(t, "cost_max", v)} /></Field>
                 </div>
-                <Field label="make/buy">
-                  <select className="select" value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}>
-                    <option value="">—</option><option>make</option><option>buy</option>
+                <Field label="Sourcing">
+                  <select className="select" value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}
+                          title="How we get this part at this volume. It can differ by tier — a prototype made in house at @1 may be bought at @10k.">
+                    <option value="">—</option>
+                    <option value="buy">buy (off the shelf)</option>
+                    <option value="made-to-order">made to order (our specs)</option>
+                    <option value="make">make in house</option>
                   </select>
                 </Field>
                 <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveTier(t)} disabled={busy}>set</button>
