@@ -162,9 +162,39 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   };
 
   const setTopLevel = async (want) => {
-    const msg = want
-      ? `Make ${itemId} a top-level BOM? It becomes a root in Browse, and everything inside it counts as in use.`
-      : `${itemId} will stop being a top-level BOM. Its contents stay, but nothing will treat it as a root.`;
+    setBusy(true);
+    let msg;
+    try {
+      // Ask the server what this would actually do first. Demoting a root hides it from
+      // Browse AND — because nothing under it is reachable from a root any more — drops its
+      // whole subtree out of the catalog's default "used in a top-level assembly" filter.
+      // Demote the LAST root and the tool looks empty, which is alarming and hard to undo
+      // if you don't know where to look.
+      const p = await api.setTopLevel(itemId, want, true);
+      if (want) {
+        msg = `Make ${itemId} a top-level BOM? It becomes a root in Browse, and everything inside it counts as in use.`;
+      } else {
+        msg = `${itemId} will stop being a top-level BOM. Nothing is deleted — its contents stay exactly as they are.
+
+`
+          + `It disappears from Browse, which only lists top-level BOMs.
+`
+          + (p.hidden_count
+              ? `${p.hidden_count} item${p.hidden_count > 1 ? "s" : ""} (it and everything inside it) will also drop out of the Catalog's default view, because they'd no longer sit under any top-level BOM. Untick "used in a top-level assembly" in Catalog to see them again.
+`
+              : "")
+          + (p.roots_after === 0
+              ? `
+WARNING: this is your LAST top-level BOM. Browse and the default Catalog view will both be empty until you make something top-level again.
+`
+              : "")
+          + `
+You can make it top-level again from Catalog at any time. Continue?`;
+      }
+    } catch (e) {
+      setBusy(false); setActionError(e.message); return;
+    }
+    setBusy(false);
     if (!window.confirm(msg)) return;
     setBusy(true);
     try {

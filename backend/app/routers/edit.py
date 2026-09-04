@@ -349,9 +349,33 @@ def set_top_level(
     move is "within the same BOM" (`containing_roots`), so it cannot be a blind field write.
     """
     from ..operations import UNIVERSALS, normalize_structure
+    from ..rollups import top_level_reachable
 
     it = _get_item(db, item_id)
     want = True if body is None else bool(body.get("is_top_level", True))
+    preview = bool(body.get("preview")) if body else False
+
+    if preview:
+        # Demoting the last root empties Browse AND the catalog's default filter, because
+        # nothing is reachable from a root any more — the tool looks wiped. Say so with a
+        # real count before the user commits, rather than after.
+        before = top_level_reachable(db)
+        was = it.is_top_level
+        it.is_top_level = want
+        db.flush()
+        after = top_level_reachable(db)
+        roots_left = db.execute(
+            select(Item).where(Item.is_top_level.is_(True), Item.archived.is_(False))
+        ).scalars().all()
+        n_roots = len(roots_left)
+        it.is_top_level = was
+        db.rollback()
+        return {
+            "item_id": item_id, "preview": True, "is_top_level": want,
+            "hidden_from_browse": sorted(before - after),
+            "hidden_count": len(before - after),
+            "roots_after": n_roots,
+        }
 
     if want and not it.is_top_level:
         if not db.execute(
