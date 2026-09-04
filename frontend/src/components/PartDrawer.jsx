@@ -566,10 +566,17 @@ function TierToggle({ tier, setTier }) {
 
 // Make a user-entered URL absolute, so a value like "drive.google.com/x" or "www.foo.com"
 // opens externally instead of being treated as a localhost-relative path.
+//
+// Only http, https and mailto count as schemes. Anything else — above all `javascript:`,
+// which would run in the signed-in session of whoever clicks "Open ↗" — is treated as a
+// bare host and gets https:// put in front of it, so a link saved by one user can never
+// execute code for a colleague opening it.
+const SAFE_SCHEME = /^(https?:\/\/|mailto:)/i;
+
 function extUrl(u) {
   const s = String(u || "").trim();
   if (!s) return s;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("//")) return s; // already has a scheme
+  if (SAFE_SCHEME.test(s) || s.startsWith("//")) return s; // already an http(s)/mailto address
   return `https://${s}`;
 }
 
