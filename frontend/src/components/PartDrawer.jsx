@@ -22,7 +22,10 @@ function Accordion({ title, meta, defaultOpen = false, children }) {
 }
 
 const Field = ({ label, children }) => (
-  <div><span className="input-label">{label}</span>{children}</div>
+  // minWidth 0: a grid item defaults to min-width:auto and refuses to shrink below its
+  // content, so a <select> with long option text bursts out of its column and out of the
+  // drawer. Every Field is a grid child somewhere, so the fix belongs here.
+  <div style={{ minWidth: 0 }}><span className="input-label">{label}</span>{children}</div>
 );
 
 export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
@@ -883,7 +886,7 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
               {COST_TIERS.map((t) => (
                 <div key={t} style={{ display: "grid", gridTemplateColumns: "60px 1fr 44px", gap: 8, alignItems: "end" }}>
                   <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>{t.toLocaleString()}</span></Field>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, minWidth: 0 }}>
                     <Field label="min"><NumInput value={tval(t, "time_min")} onChange={(v) => setT(t, "time_min", v)} /></Field>
                     <Field label="likely*"><NumInput value={tval(t, "time_likely")} onChange={(v) => setT(t, "time_likely", v)} /></Field>
                     <Field label="max"><NumInput value={tval(t, "time_max")} onChange={(v) => setT(t, "time_max", v)} /></Field>
@@ -913,20 +916,23 @@ function CostTab({ itemId, isLeaf, item, rollups, decided, evidence, labor, cost
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {COST_TIERS.map((t) => (
-              <div key={t} style={{ display: "grid", gridTemplateColumns: "60px 1fr 70px 44px", gap: 8, alignItems: "end" }}>
+              <div key={t} style={{ display: "grid", gridTemplateColumns: "56px minmax(0, 1fr) 116px 44px", gap: 8, alignItems: "end" }}>
                 <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>~{(totalQty * t).toLocaleString()}</span></Field>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, minWidth: 0 }}>
                   <Field label="min €"><NumInput value={dval(t, "cost_min", "")} onChange={(v) => setD(t, "cost_min", v)} /></Field>
                   <Field label="likely €*"><NumInput value={dval(t, "unit_cost_eur", "")} onChange={(v) => setD(t, "unit_cost_eur", v)} /></Field>
                   <Field label="max €"><NumInput value={dval(t, "cost_max", "")} onChange={(v) => setD(t, "cost_max", v)} /></Field>
                 </div>
                 <Field label="Sourcing">
-                  <select className="select" value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}
-                          title="How we get this part at this volume. It can differ by tier — a prototype made in house at @1 may be bought at @10k.">
+                  {/* Short labels on purpose: a select is as wide as its longest option, and
+                      the full wording lives in the tooltip instead of in the layout. */}
+                  <select className="select" style={{ width: "100%", minWidth: 0 }}
+                          value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}
+                          title="How we get this part at this volume — it can differ by tier. buy = off the shelf · made-to-order = to our specs · make = in house">
                     <option value="">—</option>
-                    <option value="buy">buy (off the shelf)</option>
-                    <option value="made-to-order">made to order (our specs)</option>
-                    <option value="make">make in house</option>
+                    <option value="buy">buy</option>
+                    <option value="made-to-order">made-to-order</option>
+                    <option value="make">make</option>
                   </select>
                 </Field>
                 <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveTier(t)} disabled={busy}>set</button>
