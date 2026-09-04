@@ -59,6 +59,14 @@ onto the tiers first); the retired value `modified-buy` maps to `made-to-order`,
 restore path applies the same mapping so an older backup can't reintroduce it.
 Consequence: sourcing can only be recorded once a part has a price at that tier.
 
+### `code_registry`
+Append-only ledger of every `(module, number)` ever issued — **never** deleted. Backs
+the allocation rule in `naming_rules.md` §4c so a retired number is never reissued. Keyed
+on module + number rather than the full code, because `allocate_code` has always matched
+on module alone and a part promoted P→A keeps its number: the number is the identity,
+the suffix is the type. Backfilled from `items` (live and archived) plus every code
+recoverable from `change_history`.
+
 ## Custom fields — addable without migration
 
 ### `field_definitions`

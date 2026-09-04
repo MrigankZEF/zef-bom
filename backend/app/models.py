@@ -294,6 +294,31 @@ class AssemblyLabor(Base):
     updated_by: Mapped[str | None] = mapped_column(String(255))
 
 
+class CodeRegistry(Base):
+    """Every (module, number) ever handed out — append-only, rows are NEVER deleted.
+
+    Allocation used to be `max existing + 1`, which burned the number space: a module change
+    parks the old digits in the new module and pushes every future code past them. Measured on
+    live data before this existed: UNP had 36 codes in use but a max of 188 (81% waste), UN
+    65%. Filling the holes instead needs a record of what has *ever* been used, because 123
+    codes existed only in change_history — reissuing one would make an old drawing or PO point
+    at a different part.
+
+    Keyed on (module, number) and not the full code: `allocate_code` has always matched on
+    module alone, and `assembly_code()` keeps the number when a part is promoted P->A, so the
+    number is the identity and the suffix is the type.
+    """
+
+    __tablename__ = "code_registry"
+    __table_args__ = (UniqueConstraint("module", "number", name="uq_code_registry_module_number"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    module: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_code: Mapped[str | None] = mapped_column(String(32))  # what it was first issued as
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ReferenceValue(Base):
     """Admin-managed dropdown values: suppliers, materials, countries, modules.
 

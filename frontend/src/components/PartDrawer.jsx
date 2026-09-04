@@ -50,6 +50,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const setError = setActionError;   // every action, and every sub-component, funnels here
   const [modOpts, setModOpts] = useState({ current: null, options: [] });
   const [pendingMod, setPendingMod] = useState(null);  // staged module; applied on Save
+  const copyName = useRef(null);   // survives the duplicate-name confirm round trip
   useEffect(() => {
     api.moduleOptions(itemId)
       .then((o) => { setModOpts(o); setPendingMod(o.current); })
@@ -160,6 +161,97 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
     } catch (e) { setActionError(e.message); } finally { setBusy(false); }
   };
 
+  const setTopLevel = async (want) => {
+    const msg = want
+      ? `Make ${itemId} a top-level BOM? It becomes a root in Browse, and everything inside it counts as in use.`
+      : `${itemId} will stop being a top-level BOM. Its contents stay, but nothing will treat it as a root.`;
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      const r = await api.setTopLevel(itemId, want);
+      onChanged?.();
+      // Codes below may have followed the change of owning system — say so rather than
+      // letting ids change silently.
+      if (r.renamed?.length) {
+        setActionError(`${r.renamed.length} item${r.renamed.length > 1 ? "s were" : " was"} re-coded to match: `
+          + r.renamed.slice(0, 6).map((c) => `${c.from} → ${c.to}`).join(", ")
+          + (r.renamed.length > 6 ? " …" : ""));
+      }
+      load();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  const copyItem = async (force = false) => {
+    // Prefilled with "(copy)" and pre-selected, because a copy exists to become a variant and
+    // a variant needs its own name — better to get it right at creation than leave litter.
+    const suggested = force ? undefined : window.prompt(`Name for the copy of ${itemId}:`, `${item.item_name} (copy)`);
+    const name = force ? copyName.current : (suggested || "").trim();
+    if (!name) return;
+    copyName.current = name;
+    setBusy(true);
+    try {
+      const r = await api.duplicateItem(itemId, { item_name: name, allow_duplicate: force });
+      onChanged?.();
+      onOpenPart(r.item_id);
+    } catch (e) {
+      if (!force && /\b409\b/.test(e.message) && /allow_duplicate/.test(e.message)) {
+        const detail = (e.message.match(/"detail"\s*:\s*"([^"]+)"/) || [])[1] || "";
+        const codes = (detail.match(/\(([^)]+)\)/) || [])[1];
+        if (window.confirm(`A part named “${name}” already exists${codes ? ` (${codes})` : ""}.
+
+Create this copy anyway? It gets its own new code.`)) {
+          return copyItem(true);
+        }
+        return;
+      }
+      setError(e.message);
+    } finally { setBusy(false); }
+  };
+  const changeCode = async (mode) => {
+    let payload = { mode };
+    if (mode === "manual") {
+      const typed = window.prompt(`New code for ${itemId} (e.g. ${itemId.slice(0, 3)}042${itemId.slice(-1)}):`, itemId);
+      if (!typed || typed.trim().toUpperCase() === itemId) return;
+      payload.code = typed.trim().toUpperCase();
+    }
+    setBusy(true);
+    try {
+      // Ask first: the merge branch discards the occupant's costs and is not reversible,
+      // so the confirmation has to state the real numbers rather than a generic warning.
+      const plan = await api.setItemCode(itemId, { ...payload, preview: true });
+      if (plan.action === "noop") return;
+      let ok;
+      if (plan.action === "merge") {
+        const c = plan.conflict || {};
+        ok = window.confirm(
+          `${plan.target} already exists — "${c.occupant_name}".
+
+` +
+          `Overwrite it with ${itemId}'s data?
+` +
+          `  · ${plan.target} keeps its code, but takes this item's name, fields and costs
+` +
+          `  · ${c.discards_costs || 0} decided cost row(s) on ${plan.target} are discarded
+` +
+          (c.gains_parents?.length ? `  · ${plan.target} is added to ${c.gains_parents.join(", ")}
+` : "") +
+          `  · ${itemId} stops existing, and its number is never reissued
+
+` +
+          `This cannot be undone automatically.`
+        );
+      } else {
+        ok = window.confirm(`Renumber ${itemId} to ${plan.target}?`);
+      }
+      if (!ok) return;
+      const r = await api.setItemCode(itemId, payload);
+      onChanged?.();
+      if (r.renamed?.length) {
+        setActionError(`${r.renamed.length} other item${r.renamed.length > 1 ? "s were" : " was"} re-coded to match: `
+          + r.renamed.slice(0, 6).map((c) => `${c.from} → ${c.to}`).join(", "));
+      }
+      onOpenPart(r.item_id);
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
   const restore = async () => {
     setBusy(true);
     try { await api.restoreItem(itemId); load(); onChanged?.(); }
@@ -203,6 +295,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn ghost sm" title="Copy this item into the catalog" onClick={() => copyItem()} disabled={busy}><Icon name="box" size={13} /></button>
           <button className="btn ghost sm danger" title="Archive (soft-delete)" onClick={archive} disabled={busy}><Icon name="alert" size={13} /></button>
           <button className="btn ghost sm" onClick={onClose}><Icon name="close" /></button>
         </div>
@@ -250,6 +343,40 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
               </div>
             )}
             <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} setTier={setTier} item={item} parents={parents} />
+
+            {!item.archived && (
+              <div className="card" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div className="card-title">Item number</div>
+                  <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+                    Renumber automatically to the lowest never-used code, or type one. A number
+                    that was used before is never reissued.
+                  </p>
+                </div>
+                <button className="btn ghost sm" disabled={busy} onClick={() => changeCode("auto")}>Renumber automatically</button>
+                <button className="btn ghost sm" disabled={busy} onClick={() => changeCode("manual")}>Type a code…</button>
+              </div>
+            )}
+
+            {isAssembly && !item.archived && (
+              <div className="card" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div className="card-title">Top-level BOM</div>
+                  <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+                    {item.is_top_level
+                      ? "This assembly is a BOM root — it appears at the top of Browse and everything inside it counts as in use."
+                      : parents.length
+                        ? `Not available: ${itemId} sits inside ${parents.map((p) => p.parent).join(", ")}. Remove it from there first, or it would appear twice in the tree.`
+                        : "Make this assembly a root of its own BOM."}
+                  </p>
+                </div>
+                <button className="btn ghost sm"
+                        disabled={busy || (!item.is_top_level && parents.length > 0)}
+                        onClick={() => setTopLevel(!item.is_top_level)}>
+                  {item.is_top_level ? "Make it normal" : "Make top-level"}
+                </button>
+              </div>
+            )}
 
             <Accordion title="Add / edit" meta="fill in item data">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, paddingTop: 14 }}>

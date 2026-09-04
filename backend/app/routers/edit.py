@@ -7,7 +7,7 @@ Auth is deferred to M6; for now the editor identity comes from an optional
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select, update
 from sqlalchemy.orm import Session
 
 from ..bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
@@ -32,7 +32,9 @@ from ..schemas import (
     FieldValueIn,
     ItemOut,
     ItemPatch,
+    DuplicateItemIn,
     MoveLinkIn,
+    SetCodeIn,
     UpdateLinkIn,
 )
 
@@ -80,6 +82,314 @@ def module_options(item_id: str, db: Session = Depends(get_db)) -> dict:
     _get_item(db, item_id)
     m = ITEM_NUMBER_RE.match(item_id)
     return {"current": m.group("module") if m else None, "options": allowed_modules(db, item_id)}
+
+
+def _merge_into(db: Session, src_id: str, dst_id: str, *, user: str) -> dict:
+    """Move `src_id`'s data onto the existing `dst_id`, then delete `src_id`.
+
+    `rename_item` hard-refuses an occupied target, so this is separate logic rather than a
+    flag on it. Placements become the UNION of both items' links so no assembly silently
+    loses a component; the occupant's costs/labour/fields/evidence are discarded, because the
+    point of the operation is that the incoming item's data wins.
+    """
+    from ..operations import register_code
+
+    dst = db.get(Item, dst_id)
+    kept_parents = {
+        bl.parent_item_id
+        for bl in db.execute(select(BomLink).where(BomLink.child_item_id == dst_id)).scalars()
+    }
+    # the occupant's own data goes; the code keeps only its identity
+    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue):
+        db.execute(sa_delete(model).where(model.item_id == dst_id))
+    db.flush()
+
+    # fold the incoming item's placements in, skipping edges the target already has
+    for bl in db.execute(select(BomLink).where(BomLink.child_item_id == src_id)).scalars():
+        if bl.parent_item_id in kept_parents or bl.parent_item_id == dst_id:
+            db.delete(bl)
+        else:
+            bl.child_item_id = dst_id
+    existing_kids = {
+        bl.child_item_id
+        for bl in db.execute(select(BomLink).where(BomLink.parent_item_id == dst_id)).scalars()
+    }
+    for bl in db.execute(select(BomLink).where(BomLink.parent_item_id == src_id)).scalars():
+        if bl.child_item_id in existing_kids or bl.child_item_id == dst_id:
+            db.delete(bl)
+        else:
+            bl.parent_item_id = dst_id
+    db.flush()
+
+    # the incoming item's data wins on the surviving code
+    for model in (DecidedCost, CostEvidence, AssemblyLabor, FieldValue):
+        db.execute(update(model).where(model.item_id == src_id).values(item_id=dst_id))
+    src = db.get(Item, src_id)
+    for col in ("item_name", "item_type", "materials", "material", "weight_grams",
+                "unit_of_measure", "supplier", "supplier_country", "lead_time_weeks",
+                "cost_type_id", "drawing_url", "comment", "external_reference"):
+        setattr(dst, col, getattr(src, col))
+    dst.updated_by = user
+    db.execute(
+        update(ChangeHistory)
+        .where(ChangeHistory.entity_type == "item", ChangeHistory.entity_id == src_id)
+        .values(entity_id=dst_id)
+    )
+    db.delete(src)
+    register_code(db, src_id)   # the vacated code stays retired
+    record_change(
+        db, entity_type="item", entity_id=dst_id, change_type="update",
+        field_changed="item_id", old_value=src_id, new_value=dst_id, changed_by=user,
+        change_reason=f"merged {src_id} onto {dst_id} (overwrite)",
+    )
+    db.flush()
+    return {"merged_from": src_id}
+
+
+@router.post("/items/{item_id}/code")
+def set_item_code(
+    item_id: str, body: SetCodeIn,
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Change an item's number — automatically, or to a code you type."""
+    from ..operations import (
+        UNIVERSALS, allocate_code, normalize_structure, number_is_free, register_code,
+        rename_item, resolve_rename,
+    )
+
+    it = _get_item(db, item_id)
+    cur = ITEM_NUMBER_RE.match(item_id)
+    if not cur:
+        raise HTTPException(400, f"{item_id} isn't a standard code, so its number can't be changed here")
+    suffix = cur.group("suffix")
+
+    if body.mode == "auto":
+        target = allocate_code(db, cur.group("module"), suffix)
+        if body.preview:
+            db.rollback()
+            return {"item_id": item_id, "target": target, "action": "rename", "conflict": None}
+    else:
+        target = (body.code or "").strip().upper()
+        m = ITEM_NUMBER_RE.match(target)
+        if not m:
+            raise HTTPException(400, f"“{target}” isn't a valid code — e.g. AEC042P.")
+        if m.group("suffix") != suffix:
+            raise HTTPException(
+                400,
+                f"{item_id} is a {'assembly' if suffix == 'A' else 'part'}, so the code must end "
+                f"in {suffix}. Change the type with Convert to assembly, not by typing a suffix.",
+            )
+        module = m.group("module")
+        if module != cur.group("module"):
+            allowed = allowed_modules(db, item_id)
+            if module not in allowed:
+                raise HTTPException(
+                    400,
+                    f"Module '{module}' isn't allowed here — choose from {allowed} (a part may "
+                    "only take a universal code or its parent assembly's system). Otherwise the "
+                    "naming engine would re-code it straight back.",
+                )
+        occupant = db.get(Item, target)
+        if occupant is None:
+            # free-looking, but a retired number must never be reissued
+            if not number_is_free(db, module, int(m.group("number"))):
+                raise HTTPException(
+                    409,
+                    f"{target} is retired — that number was used before and is never reissued, "
+                    "so an old drawing or PO can't come to mean a different part. Pick another.",
+                )
+        elif body.on_conflict != "merge":
+            raise HTTPException(
+                409,
+                f"{target} is already {occupant.item_name}. Keep it, or re-submit with "
+                "on_conflict=merge to overwrite it with this item's data.",
+            )
+
+    if target == item_id:
+        return {"item_id": item_id, "target": target, "action": "noop", "renamed": []}
+
+    occupant = db.get(Item, target)
+    if body.preview:
+        info = {"item_id": item_id, "target": target,
+                "action": "merge" if occupant is not None else "rename"}
+        if occupant is not None:
+            gained = sorted({
+                bl.parent_item_id
+                for bl in db.execute(select(BomLink).where(
+                    BomLink.child_item_id == item_id, BomLink.archived.is_(False))).scalars()
+            })
+            info["conflict"] = {
+                "occupant_name": occupant.item_name,
+                "discards_costs": len(db.execute(
+                    select(DecidedCost).where(DecidedCost.item_id == target)).scalars().all()),
+                "gains_parents": gained,
+            }
+        db.rollback()
+        return info
+
+    if occupant is not None:
+        _merge_into(db, item_id, target, user=user)
+    else:
+        register_code(db, target)
+        rename_item(db, item_id, target, user=user, reason=f"number changed to {target} (manual)")
+    db.flush()
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    return {
+        "item_id": resolve_rename(changes, target),
+        "target": target,
+        "action": "merge" if occupant is not None else "rename",
+        "renamed": changes,
+    }
+
+
+@router.post("/items/{item_id}/duplicate", status_code=201)
+def duplicate_item(
+    item_id: str, body: DuplicateItemIn,
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Copy a part (or an assembly) into the catalog under a fresh code.
+
+    Copies what a person typed to describe the thing — core fields, decided costs at every
+    tier, assembly labour, custom field values. Deliberately NOT cost evidence or Drive files:
+    a quote names a specific part number, supplier and date, and `attachment_url` points at
+    that part's document, so cloning them would assert evidence nobody gathered for the copy.
+    The decided cost — the number the rollup actually uses — still comes across.
+
+    An assembly copies SHALLOW: links to the same children at the same quantities, which is
+    what "a variant of this assembly" means. A deep copy would mint a code per descendant.
+
+    The copy lands in the catalog only and is placed with the normal add-child flow, so
+    copying never silently changes a BOM's structure or cost.
+    """
+    from ..bom_ingest.miro_csv_fix import normalize_item_name
+    from ..operations import allocate_code, clear_item_refs, normalize_structure
+
+    src = _get_item(db, item_id)
+    name = (body.item_name or "").strip()
+    if not name:
+        raise HTTPException(400, "Give the copy a name")
+
+    # Same naming authority as creating a catalog item, so a copy can't slip past it.
+    if not body.allow_duplicate:
+        target = normalize_item_name(name)
+        dupes = [
+            it.item_id for it in db.execute(select(Item).where(Item.archived.is_(False))).scalars()
+            if it.item_name and normalize_item_name(it.item_name) == target
+        ]
+        if dupes:
+            raise HTTPException(
+                409,
+                f"A part named “{name}” already exists ({', '.join(sorted(dupes)[:5])}"
+                f"{'…' if len(dupes) > 5 else ''}). Re-submit with allow_duplicate to add it "
+                "as a separate part.",
+            )
+
+    suffix = "A" if src.item_type == "assembly" else "P"
+    new_id = allocate_code(db, src.module_code or "UN", suffix)
+    # A freshly allocated code must not inherit cost/link rows stranded at that id (the bug
+    # fixed in 35fa20b).
+    clear_item_refs(db, new_id)
+
+    COPY_FIELDS = (
+        "item_type", "module_code", "materials", "material", "weight_grams", "unit_of_measure",
+        "supplier", "supplier_country", "lead_time_weeks", "cost_type_id", "drawing_url", "comment",
+    )
+    db.add(Item(
+        item_id=new_id, item_name=name, is_top_level=False, created_by=user, updated_by=user,
+        **{f: getattr(src, f) for f in COPY_FIELDS},
+    ))
+    db.flush()
+
+    for dc in db.execute(select(DecidedCost).where(DecidedCost.item_id == item_id)).scalars():
+        db.add(DecidedCost(
+            item_id=new_id, volume_tier=dc.volume_tier, unit_cost_eur=dc.unit_cost_eur,
+            cost_min=dc.cost_min, cost_max=dc.cost_max, confidence=dc.confidence,
+            make_or_buy=dc.make_or_buy, source_type=dc.source_type, basis_note=dc.basis_note,
+            decided_by=user,
+        ))
+    for al in db.execute(select(AssemblyLabor).where(AssemblyLabor.item_id == item_id)).scalars():
+        db.add(AssemblyLabor(
+            item_id=new_id, volume_tier=al.volume_tier, time_min=al.time_min,
+            time_likely=al.time_likely, time_max=al.time_max,
+            covers_subassemblies=al.covers_subassemblies, updated_by=user,
+        ))
+    for fv in db.execute(select(FieldValue).where(FieldValue.item_id == item_id)).scalars():
+        db.add(FieldValue(item_id=new_id, field_key=fv.field_key, value=fv.value))
+    # shallow: the same children, not copies of them
+    for bl in db.execute(select(BomLink).where(
+        BomLink.parent_item_id == item_id, BomLink.archived.is_(False)
+    )).scalars():
+        db.add(BomLink(
+            parent_item_id=new_id, child_item_id=bl.child_item_id,
+            quantity=bl.quantity, unit_of_measure=bl.unit_of_measure,
+        ))
+
+    record_change(
+        db, entity_type="item", entity_id=new_id, change_type="create",
+        new_value=name, changed_by=user, change_reason=f"copied from {item_id}",
+    )
+    db.flush()
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    from ..operations import resolve_rename
+    final_id = resolve_rename(changes, new_id)
+    return {"item_id": final_id, "item_name": name, "copied_from": item_id, "renamed": changes}
+
+
+@router.post("/items/{item_id}/top-level")
+def set_top_level(
+    item_id: str, body: dict = Body(default=None),
+    db: Session = Depends(get_db), user: str = Depends(current_user),
+) -> dict:
+    """Promote an assembly to a top-level BOM root, or demote it back.
+
+    A dedicated endpoint rather than PATCH: `is_top_level` decides which system owns every
+    item beneath it (`containing_root_modules` -> `recode_item`) and whether a drag-and-drop
+    move is "within the same BOM" (`containing_roots`), so it cannot be a blind field write.
+    """
+    from ..operations import UNIVERSALS, normalize_structure
+
+    it = _get_item(db, item_id)
+    want = True if body is None else bool(body.get("is_top_level", True))
+
+    if want and not it.is_top_level:
+        if not db.execute(
+            select(BomLink).where(BomLink.parent_item_id == item_id, BomLink.archived.is_(False))
+        ).first():
+            raise HTTPException(400, f"{item_id} has no contents — only an assembly can be a BOM root.")
+        parents = db.execute(
+            select(BomLink).where(BomLink.child_item_id == item_id, BomLink.archived.is_(False))
+        ).scalars().all()
+        if parents:
+            raise HTTPException(
+                409,
+                f"{item_id} sits inside {', '.join(sorted(p.parent_item_id for p in parents))}. "
+                "Remove it from there first — otherwise it would appear twice in the tree, "
+                "once as its own root and once nested.",
+            )
+        if (it.module_code or "") in UNIVERSALS:
+            raise HTTPException(
+                400,
+                f"{item_id} is universal ({it.module_code}). A BOM root is a system, so give it "
+                "a system code (AEC, DAC, …) with the module picker first.",
+            )
+
+    if it.is_top_level == want:
+        return {"item_id": item_id, "is_top_level": want, "renamed": []}
+
+    it.is_top_level = want
+    it.updated_by = user
+    record_change(
+        db, entity_type="item", entity_id=item_id, change_type="update",
+        field_changed="is_top_level", old_value=not want, new_value=want, changed_by=user,
+        change_reason="promoted to top-level BOM" if want else "demoted from top-level BOM",
+    )
+    db.flush()
+    # Ownership of everything beneath just changed, so codes may need to follow.
+    changes = normalize_structure(db, user=user)
+    db.commit()
+    return {"item_id": item_id, "is_top_level": want, "renamed": changes}
 
 
 @router.post("/items/{item_id}/module")

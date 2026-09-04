@@ -107,6 +107,52 @@ Atomically, in one transaction: create new items · rename items whose name chan
 remove / change-quantity on the links · flag the root as **top-level** (even if the item
 already existed) · then run the **naming engine** (section 6) to make everything consistent.
 
+## 4b. Promoting an assembly to a top-level BOM
+`is_top_level` is not cosmetic: it decides which system owns every item beneath it
+(`containing_root_modules` → `recode_item`) and whether a drag-and-drop move counts as
+"the same BOM" (`containing_roots`). It is set through `POST /items/{id}/top-level`,
+never a blind field write, and the rules are:
+- must be an **assembly with contents** — a leaf part cannot be a root;
+- must have **no parents** — otherwise it would appear twice in Browse, once as its own
+  root and once nested. Remove it from its parent first;
+- must be **system-coded**, not UN/UNP — a BOM root *is* a system (same rule `POST /bom`
+  applies). Change the module first with the module picker.
+
+Promoting runs the naming engine and reports any re-codes. Two roots sharing a component
+is fine and expected: the shared part becomes **UN**, and universals are never re-coded
+again. Demoting is the same call with `is_top_level: false`.
+
+## 4c. Number allocation — never reused
+A new code takes the **lowest number never issued** in that module, not `max + 1`.
+Every `(module, number)` ever handed out is recorded in `code_registry`, which is
+append-only — rows are never deleted, and `rename_item` retires both the code it leaves
+and the one it takes. So a number that once meant a part is never given to another one,
+and an old drawing or PO can't come to mean something else.
+
+Why: allocation used to step over parked numbers, and `set_module` keeps an item's digits
+when it changes module. Together those left UNP with 36 codes in use but a max of 188 —
+81% holes (UN 65%). Filling from the bottom compacts the space instead; existing gaps are
+left alone and simply get consumed by new parts. `set_module` still keeps the digits, but
+only when that number was **never** used in the target module.
+
+Codes widen past 999 on their own (`AEC1000A`), so there is no hard ceiling.
+
+## 4d. Changing an item's number by hand
+`POST /items/{id}/code`, either **auto** (the lowest never-used code, §4c) or **manual**
+(you type it). A typed code is refused when:
+- the suffix doesn't match the item's type — change the type with *Convert to assembly*,
+  otherwise `normalize_type` just flips it back;
+- the module isn't in `allowed_modules` — otherwise the naming engine re-codes it straight
+  back at the next structural edit;
+- the number is **retired** — used before, so never reissued.
+
+If the code belongs to a live item you choose: keep the original, or **overwrite**, which
+**merges** onto that code. The code survives and takes the incoming item's name, fields
+and costs; the occupant's costs, labour, evidence and custom fields are discarded; BOM
+placements become the **union** of both, de-duplicated, so no assembly loses a component;
+both change histories end up on the code; and the vacated number is retired. `preview`
+returns the real figures so the confirmation can state them. Not automatically reversible.
+
 ## 5. Catalog — adding & editing
 - **Add a new item** — free-text name + type (part/assembly) + **module** (default **UN**).
   - **No accidental duplicates** — if a live item already has that name (compared after

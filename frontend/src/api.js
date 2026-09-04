@@ -99,7 +99,11 @@ export const api = {
   patchItem: (id, patch) =>
     request(`/items/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   promoteItem: (id) => request(`/items/${encodeURIComponent(id)}/promote`, { method: "POST" }),
+  setTopLevel: (id, isTopLevel) =>
+    request(`/items/${encodeURIComponent(id)}/top-level`, { method: "POST", body: JSON.stringify({ is_top_level: isTopLevel }) }),
   moduleOptions: (id) => request(`/items/${encodeURIComponent(id)}/module-options`),
+  setItemCode: (id, body) =>
+    request(`/items/${encodeURIComponent(id)}/code`, { method: "POST", body: JSON.stringify(body) }),
   setItemModule: (id, module) =>
     request(`/items/${encodeURIComponent(id)}/module`, { method: "POST", body: JSON.stringify({ module }) }),
   addChild: (parentId, body) =>
@@ -107,6 +111,8 @@ export const api = {
   setChildQuantity: (parentId, childId, quantity) =>
     request(`/items/${encodeURIComponent(parentId)}/children/${encodeURIComponent(childId)}`,
       { method: "PATCH", body: JSON.stringify({ quantity }) }),
+  duplicateItem: (id, body) =>
+    request(`/items/${encodeURIComponent(id)}/duplicate`, { method: "POST", body: JSON.stringify(body) }),
   createBom: (body) => request("/bom", { method: "POST", body: JSON.stringify(body) }),
   moveItem: (childId, body) =>
     request(`/items/${encodeURIComponent(childId)}/move`, { method: "POST", body: JSON.stringify(body) }),
