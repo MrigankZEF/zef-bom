@@ -40,6 +40,16 @@ pointer to the evidence row that informed it. **Rollups sum these decided number
 **no live children**: once something has contents it is costed from those contents plus
 its assembly labour, and any decided cost stored on it is ignored (the drawer flags this). Unique on (item, volume_tier).
 
+### `assembly_labor`
+Minutes to assemble an item from its direct children (3-point, per volume tier);
+cost = time × the item's cost-type rate. `covers_subassemblies` marks an outsourced or
+bought-in assembly whose single quoted cost already includes the work on everything
+beneath it — descendants then stop counting as missing an assembly cost. It is **per
+tier** because sourcing differs by volume (built in house at @1, outsourced at @10k).
+It affects coverage reporting only; the rollup arithmetic is unchanged. A descendant
+that carries its own assembly cost under a covering ancestor is reported in
+`covered_conflict[]`.
+
 ## Custom fields — addable without migration
 
 ### `field_definitions`
@@ -62,5 +72,8 @@ payload, for audit and replay).
 - `where_used(item_id)` — parents from `bom_links`.
 - `bom_tree(root)` — recursive CTE with qty multipliers.
 - `rollup_cost(root, volume)` / `rollup_weight(root)` — recursive sums returning
-  `{cost, covered, total, missing[]}` so coverage % and uncosted leaves surface.
+  `{cost, covered, total, missing[], missing_assembly[], covered_conflict[]}`.
+  **Coverage counts assemblies as well as leaves**: a leaf needs a decided cost, an
+  assembly needs a cost type + a labour time at that tier. Counting only leaves meant an
+  unpriced assembly was invisible and the row still read 100%.
 - `assembly_time_total(root)` — recursive sum of assembly minutes.

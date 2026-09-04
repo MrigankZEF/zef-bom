@@ -60,6 +60,8 @@ def get_rollup(
         "total": r.total,
         "coverage": round(r.coverage, 4),
         "missing": sorted(set(r.missing)),
+        "missing_assembly": sorted(set(r.missing_assembly)),
+        "covered_conflict": sorted(set(r.covered_conflict)),
         "weight_grams": round(r.weight_grams, 2) if r.weight_grams is not None else None,
         "assembly_time_min": round(g.assembly_time_total(root), 2),
     }
