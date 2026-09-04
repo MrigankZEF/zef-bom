@@ -1,0 +1,56 @@
+[
+  {
+    "code": "AEC",
+    "name": "Electrolyser stack & BoP",
+    "cost": {
+      "1": 78000,
+      "100": 41400,
+      "10000": 23100
+    }
+  },
+  {
+    "code": "DAC",
+    "name": "Direct air capture contactor",
+    "cost": {
+      "1": 52000,
+      "100": 28600,
+      "10000": 16600
+    }
+  },
+  {
+    "code": "MEU",
+    "name": "Methanol synthesis unit",
+    "cost": {
+      "1": 41000,
+      "100": 23400,
+      "10000": 13500
+    }
+  },
+  {
+    "code": "ENC",
+    "name": "Enclosure & skid frame",
+    "cost": {
+      "1": 26400,
+      "100": 13200,
+      "10000": 6900
+    }
+  },
+  {
+    "code": "CTL",
+    "name": "Controls & instrumentation",
+    "cost": {
+      "1": 19800,
+      "100": 11100,
+      "10000": 6200
+    }
+  },
+  {
+    "code": "DRY",
+    "name": "Drying & water treatment",
+    "cost": {
+      "1": 14500,
+      "100": 7900,
+      "10000": 4400
+    }
+  }
+]
