@@ -166,7 +166,7 @@ returns the real figures so the confirmation can state them. Not automatically r
     then appear in the picker.
 - **Editing an item** (name, weight, supplier, materials, CAD URL, notes, etc.) — saved to
   the item and logged in history.
-- **Changing the module / code by hand** — the add/edit tab has a **Module** dropdown. It
+- **Changing the module / code by hand** — the Edit tab's **Item data** card has a **Module** dropdown. It
   offers only **`UN`, `UNP`, and the item's parent-assembly module(s)** — so an `AEC`
   assembly can never be given a `DAC` part. Changing it does an **atomic re-code** (every
   link, cost, history entry and the catalog are repointed) and is logged. If the target

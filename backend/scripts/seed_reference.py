@@ -1,4 +1,4 @@
-"""Seed reference-data lists (countries, modules, materials, suppliers).
+"""Seed reference-data lists (countries, modules, materials, suppliers, link types).
 
 Idempotent — safe to re-run. Countries ship with a `region` so cost analysis can
 group EU vs Asia etc. without mixing "EU" into the country dropdown. Modules,
@@ -28,6 +28,9 @@ COUNTRIES = [
     ("Brazil", "Americas"), ("Other", None),
 ]
 
+# The kinds of outward link an item can carry (item_links.link_type). Admin can add more.
+LINK_TYPES = ["supplier", "alt supplier", "shop", "datasheet", "info"]
+
 MODULE_LABELS = {
     "AEC": "Anion-exchange electrolyzer", "DAC": "Direct air capture",
     "DRY": "Dryer & compression", "MEU": "Methanol synthesis", "CTL": "Control & power",
@@ -48,7 +51,7 @@ def _ensure(db, category, value, label=None, meta=None, order=0):
 
 def main() -> int:
     db = SessionLocal()
-    added = {"country": 0, "module": 0, "material": 0, "supplier": 0}
+    added = {"country": 0, "module": 0, "material": 0, "supplier": 0, "link_type": 0}
     try:
         for i, (name, region) in enumerate(COUNTRIES):
             if _ensure(db, "country", name, meta={"region": region} if region else None, order=i):
@@ -68,6 +71,10 @@ def main() -> int:
         for m in sorted(materials):
             if _ensure(db, "material", m):
                 added["material"] += 1
+
+        for i, lt in enumerate(LINK_TYPES):
+            if _ensure(db, "link_type", lt, order=i):
+                added["link_type"] += 1
 
         suppliers = {
             ev.supplier_name for ev in db.execute(select(CostEvidence)).scalars() if ev.supplier_name

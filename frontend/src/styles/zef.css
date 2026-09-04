@@ -543,6 +543,9 @@ body { background: var(--bg); }
   border-radius: 4px;
   font-family: var(--font-body); font-size: 13px; color: var(--ink);
   outline: none; width: 100%;
+  /* A form control carries an intrinsic default width, so `min-width: auto` refuses to
+     shrink and pushes the columns beside it out of the card (worst in the 680px drawer). */
+  min-width: 0;
 }
 .input:focus { border-color: var(--ink); }
 .input.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -564,6 +567,7 @@ body { background: var(--bg); }
   background-size: 4px 4px;
   background-repeat: no-repeat;
   padding-right: 24px;
+  min-width: 0;   /* same reason as .input above */
 }
 .select:focus { border-color: var(--ink); }
 /* A <select> is intrinsically as wide as its longest <option>, and a grid/flex item won't
@@ -678,7 +682,7 @@ body { background: var(--bg); }
 }
 .tree-row {
   display: grid;
-  grid-template-columns: 1fr 70px 100px 100px 90px 90px 28px;
+  grid-template-columns: 1fr auto;
   align-items: center;
   padding: 7px 12px 7px var(--indent, 12px);
   border-bottom: 1px solid var(--hair-faint);
@@ -732,10 +736,29 @@ body { background: var(--bg); }
   margin: -7px 0; padding: 7px 6px 7px 0;   /* full row height, so the hover tint reads as a zone */
   border-radius: 3px;
 }
-/* left zone: expands. Its own tint sits on top of the row tint, so the boundary is visible
-   before you commit to a click. */
-.tree-name.expands:hover { background: var(--warm-3); }
-/* a leaf has no layer below, so the zone is inert and must NOT invite a click */
+/* right zone: the data columns, as ONE element so the whole band can light up together.
+   Same fixed widths as before — they just live on the inner grid now, and .tree-head uses
+   the identical block so the columns stay aligned. */
+.tree-data {
+  display: grid;
+  grid-template-columns: 70px 100px 100px 90px 90px 28px;
+  align-items: center;
+  /* fill the row's vertical padding and reach the right edge, so the tint reads as a band
+     rather than a floating strip */
+  margin: -7px -12px -7px 0;
+  padding: 7px 12px 7px 0;
+  border-radius: 3px 0 0 3px;
+}
+.tree-head .tree-data { margin: 0; padding: 0; }
+
+/* Each zone tints on its own hover, so you can see which half you are about to hit.
+   Without this the details half looked inert. */
+.tree-name.expands:hover,
+.tree-name.dismisses:hover,
+.tree-row .tree-data:hover { background: var(--warm-3); }
+/* A leaf has nothing to expand, so its left zone only ever dismisses the details panel —
+   it lights up exactly while there is one open, and is inert otherwise. Affordance follows
+   what the click will actually do. */
 .tree-name.inert { cursor: default; }
 .tree-name .num {
   font-family: var(--font-mono); font-size: 11px;
@@ -761,7 +784,7 @@ body { background: var(--bg); }
 }
 .tree-head {
   display: grid;
-  grid-template-columns: 1fr 70px 100px 100px 90px 90px 28px;
+  grid-template-columns: 1fr auto;
   padding: 12px;
   border-bottom: 1px solid var(--hair-strong);
   background: var(--bg-sunk);

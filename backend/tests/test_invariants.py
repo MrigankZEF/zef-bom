@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.db import Base  # noqa: E402
 from app import models  # noqa: F401,E402  (registers tables on Base.metadata)
-from app.models import AssemblyLabor, BomLink, DecidedCost, Item  # noqa: E402
+from app.models import AssemblyLabor, BomLink, DecidedCost, Item, ItemLink  # noqa: E402
 
 
 def _db(fk: bool = False):
@@ -59,6 +59,23 @@ def test_assembly_labor_follows_recode():
         new = db.execute(select(AssemblyLabor).where(AssemblyLabor.item_id == "UN050A")).scalars().all()
         old = db.execute(select(AssemblyLabor).where(AssemblyLabor.item_id == "AEC050A")).scalars().all()
         assert len(new) == 1 and len(old) == 0, f"fk={fk}: labor not repointed ({len(new)},{len(old)})"
+
+
+# Same class of bug as #1, for the newer item_links table: a link is worthless if it stops
+# pointing at its item the moment the item is renumbered.
+def test_item_links_follow_a_recode():
+    from app.operations import rename_item
+    for fk in (False, True):
+        db = _db(fk=fk)
+        db.add(Item(item_id="AEC050P", item_name="Seal", item_type="part", module_code="AEC"))
+        db.commit()
+        db.add(ItemLink(item_id="AEC050P", link_type="supplier", url="https://example.com/x"))
+        db.commit()
+        rename_item(db, "AEC050P", "UN050P", user="t", reason="module change")
+        db.commit()
+        new = db.execute(select(ItemLink).where(ItemLink.item_id == "UN050P")).scalars().all()
+        old = db.execute(select(ItemLink).where(ItemLink.item_id == "AEC050P")).scalars().all()
+        assert len(new) == 1 and len(old) == 0, f"fk={fk}: links not repointed ({len(new)},{len(old)})"
 
 
 # ── BUG #2: Drive folder id is parsed from a stored URL (located by id, not name) ──

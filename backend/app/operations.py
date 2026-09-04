@@ -14,6 +14,7 @@ from .bom_ingest.miro_csv_fix import ITEM_NUMBER_RE
 from .history import record_change
 from .models import (
     AssemblyLabor, BomLink, ChangeHistory, CodeRegistry, CostEvidence, DecidedCost, FieldValue, Item,
+    ItemLink,
 )
 
 
@@ -29,6 +30,7 @@ def clear_item_refs(db: Session, item_id: str) -> None:
     db.execute(delete(CostEvidence).where(CostEvidence.item_id == item_id))
     db.execute(delete(AssemblyLabor).where(AssemblyLabor.item_id == item_id))
     db.execute(delete(FieldValue).where(FieldValue.item_id == item_id))
+    db.execute(delete(ItemLink).where(ItemLink.item_id == item_id))
     db.execute(delete(BomLink).where(
         (BomLink.parent_item_id == item_id) | (BomLink.child_item_id == item_id)))
 
@@ -91,6 +93,7 @@ def rename_item(
     db.execute(update(DecidedCost).where(DecidedCost.item_id == old_id).values(item_id=new_id))
     db.execute(update(AssemblyLabor).where(AssemblyLabor.item_id == old_id).values(item_id=new_id))
     db.execute(update(FieldValue).where(FieldValue.item_id == old_id).values(item_id=new_id))
+    db.execute(update(ItemLink).where(ItemLink.item_id == old_id).values(item_id=new_id))
     db.execute(
         update(ChangeHistory)
         .where(ChangeHistory.entity_type == "item", ChangeHistory.entity_id == old_id)

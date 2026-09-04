@@ -58,6 +58,7 @@ class Item(Base):
 
     supplier: Mapped[str | None] = mapped_column(Text)
     supplier_country: Mapped[str | None] = mapped_column(String(64))
+    supplier_part_number: Mapped[str | None] = mapped_column(Text)
     lead_time_weeks: Mapped[float | None] = mapped_column(Float)
 
     # Assemblies only: the assembly cost type — a reference_values row (category
@@ -83,6 +84,9 @@ class Item(Base):
         back_populates="item", cascade="all, delete-orphan"
     )
     decided_costs: Mapped[list["DecidedCost"]] = relationship(
+        back_populates="item", cascade="all, delete-orphan"
+    )
+    links: Mapped[list["ItemLink"]] = relationship(
         back_populates="item", cascade="all, delete-orphan"
     )
 
@@ -111,6 +115,32 @@ class BomLink(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ItemLink(Base):
+    """Outward links on an item: supplier page, alternative supplier, shop, datasheet, …
+
+    A list rather than fixed columns because there is no fixed number of them — one part can
+    have three alternative suppliers and the next none. `link_type` is a reference_values row
+    (category 'link_type'), so the kinds are admin-managed like suppliers and materials
+    instead of hard-coded here.
+    """
+
+    __tablename__ = "item_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("items.item_id"), nullable=False, index=True
+    )
+    link_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str | None] = mapped_column(Text)   # optional free-text note on the link
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(255))
+
+    item: Mapped["Item"] = relationship(back_populates="links")
 
 
 class ChangeHistory(Base):

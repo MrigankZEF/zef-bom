@@ -116,6 +116,11 @@ export const api = {
   createBom: (body) => request("/bom", { method: "POST", body: JSON.stringify(body) }),
   moveItem: (childId, body) =>
     request(`/items/${encodeURIComponent(childId)}/move`, { method: "POST", body: JSON.stringify(body) }),
+  itemLinks: (id) => request(`/items/${encodeURIComponent(id)}/links`),
+  addItemLink: (id, body) =>
+    request(`/items/${encodeURIComponent(id)}/links`, { method: "POST", body: JSON.stringify(body) }),
+  deleteItemLink: (id, linkId) =>
+    request(`/items/${encodeURIComponent(id)}/links/${linkId}`, { method: "DELETE" }),
   costEvidence: (id) => request(`/items/${encodeURIComponent(id)}/cost-evidence`),
   addCostEvidence: (id, body) =>
     request(`/items/${encodeURIComponent(id)}/cost-evidence`, { method: "POST", body: JSON.stringify(body) }),

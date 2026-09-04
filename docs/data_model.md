@@ -12,6 +12,13 @@ The master list of physical things. PK is the **part number** (`item_id`, e.g.
 as the root of a top-level BOM (there can be several). Cost is **not** stored here
 (see below). `stage`/lifecycle is intentionally omitted for the MVP.
 
+### `item_links`
+Outward links on an item — supplier page, alternative supplier, shop, datasheet, info.
+A table rather than columns because the count varies per item (three alternative
+suppliers on one part, none on the next). `link_type` holds a `reference_values` value
+(category `link_type`), so the kinds are admin-managed like suppliers and materials.
+One-off `supplier_part_number` lives on `items` instead, since there is exactly one.
+
 ### `bom_links`
 Parent → child edges with `quantity`. The **only** place structure lives.
 "Where-used" = rows where `child_item_id = X`. The BOM tree = recursive walk over

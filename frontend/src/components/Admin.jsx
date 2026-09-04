@@ -7,6 +7,7 @@ const CATEGORIES = [
   { key: "material", label: "Materials" },
   { key: "country", label: "Countries" },
   { key: "module", label: "Modules" },
+  { key: "link_type", label: "Link types" },
   { key: "assembly_cost_type", label: "Assembly cost types" },
 ];
 
@@ -97,7 +98,7 @@ function Reference() {
   const [label, setLabel] = useState("");
   const [rate, setRate] = useState("");
   const [error, setError] = useState(null);
-  const catLabel = cat === "assembly_cost_type" ? "cost type" : cat;
+  const catLabel = { assembly_cost_type: "cost type", link_type: "link type" }[cat] || cat;
 
   const load = () => api.reference(cat).then(setRows).catch((e) => setError(e.message));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [cat]);
