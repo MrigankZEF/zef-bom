@@ -14,14 +14,14 @@ import io
 import json
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Float, Integer, JSON, Numeric, delete, select, text,
+    Boolean, Date, DateTime, Float, Integer, JSON, Numeric, UniqueConstraint, delete, select, text,
 )
 from sqlalchemy.orm import Session
 
 from . import drive
 from .models import (
-    AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldDefinition,
-    FieldValue, Item, ReferenceValue, UploadBatch, User,
+    AssemblyLabor, BomLink, ChangeHistory, CodeRegistry, CostEvidence, DecidedCost,
+    FieldDefinition, FieldValue, Item, ReferenceValue, UploadBatch, User,
 )
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -38,6 +38,7 @@ BACKUP_SHEETS = [
     ("Reference", ReferenceValue),
     ("UploadBatches", UploadBatch),
     ("ChangeHistory", ChangeHistory),
+    ("CodeRegistry", CodeRegistry),
     ("Users", User),
 ]
 
@@ -152,8 +153,16 @@ RESTORE_ORDER = [
     ("FieldValues", FieldValue),
     ("BomLinks", BomLink),
     ("ChangeHistory", ChangeHistory),
+    ("CodeRegistry", CodeRegistry),
 ]
 RESTORE_MODELS = dict(RESTORE_ORDER)
+
+# Tables that restore by MERGE instead of replace. `code_registry` is append-only by design —
+# it is the record of every part number ever handed out — so a restore may only ever ADD what
+# the backup knows about. Wiping it would re-open retired numbers to reissue, which is the one
+# thing the table exists to prevent; conversely, leaving it out of the restore entirely means a
+# rebuild onto a fresh database would come back with an empty ledger.
+RESTORE_MERGE_ONLY = {"CodeRegistry"}
 
 
 def _is_na(v) -> bool:
@@ -270,21 +279,59 @@ def plan_restore(sheets: dict) -> dict:
         "missing_sheets": [name for name, _ in RESTORE_ORDER if name not in sheets],
         "unknown_sheets": unknown,
         "column_issues": column_issues,
-        "users_note": "Users / sign-in access are preserved (not restored).",
+        "users_note": "Users / sign-in access are preserved (not restored). The part-number "
+                      "ledger is merged, never wiped, so no retired number can be reissued.",
     }
+
+
+def _natural_key_cols(model) -> list[str]:
+    """Column names of the model's first unique constraint — its natural key."""
+    for con in model.__table__.constraints:
+        if isinstance(con, UniqueConstraint):
+            return [c.name for c in con.columns]
+    return []
+
+
+def _rows_not_already_present(db: Session, model, rows: list[dict]) -> list[dict]:
+    """Filter a merge-only table's rows down to the ones the live table doesn't have yet.
+
+    Matching is on the natural key, not the primary key: the backup's surrogate ids mean
+    nothing here because the table was never wiped, so they are dropped and the database
+    assigns fresh ones."""
+    key_cols = _natural_key_cols(model)
+    if not key_cols:
+        return rows
+    existing = {
+        tuple(r) for r in db.execute(select(*[model.__table__.c[k] for k in key_cols])).all()
+    }
+    pk = {c.name for c in model.__table__.primary_key.columns}
+    out, seen = [], set()
+    for r in rows:
+        if any(k not in r for k in key_cols):
+            continue  # sheet is missing a key column; nothing to match on
+        key = tuple(r[k] for k in key_cols)
+        if key in existing or key in seen:
+            continue
+        seen.add(key)
+        out.append({k: v for k, v in r.items() if k not in pk})
+    return out
 
 
 def restore_from_workbook(db: Session, sheets: dict) -> dict:
     """Replace all BOM data with the backup's contents, atomically. Only columns present in
     BOTH the sheet and the current schema are written (resilient to schema drift); ids are
-    preserved so internal references stay intact. Commits on success, rolls back on error."""
+    preserved so internal references stay intact. Tables in RESTORE_MERGE_ONLY are added to
+    rather than replaced. Commits on success, rolls back on error."""
     plan = plan_restore(sheets)
     if not plan["ok"]:
         raise ValueError(plan["reason"])
 
     try:
-        # wipe in reverse FK order (children before parents); Users left untouched
+        # wipe in reverse FK order (children before parents); Users and the merge-only
+        # tables are left untouched
         for name, model in reversed(RESTORE_ORDER):
+            if name in RESTORE_MERGE_ONLY:
+                continue
             db.execute(delete(model))
         db.flush()
 
@@ -300,6 +347,8 @@ def restore_from_workbook(db: Session, sheets: dict) -> dict:
                 {c: _coerce(rec[c], cols[c]) for c in usable}
                 for rec in df.to_dict(orient="records")
             ]
+            if name in RESTORE_MERGE_ONLY:
+                rows = _rows_not_already_present(db, model, rows)
             if rows:
                 db.execute(model.__table__.insert(), rows)
                 db.flush()

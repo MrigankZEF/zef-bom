@@ -411,5 +411,30 @@ def _run():
     return failed
 
 
+
+def test_backup_carries_the_part_number_ledger():
+    # A rebuild onto a fresh database has to bring the ledger back, or every retired number is
+    # free to be handed out a second time. And a restore must never DROP a number the live
+    # database already knows about, so the ledger merges rather than being replaced.
+    from app.backup import build_backup_workbook, read_backup_workbook, restore_from_workbook
+    from app.models import CodeRegistry
+    db = _db()
+    db.add(Item(item_id="AEC100A", item_name="Root", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(CodeRegistry(module="AEC", number=100, first_code="AEC100A"))
+    db.add(CodeRegistry(module="AEC", number=7, first_code="AEC007P"))  # retired: no item left
+    db.commit()
+    raw = build_backup_workbook(db)
+
+    fresh = _db()
+    restore_from_workbook(fresh, read_backup_workbook(raw))
+    got = sorted((r.module, r.number) for r in fresh.execute(select(CodeRegistry)).scalars())
+    assert got == [("AEC", 7), ("AEC", 100)], f"ledger not restored onto a fresh database: {got}"
+
+    # a number allocated after that backup was taken must survive restoring it again
+    fresh.add(CodeRegistry(module="AEC", number=250, first_code="AEC250P")); fresh.commit()
+    restore_from_workbook(fresh, read_backup_workbook(raw))
+    got = sorted((r.module, r.number) for r in fresh.execute(select(CodeRegistry)).scalars())
+    assert got == [("AEC", 7), ("AEC", 100), ("AEC", 250)], f"restore dropped a live number: {got}"
+
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)
