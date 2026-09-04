@@ -89,7 +89,8 @@ export default function Costing({ onOpenPart }) {
             <div className="kpi">
               <span className="kpi-label">Coverage</span>
               <span className="kpi-val">{fmtPct(data.totals.coverage)}</span>
-              <span className="kpi-sub">{data.totals.covered}/{data.totals.total} parts costed</span>
+              <span className="kpi-sub">{data.totals.covered}/{data.totals.total} inputs priced{
+                data.totals.parts_total != null && <> · {data.totals.parts_covered}/{data.totals.parts_total} parts</>}</span>
             </div>
             <div className="kpi">
               <span className="kpi-label">Most expensive</span>
@@ -162,7 +163,13 @@ export default function Costing({ onOpenPart }) {
 
           {data.totals.total - data.totals.covered > 0 && (
             <div className="card" style={{ marginTop: 16 }}>
-              <span style={{ fontSize: 13 }}><strong>{data.totals.total - data.totals.covered}</strong> parts in this BOM have no decided cost yet — the cost treemap and total are a floor until they're filled in (see <strong>Pending</strong>).</span>
+              <span style={{ fontSize: 13 }}>
+                <strong>{data.totals.total - data.totals.covered}</strong> inputs in this BOM aren't priced yet — the cost treemap and total are a floor until they're filled in (see <strong>Pending</strong>).
+                {data.totals.missing_assembly?.length > 0 && <>
+                  {" "}That includes <strong>{data.totals.missing_assembly.length}</strong> assembl{data.totals.missing_assembly.length === 1 ? "y" : "ies"} with
+                  no assembly cost at all: <span className="mono" style={{ fontSize: 12 }}>{data.totals.missing_assembly.join(", ")}</span>.
+                </>}
+              </span>
             </div>
           )}
         </>

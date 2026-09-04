@@ -164,8 +164,14 @@ def costing_breakdown(
             "assembly_cost": round(rl.cost - cost_total, 2),
             "cost_min": round(rl.cost_min, 2), "cost_max": round(rl.cost_max, 2),
             "weight_grams": round(weight_total, 1),
-            "covered": covered, "total": len(leaves),
-            "coverage": round(covered / len(leaves), 4) if leaves else 0,
+            # Coverage counts every priced input, assemblies included — the same measure the
+            # rollup and the Browse tab use. Counting only leaves made this read 100% while
+            # ten assemblies silently cost nothing, which is the gap 0008 exists to expose.
+            "covered": rl.covered, "total": rl.total,
+            "coverage": round(rl.coverage, 4),
+            # kept separate so the tab can still say how many PARTS specifically are priced
+            "parts_covered": covered, "parts_total": len(leaves),
+            "missing_assembly": sorted(set(rl.missing_assembly)),
         },
     }
 
