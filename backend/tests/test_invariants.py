@@ -412,6 +412,71 @@ def test_new_backup_writes_boolean_text():
     assert str(ws.cell(row=2, column=col).value) in ("TRUE", "FALSE")
 
 
+# ── flattening: the count is the quantity multiplied along every path ─────────
+def _flat_fixture():
+    """ROOT ×1 → SUB ×6 → PART ×4, plus PART ×2 directly under ROOT.
+
+    PART's effective count is 6×4 + 2 = 26. The old shallow sum over direct parents would
+    say 6 (4 + 2), which is the bug this test exists to prevent.
+    """
+    db = _db()
+    db.add(Item(item_id="AEC900A", item_name="Root", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC901A", item_name="Sub", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC902P", item_name="Part", item_type="part", module_code="AEC"))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC900A", child_item_id="AEC901A", quantity=6))
+    db.add(BomLink(parent_item_id="AEC901A", child_item_id="AEC902P", quantity=4))
+    db.add(BomLink(parent_item_id="AEC900A", child_item_id="AEC902P", quantity=2))
+    db.add(DecidedCost(item_id="AEC902P", volume_tier=100, unit_cost_eur=3))
+    db.commit()
+    return db
+
+
+def test_flatten_multiplies_down_the_tree():
+    from app.rollups import BomGraph
+    g = BomGraph(_flat_fixture(), volume_tier=100)
+    rows = {r["item_id"]: r for r in g.flat_rows("AEC900A")}
+    assert rows["AEC902P"]["count"] == 26, rows["AEC902P"]["count"]
+    assert rows["AEC901A"]["count"] == 6, rows["AEC901A"]["count"]
+    assert "AEC900A" not in rows, "the root is what is being flattened, not a row in it"
+    assert rows["AEC902P"]["cost"] == 78.0, rows["AEC902P"]["cost"]  # 26 × €3
+
+
+def test_flat_leaf_costs_sum_to_the_parts_cost():
+    from app.rollups import BomGraph
+    g = BomGraph(_flat_fixture(), volume_tier=100)
+    leaves = [r for r in g.flat_rows("AEC900A") if r["is_leaf"]]
+    rl = g.rollup("AEC900A")
+    assert round(sum(r["cost"] for r in leaves), 2) == round(rl.cost - rl.assembly_cost, 2)
+
+
+def test_usage_reports_every_root_that_needs_the_part():
+    from app.rollups import BomGraph
+    db = _flat_fixture()
+    # A second product that also uses the same part, ×5.
+    db.add(Item(item_id="DAC900A", item_name="Other root", item_type="assembly", module_code="DAC", is_top_level=True))
+    db.commit()
+    db.add(BomLink(parent_item_id="DAC900A", child_item_id="AEC902P", quantity=5))
+    db.commit()
+    g = BomGraph(db, volume_tier=100)
+    roots = {r["root"]: r["count"] for r in g.roots_reaching("AEC902P")}
+    assert roots == {"AEC900A": 26, "DAC900A": 5}, roots
+
+
+def test_flatten_survives_a_cycle():
+    from app.rollups import BomGraph
+    db = _db()
+    db.add(Item(item_id="AEC910A", item_name="A", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC911A", item_name="B", item_type="assembly", module_code="AEC"))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC910A", child_item_id="AEC911A", quantity=2))
+    db.add(BomLink(parent_item_id="AEC911A", child_item_id="AEC910A", quantity=1))  # loop
+    db.commit()
+    g = BomGraph(db, volume_tier=100)
+    rows = g.flat_rows("AEC910A")   # must terminate, not recurse for ever
+    assert {r["item_id"] for r in rows} <= {"AEC911A", "AEC910A"}
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed, failed = 0, 0

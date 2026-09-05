@@ -260,6 +260,76 @@ class BomGraph:
             walk(root, 1.0, frozenset())
         return acc
 
+    def flat_rows(self, root: str) -> list[dict]:
+        """`root` flattened to a single level: one row per distinct descendant.
+
+        `count` is the effective quantity — the quantity multiplied along every path from
+        the root and summed over paths, which is the number the plant actually needs. A
+        part four deep at ×4 inside a ×6 assembly counts 24, not 4.
+
+        Leaf rows carry a price and add up to the root's parts cost; assembly rows carry
+        their own process cost (time × rate × count) and would double-count if summed with
+        the leaves, hence the `is_leaf` flag for the caller to filter on.
+        """
+        rollup = self.rollup(root)
+        parts_total = sum(
+            (self.decided.get((leaf, self.volume)) or (0.0, 0.0, 0.0))[1] * qty
+            for leaf, qty in self.flatten_leaves(root).items()
+        )
+        # Share is of the whole BOM (parts + assembly labour) so the column sums to ~100%
+        # across leaves and assemblies together, rather than to something over 100.
+        denom = rollup.cost or parts_total or 0.0
+
+        rows: list[dict] = []
+        for leaf, qty in self.flatten_leaves(root).items():
+            it = self.items[leaf]
+            est = self.decided.get((leaf, self.volume))
+            unit = est[1] if est is not None else None
+            cost = (unit or 0.0) * qty
+            rows.append({
+                "item_id": leaf, "item_name": it.item_name, "item_type": it.item_type,
+                "module_code": it.module_code, "is_leaf": True,
+                "count": round(qty, 3),
+                "unit_cost": float(unit) if unit is not None else None,
+                "cost": round(cost, 2),
+                "share": round(cost / denom, 4) if denom else 0.0,
+                # A leaf is either priced or it is not — coverage is that, per row.
+                "coverage": 1.0 if unit is not None else 0.0,
+            })
+        for aid, qty in self.flatten_assemblies(root).items():
+            if aid == root:
+                continue   # the root is the thing being flattened, not a row inside it
+            it = self.items[aid]
+            unit = self.assembly_cost(it)[1]     # its own process cost, per build
+            cost = unit * qty
+            rows.append({
+                "item_id": aid, "item_name": it.item_name, "item_type": it.item_type,
+                "module_code": it.module_code, "is_leaf": False,
+                "count": round(qty, 3),
+                "unit_cost": round(unit, 4) if unit else None,
+                "cost": round(cost, 2),
+                "share": round(cost / denom, 4) if denom else 0.0,
+                "coverage": round(self.rollup(aid).coverage, 4),
+            })
+        # Dearest first, and anything without a price last — the order costing work wants.
+        rows.sort(key=lambda r: (r["unit_cost"] is None, -r["cost"], r["item_id"]))
+        return rows
+
+    def roots_reaching(self, item_id: str) -> list[dict]:
+        """Which top-level BOMs contain `item_id`, and how many it needs of it.
+
+        The inverse of `flat_rows`, for the drawer: an extended total only means something
+        when exactly one BOM is asking for the part.
+        """
+        out = []
+        for root in self.roots():
+            qty = self.flatten_leaves(root.item_id).get(item_id)
+            if qty is None:
+                qty = self.flatten_assemblies(root.item_id).get(item_id)
+            if qty and root.item_id != item_id:
+                out.append({"root": root.item_id, "root_name": root.item_name, "count": round(qty, 3)})
+        return out
+
     def assembly_time_total(self, item_id: str, _seen: frozenset[str] = frozenset()) -> float:
         """Recursive most-likely assembly minutes at the current tier."""
         if item_id in _seen:

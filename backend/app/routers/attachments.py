@@ -1,9 +1,10 @@
-"""Per-part Drive attachments (M6): list, ensure folder, upload files."""
+"""Per-part Drive attachments (M6): list, ensure folder, upload files, item thumbnail."""
 from __future__ import annotations
 
 import asyncio
+import time
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from .. import drive
@@ -85,3 +86,51 @@ async def upload_attachment(
                   change_reason="uploaded to Drive")
     db.commit()
     return {"configured": True, **result}
+
+
+# ── thumbnail (one pinned image per item) ────────────────────────────────────
+# Drive's thumbnailLink expires within hours and only works with our credentials, so the
+# bytes are proxied here. Fetching them on every drawer open would mean a Drive round trip
+# per render, hence a small in-process cache keyed by file id.
+_THUMB_TTL = 10 * 60  # seconds
+_thumb_cache: dict[str, tuple[float, bytes, str]] = {}
+
+
+@router.put("/items/{item_id}/thumbnail")
+def set_thumbnail(
+    item_id: str,
+    file_id: str | None = Body(default=None, embed=True),
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+) -> dict:
+    """Pin a Drive file as this item's picture, or clear it with a null file_id."""
+    item = _get_item(db, item_id)
+    old = item.thumbnail_file_id
+    new = (file_id or "").strip() or None
+    if new != old:
+        item.thumbnail_file_id = new
+        record_change(db, entity_type="item", entity_id=item_id, change_type="update",
+                      field_changed="thumbnail_file_id", old_value=old, new_value=new,
+                      changed_by=user)
+        db.commit()
+    return {"item_id": item_id, "thumbnail_file_id": new}
+
+
+@router.get("/items/{item_id}/thumbnail")
+async def get_thumbnail(item_id: str, db: Session = Depends(get_db)) -> Response:
+    item = _get_item(db, item_id)
+    if not item.thumbnail_file_id:
+        raise HTTPException(404, "No thumbnail pinned on this item")
+    _require_drive()
+    fid = item.thumbnail_file_id
+    hit = _thumb_cache.get(fid)
+    now = time.monotonic()
+    if hit and now - hit[0] < _THUMB_TTL:
+        return Response(content=hit[1], media_type=hit[2])
+    # Blocking Drive calls go off the event loop, like the uploads above.
+    got = await asyncio.to_thread(drive.thumbnail, fid)
+    if got is None:
+        raise HTTPException(404, "Drive has no thumbnail for that file")
+    content, mime = got
+    _thumb_cache[fid] = (now, content, mime)
+    return Response(content=content, media_type=mime)

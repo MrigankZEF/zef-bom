@@ -24,22 +24,26 @@ def enabled() -> bool:
 
 
 @lru_cache(maxsize=1)
-def _service():
-    """Build the Drive API client (cached). Creds come from the JSON env var if set,
-    else the key file."""
+def _credentials():
+    """Service-account creds (cached). From the JSON env var if set, else the key file."""
     import json
 
     from google.oauth2 import service_account
-    from googleapiclient.discovery import build
 
     if settings.google_service_account_json:
         info = json.loads(settings.google_service_account_json)
-        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-    else:
-        creds = service_account.Credentials.from_service_account_file(
-            settings.google_service_account_file, scopes=SCOPES
-        )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+        return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    return service_account.Credentials.from_service_account_file(
+        settings.google_service_account_file, scopes=SCOPES
+    )
+
+
+@lru_cache(maxsize=1)
+def _service():
+    """Build the Drive API client (cached)."""
+    from googleapiclient.discovery import build
+
+    return build("drive", "v3", credentials=_credentials(), cache_discovery=False)
 
 # Shared-drive support requires these flags on every call.
 _SHARED = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
@@ -181,14 +185,48 @@ def list_files(item_id: str, folder_url: str | None = None) -> dict:
     fid = folder["id"]
     files = svc.files().list(
         q=f"'{fid}' in parents and trashed = false",
-        fields="files(id, name, webViewLink, mimeType, modifiedTime, size)",
+        fields="files(id, name, webViewLink, mimeType, modifiedTime, size, thumbnailLink)",
         orderBy="modifiedTime desc", **_SHARED,
     ).execute().get("files", [])
     return {
         "folder_url": folder.get("webViewLink") or _folder_url(fid),
         "files": [{"id": f["id"], "name": f["name"], "url": f.get("webViewLink"),
-                   "mime": f.get("mimeType"), "modified": f.get("modifiedTime")} for f in files],
+                   "mime": f.get("mimeType"), "modified": f.get("modifiedTime"),
+                   # Drive only generates one for formats it can render — the UI offers
+                   # "set as thumbnail" on exactly those files.
+                   "has_thumbnail": bool(f.get("thumbnailLink"))} for f in files],
     }
+
+
+def thumbnail(file_id: str, size: int = 320) -> tuple[bytes, str] | None:
+    """Drive's own thumbnail for a file, as (bytes, mime). None if it has none.
+
+    Drive generates and stores a thumbnail for every format it can render, so there is
+    nothing to resize here. The `thumbnailLink` it hands out expires within hours and is
+    tied to our credentials, which is why it is fetched server-side and never given to the
+    browser — the browser asks our endpoint instead.
+    """
+    try:
+        meta = _service().files().get(
+            fileId=file_id, fields="thumbnailLink, mimeType, trashed",
+            **{"supportsAllDrives": True},
+        ).execute()
+    except Exception:  # noqa: BLE001 — a deleted or unshared file simply has no thumbnail
+        return None
+    link = meta.get("thumbnailLink")
+    if meta.get("trashed") or not link:
+        return None
+    # The link ends in a size hint (…=s220); ask for the size we actually display.
+    link = re.sub(r"=s\d+$", f"=s{size}", link)
+    from google.auth.transport.requests import AuthorizedSession
+
+    try:
+        res = AuthorizedSession(_credentials()).get(link, timeout=20)
+        if res.status_code != 200 or not res.content:
+            return None
+        return res.content, res.headers.get("Content-Type", "image/jpeg")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── database backups (a "Backups" subfolder under the attachments root) ──────

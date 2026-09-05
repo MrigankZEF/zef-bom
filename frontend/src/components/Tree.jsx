@@ -12,6 +12,12 @@ export default function Tree({ onOpenPart, focus, version }) {
   const [moduleF, setModuleF] = useState("all");
   const [coverageF, setCoverageF] = useState("all");
   const [tier, setTier] = useState(100);
+  // "tree" = the nested hierarchy; "flat" = each BOM one level deep with full counts.
+  const [view, setView] = useState("tree");
+  const [flat, setFlat] = useState(null);
+  // On by default: leaf rows sum to the BOM's parts cost, so the Total column is safe to
+  // read as a sum. Assembly rows carry their own process cost and would double-count.
+  const [leafOnly, setLeafOnly] = useState(true);
   const [newBom, setNewBom] = useState(false);
   const [drag, setDrag] = useState(null);      // { child, fromParent, root, key, name }
   const [dropKey, setDropKey] = useState(null);
@@ -28,6 +34,10 @@ export default function Tree({ onOpenPart, focus, version }) {
       })
       .catch((e) => setError(e.message));
   useEffect(() => { loadTree(); /* eslint-disable-next-line */ }, [version, tier]);
+
+  const loadFlat = () =>
+    api.flat(null, tier).then(setFlat).catch((e) => setError(e.message));
+  useEffect(() => { if (view === "flat") loadFlat(); /* eslint-disable-next-line */ }, [view, version, tier]);
 
   const modules = useMemo(() => {
     const set = new Set();
@@ -148,13 +158,26 @@ export default function Tree({ onOpenPart, focus, version }) {
       <div className="page-head">
         <div>
           <div className="page-eyebrow">Browse</div>
-          <h1 className="page-title">BOM tree</h1>
+          <h1 className="page-title">{view === "tree" ? "BOM tree" : "Flattened BOM"}</h1>
           <p className="page-sub">
-            The microplant hierarchy. Expand assemblies, <strong>drag a part onto another assembly</strong> to
-            move it (same BOM), and click any item to inspect.
+            {view === "tree" ? (
+              <>
+                The microplant hierarchy. Expand assemblies, <strong>drag a part onto another assembly</strong> to
+                move it (same BOM), and click any item to inspect.
+              </>
+            ) : (
+              <>
+                Each BOM one level deep: every item once, with the <strong>count the whole BOM needs</strong> —
+                quantities multiplied down the tree. Structure editing lives in the tree view.
+              </>
+            )}
           </p>
         </div>
         <div className="page-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="segmented-mini">
+            <button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}>BOM tree</button>
+            <button className={view === "flat" ? "on" : ""} onClick={() => setView("flat")}>Flattened</button>
+          </span>
           <span className="card-meta" style={{ marginRight: 2 }}>cost @</span>
           <span style={{ display: "inline-flex", border: "1px solid var(--hair)", borderRadius: 7, overflow: "hidden" }}>
             {[1, 100, 10000].map((t) => (
@@ -165,7 +188,7 @@ export default function Tree({ onOpenPart, focus, version }) {
               </button>
             ))}
           </span>
-          <button className="btn ghost sm" onClick={expandAll}><Icon name="chevD" size={12} /> Expand all</button>
+          {view === "tree" && <button className="btn ghost sm" onClick={expandAll}><Icon name="chevD" size={12} /> Expand all</button>}
           <button className="btn ghost sm" onClick={collapseAll}><Icon name="chevR" size={12} /> Collapse all</button>
           <button className="btn sm" onClick={() => setNewBom((v) => !v)}><Icon name="box" size={12} /> New BOM</button>
         </div>
@@ -194,119 +217,135 @@ export default function Tree({ onOpenPart, focus, version }) {
           <option value="covered">Fully costed</option>
           <option value="uncovered">Has uncosted</option>
         </select>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" }}>
-          {partCount} parts · {asmCount} assemblies
-        </div>
+        {view === "flat" ? (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-3)", cursor: "pointer", whiteSpace: "nowrap" }}
+                 title="Leaf parts only — then the Total column adds up to the BOM's parts cost. Including sub-assemblies double-counts, since their cost is already inside their own parts.">
+            <input type="checkbox" checked={leafOnly} onChange={(e) => setLeafOnly(e.target.checked)} />
+            leaf parts only
+          </label>
+        ) : (
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" }}>
+            {partCount} parts · {asmCount} assemblies
+          </div>
+        )}
       </div>
 
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div className="tree-head">
-          <div>Part / assembly</div>
-          <div className="tree-data">
-            <div className="right">Qty</div>
-            <div className="right">Cost @ {tierLabel(tier)}</div>
-            <div className="right">Total</div>
-            <div className="right">Coverage</div>
-            <div className="right">Module</div>
-            <div></div>
+      {view === "tree" && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="tree-head">
+            <div>Part / assembly</div>
+            <div className="tree-data">
+              <div className="right">Qty</div>
+              <div className="right">Cost @ {tierLabel(tier)}</div>
+              <div className="right">Total</div>
+              <div className="right">Coverage</div>
+              <div className="right">Module</div>
+              <div></div>
+            </div>
           </div>
-        </div>
-        <div className="tree">
-          {rows.map(({ n, depth, open, key, anc, isLast }) => {
-            const expandable = n.has_children && (n.children?.length ?? 0) > 0;  // false when a loop cut its children
-            const isDragging = drag?.key === key;
-            const isValid = validTarget(key, n);
-            const isDrop = dropKey === key && isValid;
-            return (
-            <div
-              key={key}
-              className={`tree-row ${focus === n.item_id ? "on" : ""}`}
-              style={{
-                "--indent": `${12 + depth * 22}px`,
-                // Only the custom property is set — never `background` itself — so the
-                // :hover and .on rules still win in the cascade.
-                "--tint": depth ? `rgba(28,27,26,${(Math.min(depth, 5) * 0.014).toFixed(3)})` : "transparent",
-                cursor: depth > 0 ? "grab" : undefined,
-                opacity: isDragging ? 0.4 : 1,
-                ...(isDrop
-                  ? { background: "rgba(228,0,43,0.10)", outline: "2px solid var(--accent)", outlineOffset: "-2px" }
-                  : isValid ? { background: "rgba(228,0,43,0.035)" } : {}),
-              }}
-              draggable={depth > 0}
-              onDragStart={(e) => { setDrag(rowInfo(key, n)); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", n.item_id); }}
-              onDragEnd={() => { setDrag(null); setDropKey(null); }}
-              onDragOver={(e) => { if (isValid) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dropKey !== key) setDropKey(key); } }}
-              onDragLeave={() => setDropKey((d) => (d === key ? null : d))}
-              onDrop={(e) => { if (isValid) { e.preventDefault(); doMove(n.item_id); } }}
-              title={drag ? (isValid ? `Move ${drag.name} into ${n.item_name}` : "")
-                : "Open details · drag to move"}
-              onClick={() => onOpenPart(n.item_id)}
-            >
-              {depth > 0 && (
-                <span className="tree-rails" aria-hidden="true">
-                  {Array.from({ length: depth }, (_, i) => (
-                    <span key={i} className={i === depth - 1
-                      ? `tree-rail elbow${isLast ? " last" : ""}`
-                      : `tree-rail${anc[i] ? " line" : ""}`} />
-                  ))}
-                </span>
-              )}
+          <div className="tree">
+            {rows.map(({ n, depth, open, key, anc, isLast }) => {
+              const expandable = n.has_children && (n.children?.length ?? 0) > 0;  // false when a loop cut its children
+              const isDragging = drag?.key === key;
+              const isValid = validTarget(key, n);
+              const isDrop = dropKey === key && isValid;
+              return (
               <div
-                className={`tree-name ${expandable ? "expands" : focus ? "dismisses" : "inert"}`}
-                title={expandable ? (open ? "Collapse" : "Expand one level") : focus ? "Close details" : ""}
-                onClick={(e) => { e.stopPropagation(); expandZone(n); }}
+                key={key}
+                className={`tree-row ${focus === n.item_id ? "on" : ""}`}
+                style={{
+                  "--indent": `${12 + depth * 22}px`,
+                  // Only the custom property is set — never `background` itself — so the
+                  // :hover and .on rules still win in the cascade.
+                  "--tint": depth ? `rgba(28,27,26,${(Math.min(depth, 5) * 0.014).toFixed(3)})` : "transparent",
+                  cursor: depth > 0 ? "grab" : undefined,
+                  opacity: isDragging ? 0.4 : 1,
+                  ...(isDrop
+                    ? { background: "rgba(228,0,43,0.10)", outline: "2px solid var(--accent)", outlineOffset: "-2px" }
+                    : isValid ? { background: "rgba(228,0,43,0.035)" } : {}),
+                }}
+                draggable={depth > 0}
+                onDragStart={(e) => { setDrag(rowInfo(key, n)); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", n.item_id); }}
+                onDragEnd={() => { setDrag(null); setDropKey(null); }}
+                onDragOver={(e) => { if (isValid) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dropKey !== key) setDropKey(key); } }}
+                onDragLeave={() => setDropKey((d) => (d === key ? null : d))}
+                onDrop={(e) => { if (isValid) { e.preventDefault(); doMove(n.item_id); } }}
+                title={drag ? (isValid ? `Move ${drag.name} into ${n.item_name}` : "")
+                  : "Open details · drag to move"}
+                onClick={() => onOpenPart(n.item_id)}
               >
-                <button
-                  className={`tree-toggle ${expandable ? "" : "is-leaf"}`}
-                  tabIndex={expandable ? 0 : -1}
+                {depth > 0 && (
+                  <span className="tree-rails" aria-hidden="true">
+                    {Array.from({ length: depth }, (_, i) => (
+                      <span key={i} className={i === depth - 1
+                        ? `tree-rail elbow${isLast ? " last" : ""}`
+                        : `tree-rail${anc[i] ? " line" : ""}`} />
+                    ))}
+                  </span>
+                )}
+                <div
+                  className={`tree-name ${expandable ? "expands" : focus ? "dismisses" : "inert"}`}
+                  title={expandable ? (open ? "Collapse" : "Expand one level") : focus ? "Close details" : ""}
                   onClick={(e) => { e.stopPropagation(); expandZone(n); }}
                 >
-                  <Icon name={open ? "chevD" : "chevR"} size={12} />
-                </button>
-                <span className="num">{n.item_id}</span>
-                <span className={`lbl ${n.item_type === "assembly" ? "assembly" : ""}`}>{n.item_name}</span>
-                {n.item_type === "assembly" && <Pill kind="warm">asm</Pill>}
-              </div>
-              <div className="tree-data" title="Open details">
-              <div className="qty">× {n.quantity}</div>
-              <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}>
-                {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost) : "—"}
-              </div>
-              {/* Line extended cost: unit rollup x the quantity on THIS row. Deliberately not
-                  the effective quantity from the root, so it always agrees with the two
-                  columns beside it — the trade-off is that leaf lines don't sum to the BOM. */}
-              <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}
-                   title={n.rollup_cost > 0 ? `${fmtEURcompact(n.rollup_cost)} x ${n.quantity}` : undefined}>
-                {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost * n.quantity) : "—"}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-                <div className="cov-bar" style={{ width: 38 }}>
-                  <div className="filled" style={{ width: `${n.coverage * 100}%` }} />
+                  <button
+                    className={`tree-toggle ${expandable ? "" : "is-leaf"}`}
+                    tabIndex={expandable ? 0 : -1}
+                    onClick={(e) => { e.stopPropagation(); expandZone(n); }}
+                  >
+                    <Icon name={open ? "chevD" : "chevR"} size={12} />
+                  </button>
+                  <span className="num">{n.item_id}</span>
+                  <span className={`lbl ${n.item_type === "assembly" ? "assembly" : ""}`}>{n.item_name}</span>
+                  {n.item_type === "assembly" && <Pill kind="warm">asm</Pill>}
                 </div>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>
-                  {Math.round(n.coverage * 100)}%
-                </span>
+                <div className="tree-data" title="Open details">
+                <div className="qty">× {n.quantity}</div>
+                <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}>
+                  {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost) : "—"}
+                </div>
+                {/* Line extended cost: unit rollup x the quantity on THIS row. Deliberately not
+                    the effective quantity from the root, so it always agrees with the two
+                    columns beside it — the trade-off is that leaf lines don't sum to the BOM. */}
+                <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}
+                     title={n.rollup_cost > 0 ? `${fmtEURcompact(n.rollup_cost)} x ${n.quantity}` : undefined}>
+                  {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost * n.quantity) : "—"}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                  <div className="cov-bar" style={{ width: 38 }}>
+                    <div className="filled" style={{ width: `${n.coverage * 100}%` }} />
+                  </div>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>
+                    {Math.round(n.coverage * 100)}%
+                  </span>
+                </div>
+                <div style={{ textAlign: "right" }}><ModulePill code={n.module_code} /></div>
+                <button
+                  className="tree-toggle"
+                  title="Open details"
+                  style={{ justifySelf: "end", width: 26, height: 26, color: "var(--ink-3)" }}
+                  onClick={(e) => { e.stopPropagation(); onOpenPart(n.item_id); }}
+                >
+                  <Icon name="chevR" size={13} />
+                </button>
+                </div>
               </div>
-              <div style={{ textAlign: "right" }}><ModulePill code={n.module_code} /></div>
-              <button
-                className="tree-toggle"
-                title="Open details"
-                style={{ justifySelf: "end", width: 26, height: 26, color: "var(--ink-3)" }}
-                onClick={(e) => { e.stopPropagation(); onOpenPart(n.item_id); }}
-              >
-                <Icon name="chevR" size={13} />
-              </button>
+              );
+            })}
+            {rows.length === 0 && (
+              <div className="empty" style={{ padding: 24, textAlign: "center", color: "var(--ink-3)" }}>
+                No items match these filters.
               </div>
-            </div>
-            );
-          })}
-          {rows.length === 0 && (
-            <div className="empty" style={{ padding: 24, textAlign: "center", color: "var(--ink-3)" }}>
-              No items match these filters.
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
+      )}
+
+      {view === "flat" && (flat === null
+        ? <p className="muted">Flattening…</p>
+        : <FlatView boms={flat} tier={tier} tierLabel={tierLabel} expanded={expanded} toggle={toggle}
+            matches={matches} filtering={filtering} leafOnly={leafOnly}
+            focus={focus} onOpenPart={onOpenPart} />)}
 
       {(undo || moving) && (
         <div style={{ position: "sticky", bottom: 16, marginTop: 12, display: "flex", justifyContent: "center", pointerEvents: "none" }}>
@@ -362,6 +401,137 @@ function NewBomPanel({ systems, onCancel, onCreated, setError }) {
       <p style={{ width: "100%", margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-3)" }}>
         Creates an empty top-level assembly in this system. Add components from the item drawer; all the naming rules apply automatically.
       </p>
+    </div>
+  );
+}
+
+// The same window as the tree, flattened: each top-level BOM is still a row you expand, but
+// what opens is one level deep — every descendant once, with the count the plant actually
+// needs (quantity multiplied along every path, summed over paths). Drag-to-move is absent by
+// design: a flat row has no single parent, so moving it means nothing here.
+function FlatView({ boms, tier, tierLabel, expanded, toggle, matches, filtering, leafOnly, focus, onOpenPart }) {
+  return (
+    <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+      <div className="tree-head">
+        <div>Part / assembly</div>
+        <div className="tree-data flat">
+          <div className="right">Count</div>
+          <div className="right">Unit @ {tierLabel(tier)}</div>
+          <div className="right">Total</div>
+          <div className="right">Share</div>
+          <div className="right">Coverage</div>
+          <div className="right">Module</div>
+          <div></div>
+        </div>
+      </div>
+      <div className="tree">
+        {boms.length === 0 && (
+          <div className="empty" style={{ padding: 24, textAlign: "center", color: "var(--ink-3)" }}>
+            No top-level BOMs yet.
+          </div>
+        )}
+        {boms.map((bom) => {
+          const open = expanded.has(bom.item_id);
+          const rows = (bom.rows || [])
+            .filter((r) => (leafOnly ? r.is_leaf : true))
+            .filter((r) => !filtering || matches(r));
+          return (
+            <div key={bom.item_id}>
+              <div className={`tree-row ${focus === bom.item_id ? "on" : ""}`}
+                   style={{ "--indent": "12px", "--tint": "transparent" }}
+                   onClick={() => onOpenPart(bom.item_id)}>
+                <div className="tree-name expands" title={open ? "Collapse" : "Flatten this BOM"}
+                     onClick={(e) => { e.stopPropagation(); toggle(bom.item_id); }}>
+                  <button className="tree-toggle" onClick={(e) => { e.stopPropagation(); toggle(bom.item_id); }}>
+                    <Icon name={open ? "chevD" : "chevR"} size={12} />
+                  </button>
+                  <span className="num">{bom.item_id}</span>
+                  <span className="lbl assembly">{bom.item_name}</span>
+                  <Pill kind="warm">asm</Pill>
+                </div>
+                <div className="tree-data flat" title="Open details">
+                  <div className="qty">{rows.length} rows</div>
+                  <div className="cost">—</div>
+                  <div className={`cost ${bom.cost === 0 ? "missing" : ""}`}>
+                    {bom.cost > 0 ? fmtEURcompact(bom.cost) : "—"}
+                  </div>
+                  <div className="qty">100%</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                    <div className="cov-bar" style={{ width: 38 }}>
+                      <div className="filled" style={{ width: `${bom.coverage * 100}%` }} />
+                    </div>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>
+                      {Math.round(bom.coverage * 100)}%
+                    </span>
+                  </div>
+                  <div style={{ textAlign: "right" }}><ModulePill code={bom.module_code} /></div>
+                  <button className="tree-toggle" title="Open details"
+                          style={{ justifySelf: "end", width: 26, height: 26, color: "var(--ink-3)" }}
+                          onClick={(e) => { e.stopPropagation(); onOpenPart(bom.item_id); }}>
+                    <Icon name="chevR" size={13} />
+                  </button>
+                </div>
+              </div>
+
+              {open && rows.length === 0 && (
+                <div style={{ padding: "10px 34px", fontSize: 12.5, color: "var(--ink-3)" }}>
+                  Nothing here{filtering ? " matches the filters" : ""}.
+                </div>
+              )}
+
+              {open && rows.map((r) => (
+                <div key={r.item_id} className={`tree-row ${focus === r.item_id ? "on" : ""}`}
+                     style={{ "--indent": "34px", "--tint": "rgba(28,27,26,0.014)" }}
+                     title="Open details"
+                     onClick={() => onOpenPart(r.item_id)}>
+                  <div className="tree-name inert">
+                    <span className="num">{r.item_id}</span>
+                    <span className={`lbl ${r.is_leaf ? "" : "assembly"}`}>{r.item_name}</span>
+                    {!r.is_leaf && <Pill kind="warm">asm</Pill>}
+                  </div>
+                  <div className="tree-data flat">
+                    <div className="qty">× {r.count.toLocaleString()}</div>
+                    <div className={`cost ${r.unit_cost == null ? "missing" : ""}`}
+                         title={r.is_leaf ? "decided unit cost" : "this assembly's own process cost per build"}>
+                      {r.unit_cost != null ? fmtEURcompact(r.unit_cost) : "—"}
+                    </div>
+                    <div className={`cost ${r.cost === 0 ? "missing" : ""}`}
+                         title={r.unit_cost != null ? `${fmtEURcompact(r.unit_cost)} x ${r.count.toLocaleString()}` : undefined}>
+                      {r.cost > 0 ? fmtEURcompact(r.cost) : "—"}
+                    </div>
+                    <div className="qty">{r.share > 0 ? `${(r.share * 100).toFixed(1)}%` : "—"}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                      <div className="cov-bar" style={{ width: 38 }}>
+                        <div className="filled" style={{ width: `${r.coverage * 100}%` }} />
+                      </div>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>
+                        {Math.round(r.coverage * 100)}%
+                      </span>
+                    </div>
+                    <div style={{ textAlign: "right" }}><ModulePill code={r.module_code} /></div>
+                    <button className="tree-toggle" title="Open details"
+                            style={{ justifySelf: "end", width: 26, height: 26, color: "var(--ink-3)" }}
+                            onClick={(e) => { e.stopPropagation(); onOpenPart(r.item_id); }}>
+                      <Icon name="chevR" size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {/* The root's own assembly labour has no row — the root is the thing being
+                  flattened — so it is stated here rather than quietly missing from the sum. */}
+              {open && bom.own_assembly_cost > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10,
+                              padding: "8px 34px", borderBottom: "1px solid var(--hair-faint)",
+                              fontSize: 12, color: "var(--ink-3)" }}>
+                  <span>plus the final assembly of {bom.item_id} itself</span>
+                  <span style={{ fontFamily: "var(--font-mono)" }}>{fmtEURcompact(bom.own_assembly_cost)}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

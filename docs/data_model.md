@@ -34,6 +34,9 @@ trail. Soft-delete = a `remove` entry, not a hard delete.
 ## Cost — two layers
 
 ### `cost_evidence` (0..n per part)
+`unit_cost` and `source_type` are nullable — a row may be a plain costing note ("asked
+them, waiting on a price") with a note and/or a link and no price at all. Nothing derives
+cost from this table, so a priceless row is harmless; rollups read `decided_costs` only.
 Supporting evidence: `quote | invoice | estimate_math | estimate_web | estimate_ai`,
 each with supplier, country, currency, `unit_cost`, `volume_tier`, date,
 `confidence`, optional `cost_min`/`cost_max`, note, and `attachment_url`. Optional —

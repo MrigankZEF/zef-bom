@@ -77,11 +77,12 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
       safe(api.assemblyLabor(itemId), []),
       safe(api.costTypes(), []),
       safe(api.itemLinks(itemId), []),
+      safe(api.itemUsage(itemId), { roots: [], total_count: 0, shared: false }),
     ])
-      .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes, links]) => {
+      .then(([item, r1, r100, r10k, parents, node, decided, evidence, history, labor, costTypes, links, usage]) => {
         const rollups = { 1: r1, 100: r100, 10000: r10k };
         setActionError(null);   // a successful reload means the last action went through
-        setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes, links });
+        setD({ item, rollups, rollup: r100, parents, node, decided, evidence, history, labor, costTypes, links, usage });
         setForm({ ...item, materials: item.materials || (item.material ? [item.material] : []) });
       })
       .catch((e) => setLoadError(e.message));
@@ -91,7 +92,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   if (loadError) return <Shell><p className="err" style={{ padding: 24 }}>{loadError}</p></Shell>;
   if (!d) return <Shell><p className="muted" style={{ padding: 24 }}>Loading…</p></Shell>;
 
-  const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes, links } = d;
+  const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes, links, usage } = d;
   const isAssembly = item.item_type === "assembly";
   const isLeaf = !node.has_children;
   const set = (k, v) => { setSaved(false); setForm((f) => ({ ...f, [k]: v })); };
@@ -100,7 +101,7 @@ export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const saveDetails = async () => {
     const patch = { change_reason: reason || undefined };
     const fields = ["item_name", "weight_grams", "supplier", "supplier_country",
-      "supplier_part_number", "lead_time_weeks", "drawing_url", "comment"];
+      "supplier_part_number", "lead_time_weeks", "comment"];
     let dirty = false;
     for (const k of fields) {
       let v = form[k];
@@ -326,9 +327,7 @@ Create this copy anyway? It gets its own new code.`)) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn ghost sm" title="Copy this item into the catalog" onClick={() => copyItem()} disabled={busy}><Icon name="box" size={13} /></button>
-          <button className="btn ghost sm danger" title="Archive (soft-delete)" onClick={archive} disabled={busy}><Icon name="alert" size={13} /></button>
-          <button className="btn ghost sm" onClick={onClose}><Icon name="close" /></button>
+          <button className="btn ghost sm" title="Close" onClick={onClose}><Icon name="close" /></button>
         </div>
       </div>
 
@@ -392,15 +391,20 @@ Create this copy anyway? It gets its own new code.`)) {
 
         {tab === "edit" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} />
+            {/* The three tier figures are a header, not a fold-out: they are what you check
+                while editing everything below them. Every card under here collapses, and
+                Item data is the one that starts open. */}
+            <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} usage={usage} />
+
+            {!isLeaf && <AssemblyCostWarnings itemId={itemId} rollups={rollups} decided={decided}
+              reload={() => { load(); onChanged?.(); }} setError={setError} />}
 
             {!isLeaf && (
-              <AssemblyCostCards itemId={itemId} item={item} rollups={rollups} decided={decided}
-                labor={labor} costTypes={costTypes}
+              <AssemblyCostCard itemId={itemId} item={item} labor={labor} costTypes={costTypes}
                 reload={() => { load(); onChanged?.(); }} setError={setError} />
             )}
 
-            <Accordion title="Item data" meta="fill in item data" defaultOpen>
+            <Accordion title="Item data" meta="name, fields, links" defaultOpen>
               <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14, paddingTop: 14 }}>
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Name"><input className="input" value={form.item_name ?? ""} onChange={(e) => set("item_name", e.target.value)} /></Field></div>
                 <div style={{ gridColumn: "1 / -1" }}>
@@ -432,7 +436,8 @@ Create this copy anyway? It gets its own new code.`)) {
                     <Field label="Lead time (wk)"><NumInput value={form.lead_time_weeks} onChange={(v) => set("lead_time_weeks", v)} /></Field>
                   </>
                 )}
-                <div style={{ gridColumn: "1 / -1" }}><Field label="Drawing / CAD URL"><input className="input mono" value={form.drawing_url ?? ""} placeholder="https://…" onChange={(e) => set("drawing_url", e.target.value)} /></Field></div>
+                {/* A drawing or CAD address is just another link, so it lives in the list
+                    below with the supplier and shop ones instead of having its own field. */}
                 <div style={{ gridColumn: "1 / -1" }}><Field label="Notes"><textarea className="input" style={{ height: 56, padding: 8 }} value={form.comment ?? ""} onChange={(e) => set("comment", e.target.value)} /></Field></div>
                 <div style={{ gridColumn: "1 / -1" }}>
                   <LinksEditor itemId={itemId} links={links}
@@ -446,83 +451,99 @@ Create this copy anyway? It gets its own new code.`)) {
               </div>
             </Accordion>
 
-            {/* A leaf carries its own price; an assembly is costed from its contents, so what
-                follows the item data differs between the two. */}
+            {/* A leaf carries its own price; an assembly is costed from its contents. */}
             {isLeaf && (
-              <DecidedCostCard itemId={itemId} decided={decided} totalQty={totalQty}
+              <UnitCostCard itemId={itemId} decided={decided} evidence={evidence} totalQty={totalQty}
                 reload={() => { load(); onChanged?.(); }} setError={setError} />
             )}
 
-            <CostEvidenceCard itemId={itemId} evidence={evidence}
-              reload={() => { load(); onChanged?.(); }} setError={setError} />
-
             {node.children.length > 0 && (
-              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-                <div className="card-head" style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <span className="card-title" style={{ flex: 1 }}>Contents · {node.children.length}</span>
-                  {!item.archived && (editQty ? (
-                    <>
-                      <button className="btn ghost sm" onClick={cancelQty} disabled={busy}>Cancel</button>
-                      <button className="btn sm" onClick={saveQty} disabled={busy || qtyEdits().length === 0}>
-                        <Icon name="check" size={11} />
-                        {busy ? " Saving…" : qtyEdits().length ? ` Save ${qtyEdits().length} change${qtyEdits().length > 1 ? "s" : ""}` : " Save"}
-                      </button>
-                    </>
-                  ) : (
-                    <button className="btn ghost sm" onClick={() => setEditQty(true)} title="Change how many of each item this assembly holds">
-                      Edit quantities
-                    </button>
+              <Accordion title={`Contents · ${node.children.length}`} meta="quantities, components">
+                <div style={{ paddingTop: 12 }}>
+                  {!item.archived && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      {editQty ? (
+                        <>
+                          <button className="btn ghost sm" onClick={cancelQty} disabled={busy}>Cancel</button>
+                          <button className="btn sm" onClick={saveQty} disabled={busy || qtyEdits().length === 0}>
+                            <Icon name="check" size={11} />
+                            {busy ? " Saving…" : qtyEdits().length ? ` Save ${qtyEdits().length} change${qtyEdits().length > 1 ? "s" : ""}` : " Save"}
+                          </button>
+                          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                            Nothing is written until you press Save. Cancel discards every change.
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <button className="btn ghost sm" onClick={() => setEditQty(true)} title="Change how many of each item this assembly holds">
+                            Edit quantities
+                          </button>
+                          <button className="btn ghost sm" onClick={() => setAddingChild(true)} title="Put another item inside this assembly">
+                            + Add component
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {addingChild && !editQty && (
+                    <div style={{ marginBottom: 10 }}>
+                      <AddChildPanel
+                        parentId={itemId}
+                        onAdded={(r) => { setAddingChild(false); onChanged?.(); if (r.parent_id !== itemId) onOpenPart(r.parent_id); else load(); }}
+                        onCancel={() => setAddingChild(false)}
+                        setError={setError}
+                      />
+                    </div>
+                  )}
+                  {node.children.map((c) => (
+                    <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px minmax(0, 1fr) 78px 80px 28px", gap: 10, padding: "8px 0", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, background: editQty && qtyChanged(c) ? "var(--accent-soft)" : undefined }}>
+                      <span className="mono" style={{ fontSize: 12, cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_id}</span>
+                      <span style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.item_name} onClick={() => onOpenPart(c.item_id)}>{c.item_name}</span>
+                      {editQty ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>×</span>
+                          <NumInput
+                            value={qtyRaw(c)}
+                            onChange={(v) => setQtyDraft((q) => ({ ...q, [c.item_id]: v }))}
+                            onKeyDown={(e) => { if (e.key === "Escape") cancelQty(); }}
+                            title={`How many ${c.item_id} sit in ${itemId} (was ${c.quantity})`}
+                            style={{ width: 54, textAlign: "right", padding: "3px 6px", fontSize: 12,
+                                     borderColor: qtyBad(c) ? "var(--accent)" : undefined }}
+                          />
+                        </span>
+                      ) : (
+                        <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {c.quantity}</span>
+                      )}
+                      <span style={{ textAlign: "right" }}><ModulePill code={c.module_code} /></span>
+                      {editQty
+                        ? <span />
+                        : <button className="btn ghost sm danger" title="Remove from this assembly" onClick={() => removeChild(c.item_id)}><Icon name="close" size={11} /></button>}
+                    </div>
                   ))}
                 </div>
-                {editQty && (
-                  <div style={{ padding: "0 18px 10px", fontSize: 11.5, color: "var(--ink-3)" }}>
-                    Nothing is written until you press Save. Cancel discards every change.
-                  </div>
-                )}
-                {node.children.map((c) => (
-                  <div key={c.item_id} style={{ display: "grid", gridTemplateColumns: "90px minmax(0, 1fr) 78px 80px 28px", gap: 10, padding: "8px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, background: editQty && qtyChanged(c) ? "var(--accent-soft)" : undefined }}>
-                    <span className="mono" style={{ fontSize: 12, cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_id}</span>
-                    <span style={{ cursor: "pointer" }} onClick={() => onOpenPart(c.item_id)}>{c.item_name}</span>
-                    {editQty ? (
-                      <span style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-4)" }}>×</span>
-                        <NumInput
-                          value={qtyRaw(c)}
-                          onChange={(v) => setQtyDraft((q) => ({ ...q, [c.item_id]: v }))}
-                          onKeyDown={(e) => { if (e.key === "Escape") cancelQty(); }}
-                          title={`How many ${c.item_id} sit in ${itemId} (was ${c.quantity})`}
-                          style={{ width: 54, textAlign: "right", padding: "3px 6px", fontSize: 12,
-                                   borderColor: qtyBad(c) ? "var(--accent)" : undefined }}
-                        />
-                      </span>
-                    ) : (
-                      <span style={{ fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-3)" }}>× {c.quantity}</span>
-                    )}
-                    <span style={{ textAlign: "right" }}><ModulePill code={c.module_code} /></span>
-                    {editQty
-                      ? <span />
-                      : <button className="btn ghost sm danger" title="Remove from this assembly" onClick={() => removeChild(c.item_id)}><Icon name="close" size={11} /></button>}
-                  </div>
-                ))}
-              </div>
+              </Accordion>
             )}
 
-            {!item.archived && (addingChild ? (
+            <FilesTab itemId={itemId} thumbnailFileId={item.thumbnail_file_id}
+              onThumbnailChanged={() => { load(); onChanged?.(); }} setError={setError} />
+
+            <AdvancedOptions
+              itemId={itemId} item={item} isAssembly={isAssembly} parents={parents} busy={busy}
+              changeCode={changeCode} setTopLevel={setTopLevel} exportBom={exportBom}
+              copyItem={copyItem} archive={archive} restore={restore}
+              /* An item with contents gets its add-component button in the Contents card;
+                 a leaf has no such card, so its one lives here. */
+              addComponent={node.children.length === 0 ? () => setAddingChild(true) : null}
+            />
+
+            {addingChild && node.children.length === 0 && (
               <AddChildPanel
                 parentId={itemId}
                 onAdded={(r) => { setAddingChild(false); onChanged?.(); if (r.parent_id !== itemId) onOpenPart(r.parent_id); else load(); }}
                 onCancel={() => setAddingChild(false)}
                 setError={setError}
               />
-            ) : (
-              <button className="btn ghost sm" onClick={() => setAddingChild(true)} style={{ alignSelf: "flex-start" }}>+ Add component</button>
-            ))}
-
-            <FilesTab itemId={itemId} />
-
-            <AdvancedOptions
-              itemId={itemId} item={item} isAssembly={isAssembly} parents={parents} busy={busy}
-              changeCode={changeCode} setTopLevel={setTopLevel} exportBom={exportBom} />
+            )}
           </div>
         )}
 
@@ -578,6 +599,30 @@ function extUrl(u) {
   if (!s) return s;
   if (SAFE_SCHEME.test(s) || s.startsWith("//")) return s; // already an http(s)/mailto address
   return `https://${s}`;
+}
+
+// The pinned image, fetched as a blob because the session token can't ride on an <img src>.
+// Renders nothing at all when the item has no thumbnail, so the figures grid keeps its
+// original layout.
+function Thumbnail({ itemId, fileId, size = 96 }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    if (!fileId) { setUrl(null); return undefined; }
+    let dead = false;
+    let objectUrl = null;
+    api.thumbnailBlob(itemId).then((blob) => {
+      if (dead || !blob) return;
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    }).catch(() => {});
+    return () => { dead = true; if (objectUrl) URL.revokeObjectURL(objectUrl); setUrl(null); };
+  }, [itemId, fileId]);
+  if (!fileId || !url) return null;
+  return (
+    <img src={url} alt="" title="Pinned image — change it under Attachments in the Edit tab"
+      style={{ width: size, height: size, objectFit: "cover", borderRadius: 4,
+               border: "1px solid var(--hair)", background: "var(--warm-3)", flex: "0 0 auto" }} />
+  );
 }
 
 // One outward link. The URL is shown as far as it fits and cut with an ellipsis — a supplier
@@ -652,7 +697,9 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) 
           <span className="card-meta">pcs</span>
         </span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <Thumbnail itemId={item.item_id} fileId={item.thumbnail_file_id} />
+        <div style={{ flex: 1, minWidth: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
         {isAssembly ? (
           <>
             <Readout label={`Cost @ ${tierLabel(tier)} pcs`} value={rollup.cost > 0 ? fmtEURcompact(rollup.cost) : "—"} sub={rng ? `${rng} · ${fmtPct(rollup.coverage)} costed` : `${fmtPct(rollup.coverage)} costed · ${rollup.total} leaves`} />
@@ -668,12 +715,12 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) 
             <Readout label="Used in" value={parents.length} sub={parents.length ? "assemblies" : "top-level"} />
           </>
         )}
+        </div>
       </div>
 
-      {(item.drawing_url || item.drive_folder_url || item.supplier || item.supplier_part_number
+      {(item.drive_folder_url || item.supplier || item.supplier_part_number
         || (links || []).length || item.comment) && (
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--hair-faint)", display: "grid", gap: 10 }}>
-          {item.drawing_url && <LinkRow label="Drawing / CAD" url={item.drawing_url} />}
           {item.drive_folder_url && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
               <span className="label" style={{ minWidth: 96 }}>Drive folder</span>
@@ -880,7 +927,7 @@ function MovePicker({ itemId, fromParent, onCancel, onMoved, setError }) {
   );
 }
 
-function FilesTab({ itemId }) {
+function FilesTab({ itemId, thumbnailFileId, onThumbnailChanged, setError: setDrawerError }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -910,36 +957,61 @@ function FilesTab({ itemId }) {
     if (failed.length) setError(`${failed.length}/${files.length} failed: ${failed.slice(0, 4).join(", ")}${failed.length > 4 ? "…" : ""}`);
     load();
   };
+  const pin = async (fileId) => {
+    setBusy(true);
+    try { await api.setThumbnail(itemId, fileId); onThumbnailChanged?.(); }
+    catch (e) { (setDrawerError || setError)(e.message); } finally { setBusy(false); }
+  };
   const upload = () => uploadBatch(fileRef, false);
   const uploadFolder = () => uploadBatch(folderRef, true);
 
-  if (error) return <p className="err">{error}</p>;
-  if (!data) return <p className="muted">Loading…</p>;
+  if (error) {
+    return (
+      <Accordion title="Attachments" meta="unavailable">
+        <p className="err" style={{ paddingTop: 12 }}>{error}</p>
+      </Accordion>
+    );
+  }
+  if (!data) return <Accordion title="Attachments" meta="loading…"><p className="muted" style={{ paddingTop: 12 }}>Loading…</p></Accordion>;
   if (!data.configured) {
     return (
-      <div className="card">
-        <div className="card-head"><span className="card-title">Attachments</span></div>
-        <p className="muted" style={{ fontSize: 13 }}>
+      <Accordion title="Attachments" meta="Drive not connected">
+        <p className="muted" style={{ fontSize: 13, paddingTop: 12 }}>
           Google Drive isn't connected yet. Once the service account + <em>ZEF BOM Attachments</em> folder are configured,
           this part gets its own Drive folder here for invoices, quotes, datasheets and drawings.
         </p>
-      </div>
+      </Accordion>
     );
   }
   return (
-    <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-      <div className="card-head" style={{ padding: "14px 18px 10px" }}>
-        <span className="card-title">Attachments · {data.files.length}</span>
-        {data.folder_url && <a className="card-meta" href={data.folder_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Open folder ↗</a>}
-      </div>
-      {data.files.map((f) => (
-        <a key={f.id} href={f.url} target="_blank" rel="noreferrer" style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, padding: "9px 18px", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13, textDecoration: "none", color: "var(--ink)" }}>
-          <span><Icon name="box" size={12} /> {f.name}</span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{(f.modified || "").slice(0, 10)}</span>
-        </a>
-      ))}
-      {data.files.length === 0 && <div style={{ padding: 16, color: "var(--ink-3)", fontSize: 13 }}>No files yet.</div>}
-      <div style={{ padding: 14, borderTop: "1px solid var(--hair)", display: "grid", gap: 10 }}>
+    <Accordion title={`Attachments · ${data.files.length}`} meta="files · thumbnail">
+      <div style={{ paddingTop: 6 }}>
+      {data.folder_url && (
+        <div style={{ display: "flex", justifyContent: "flex-end", padding: "4px 0" }}>
+          <a className="card-meta" href={data.folder_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Open folder ↗</a>
+        </div>
+      )}
+      {data.files.map((f) => {
+        const pinned = thumbnailFileId === f.id;
+        return (
+          <div key={f.id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 10, padding: "9px 0", borderTop: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 13 }}>
+            <a href={f.url} target="_blank" rel="noreferrer" title={f.name}
+              style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "none", color: "var(--ink)" }}>
+              <Icon name="box" size={12} /> {f.name}
+            </a>
+            {/* Only a file Drive can render has a thumbnail to pin. */}
+            {f.has_thumbnail
+              ? <button className="btn ghost sm" disabled={busy} onClick={() => pin(pinned ? null : f.id)}
+                        title={pinned ? "Stop using this as the item's picture" : "Show this image in the drawer"}>
+                  {pinned ? "★ thumbnail" : "set as thumbnail"}
+                </button>
+              : <span />}
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{(f.modified || "").slice(0, 10)}</span>
+          </div>
+        );
+      })}
+      {data.files.length === 0 && <div style={{ padding: "12px 0", color: "var(--ink-3)", fontSize: 13 }}>No files yet.</div>}
+      <div style={{ padding: "12px 0 0", borderTop: "1px solid var(--hair)", display: "grid", gap: 10 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input ref={fileRef} type="file" multiple className="input" style={{ paddingTop: 6, flex: 1 }} />
           <button className="btn sm" onClick={upload} disabled={busy} style={{ whiteSpace: "nowrap" }}><Icon name="check" /> Upload file(s)</button>
@@ -951,14 +1023,15 @@ function FilesTab({ itemId }) {
         </div>
         {busy && <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{progress || "Uploading…"}</span>}
       </div>
-    </div>
+      </div>
+    </Accordion>
   );
 }
 
 // The three volume tiers side by side, read-only — the figure the cards below it edit.
 // A leaf shows its own decided unit cost; an assembly shows the rolled-up cost split into
 // the parts beneath it plus its own assembly labour.
-function CostOverviewCard({ isLeaf, rollups, decided }) {
+function CostOverviewCard({ isLeaf, rollups, decided, usage }) {
   const byTier = Object.fromEntries(decided.map((x) => [x.volume_tier, x]));
   return (
     <div className="card">
@@ -972,6 +1045,10 @@ function CostOverviewCard({ isLeaf, rollups, decided }) {
           const dc = byTier[t];
           const unit = dc?.unit_cost_eur != null ? Number(dc.unit_cost_eur) : null;
           const value = isLeaf ? unit : (r.cost > 0 ? r.cost : null);
+          // What this part costs the BOM at this tier. Only shown when a single top-level
+          // BOM needs it — across two products no one total is the right answer.
+          const count = usage && !usage.shared ? usage.total_count : null;
+          const extended = unit != null && count ? unit * count : null;
           return (
             <div key={t} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span className="label">@ {tierLabel(t)} pcs</span>
@@ -983,6 +1060,12 @@ function CostOverviewCard({ isLeaf, rollups, decided }) {
                   ? (unit == null ? "no decided cost" : "decided unit cost")
                   : `parts ${fmtEURcompact(r.parts_cost || 0)} + assembly ${fmtEURcompact(r.assembly_cost || 0)}`}
               </span>
+              {isLeaf && extended != null && (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}
+                      title={`${usage.roots[0]?.root} needs ${count.toLocaleString()} of these`}>
+                  × {count.toLocaleString()} = {fmtEURcompact(extended)}
+                </span>
+              )}
             </div>
           );
         })}
@@ -992,13 +1075,66 @@ function CostOverviewCard({ isLeaf, rollups, decided }) {
 }
 
 // Everything that prices an assembly: the warnings, the cost type and the time per tier.
-function AssemblyCostCards({ itemId, item, rollups, decided, labor, costTypes, reload, setError }) {
+// Two contradictions worth interrupting for. Deliberately NOT collapsible: a warning nobody
+// can see is not a warning.
+function AssemblyCostWarnings({ itemId, rollups, decided, reload, setError }) {
+  const [busy, setBusy] = useState(false);
+  const dropDecided = async (vt) => {
+    if (!window.confirm(`Remove the decided cost at @${tierLabel(vt)} from ${itemId}? The rollup already ignores it.`)) return;
+    setBusy(true);
+    try { await api.deleteDecidedCost(itemId, vt); reload(); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  // A descendant carrying its own assembly cost under an ancestor marked as covering it.
+  const conflicts = [...new Set(COST_TIERS.flatMap((t) => rollups[t]?.covered_conflict || []))];
+  if (!conflicts.length && !decided.length) return null;
+  return (
+    <>
+      {conflicts.length > 0 && (
+        <div className="card" style={{ borderColor: "var(--accent)" }}>
+          <div className="card-head"><span className="card-title">Conflicting assembly costs</span></div>
+          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: 0 }}>
+            {conflicts.join(", ")} {conflicts.length === 1 ? "carries" : "carry"} an assembly
+            cost, but an assembly above {conflicts.length === 1 ? "it is" : "them are"} marked
+            as already covering the work below. One of the two is wrong — either untick the
+            cover, or clear the assembly cost below it.
+          </p>
+        </div>
+      )}
+      {decided.length > 0 && (
+        <div className="card" style={{ borderColor: "var(--accent)" }}>
+          <div className="card-head"><span className="card-title">Unused decided cost</span></div>
+          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "0 0 10px" }}>
+            A decided cost is stored on this item but <strong>ignored</strong> — an assembly is
+            costed from its contents plus assembly labour, so only a part with no contents
+            uses one. It was probably set before this item gained contents.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {decided.map((dc) => (
+              <div key={dc.volume_tier} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                <span style={{ fontFamily: "var(--font-mono)", color: "var(--ink-3)" }}>@ {tierLabel(dc.volume_tier)}</span>
+                <span style={{ fontFamily: "var(--font-mono)", flex: 1 }}>{fmtEURcompact(dc.unit_cost_eur)}</span>
+                <button className="btn ghost sm danger" disabled={busy}
+                        onClick={() => dropDecided(dc.volume_tier)}>remove it</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// What an assembly costs to put together: the rate it is charged at, and the minutes per
+// tier. One card, because a time without a rate prices nothing.
+function AssemblyCostCard({ itemId, item, labor, costTypes, reload, setError }) {
   const laborByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l]));
   const [tdraft, setTdraft] = useState({});
   const [adding, setAdding] = useState(false);
   const [ctName, setCtName] = useState("");
   const [ctRate, setCtRate] = useState("");
   const [busy, setBusy] = useState(false);
+  const rate = (costTypes || []).find((c) => c.id === item.cost_type_id)?.meta?.rate_eur_h;
 
   const setCostType = async (id) => {
     setBusy(true);
@@ -1025,105 +1161,70 @@ function AssemblyCostCards({ itemId, item, rollups, decided, labor, costTypes, r
       reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
-  const dropDecided = async (vt) => {
-    if (!window.confirm(`Remove the decided cost at @${tierLabel(vt)} from ${itemId}? The rollup already ignores it.`)) return;
-    setBusy(true);
-    try { await api.deleteDecidedCost(itemId, vt); reload(); }
-    catch (e) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  // A descendant carrying its own assembly cost under an ancestor marked as covering
-  // it — the two statements contradict each other.
-  const conflicts = [...new Set(COST_TIERS.flatMap((t) => rollups[t]?.covered_conflict || []))];
 
   return (
-    <>
-      {conflicts.length > 0 && (
-        <div className="card" style={{ borderColor: "var(--accent)" }}>
-          <div className="card-head"><span className="card-title">Conflicting assembly costs</span></div>
-          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: 0 }}>
-            {conflicts.join(", ")} {conflicts.length === 1 ? "carries" : "carry"} an assembly
-            cost, but an assembly above {conflicts.length === 1 ? "it is" : "them are"} marked
-            as already covering the work below. One of the two is wrong — either untick the
-            cover, or clear the assembly cost below it.
+    <Accordion title="Assembly cost" meta={rate ? `€${rate}/h · time per tier` : "cost type + time per tier"}>
+      <div style={{ paddingTop: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div>
+          <span className="input-label">Cost type</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <select className="select" value={item.cost_type_id ?? ""} onChange={(e) => setCostType(e.target.value)} disabled={busy} style={{ flex: 1 }}>
+              <option value="">— pick a cost type —</option>
+              {(costTypes || []).map((c) => <option key={c.id} value={c.id}>{c.value} (€{c.meta?.rate_eur_h}/h)</option>)}
+            </select>
+            <button className="btn ghost sm" onClick={() => setAdding((a) => !a)} disabled={busy}>+ add</button>
+          </div>
+          {adding && (
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 100px 48px", gap: 8, marginTop: 8, alignItems: "end" }}>
+              <Field label="name (e.g. machine-A)"><input className="input" value={ctName} onChange={(e) => setCtName(e.target.value)} /></Field>
+              <Field label="€/hour"><NumInput value={ctRate} onChange={setCtRate} /></Field>
+              <button className="btn sm" style={{ marginBottom: 1 }} onClick={addCostTypeInline} disabled={busy}>add</button>
+            </div>
+          )}
+          <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "8px 0 0" }}>
+            Assembly cost = time × this rate (labour, machine, …). Also editable in <strong>Admin → Reference data → Assembly cost types</strong>.
           </p>
         </div>
-      )}
 
-      {decided.length > 0 && (
-        <div className="card" style={{ borderColor: "var(--accent)" }}>
-          <div className="card-head"><span className="card-title">Unused decided cost</span></div>
-          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "0 0 10px" }}>
-            A decided cost is stored on this item but <strong>ignored</strong> — an assembly is
-            costed from its contents plus assembly labour, so only a part with no contents
-            uses one. It was probably set before this item gained contents.
-          </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {decided.map((dc) => (
-              <div key={dc.volume_tier} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
-                <span style={{ fontFamily: "var(--font-mono)", color: "var(--ink-3)" }}>@ {tierLabel(dc.volume_tier)}</span>
-                <span style={{ fontFamily: "var(--font-mono)", flex: 1 }}>{fmtEURcompact(dc.unit_cost_eur)}</span>
-                <button className="btn ghost sm danger" disabled={busy}
-                        onClick={() => dropDecided(dc.volume_tier)}>remove it</button>
+        <div style={{ borderTop: "1px solid var(--hair-faint)", paddingTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+            <span className="input-label" style={{ margin: 0 }}>Assembly time — minutes</span>
+            <span className="card-meta">min · likely · max</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {COST_TIERS.map((t) => (
+              <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 44px", gap: 8, alignItems: "end" }}>
+                <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>{t.toLocaleString()}</span></Field>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
+                  <Field label="min"><NumInput value={tval(t, "time_min")} onChange={(v) => setT(t, "time_min", v)} /></Field>
+                  <Field label="likely*"><NumInput value={tval(t, "time_likely")} onChange={(v) => setT(t, "time_likely", v)} /></Field>
+                  <Field label="max"><NumInput value={tval(t, "time_max")} onChange={(v) => setT(t, "time_max", v)} /></Field>
+                </div>
+                <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveLabor(t)} disabled={busy}>set</button>
+                <label style={{ gridColumn: "2 / 4", display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--ink-3)", cursor: "pointer", marginTop: -4 }}
+                       title="For an outsourced or bought-in assembly, where one quoted cost already includes the work on everything below. Sub-assemblies below stop counting as missing an assembly cost.">
+                  <input type="checkbox" checked={!!tval(t, "covers_subassemblies")}
+                         onChange={(e) => { setT(t, "covers_subassemblies", e.target.checked); }} />
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    Assembly cost covers all sub-assemblies
+                  </span>
+                </label>
               </div>
             ))}
           </div>
+          <p style={{ fontSize: 11, color: "var(--ink-3)", margin: "10px 0 0" }}>
+            Tick per tier, then press <strong>set</strong> — sourcing can differ by volume
+            (built in house at @1, outsourced at @10k).
+          </p>
         </div>
-      )}
-
-      <div className="card">
-        <div className="card-head"><span className="card-title">Assembly cost type</span></div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <select className="select" value={item.cost_type_id ?? ""} onChange={(e) => setCostType(e.target.value)} disabled={busy} style={{ flex: 1 }}>
-            <option value="">— pick a cost type —</option>
-            {(costTypes || []).map((c) => <option key={c.id} value={c.id}>{c.value} (€{c.meta?.rate_eur_h}/h)</option>)}
-          </select>
-          <button className="btn ghost sm" onClick={() => setAdding((a) => !a)} disabled={busy}>+ add</button>
-        </div>
-        {adding && (
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 100px 48px", gap: 8, marginTop: 8, alignItems: "end" }}>
-            <Field label="name (e.g. machine-A)"><input className="input" value={ctName} onChange={(e) => setCtName(e.target.value)} /></Field>
-            <Field label="€/hour"><NumInput value={ctRate} onChange={setCtRate} /></Field>
-            <button className="btn sm" style={{ marginBottom: 1 }} onClick={addCostTypeInline} disabled={busy}>add</button>
-          </div>
-        )}
-        <p style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 8 }}>
-          Assembly cost = time × this rate (labour, machine, …). Also editable in <strong>Admin → Reference data → Assembly cost types</strong>.
-        </p>
       </div>
-
-      <div className="card">
-        <div className="card-head"><span className="card-title">Assembly time — minutes</span><span className="card-meta">min · likely · max</span></div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {COST_TIERS.map((t) => (
-            <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 44px", gap: 8, alignItems: "end" }}>
-              <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>{t.toLocaleString()}</span></Field>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
-                <Field label="min"><NumInput value={tval(t, "time_min")} onChange={(v) => setT(t, "time_min", v)} /></Field>
-                <Field label="likely*"><NumInput value={tval(t, "time_likely")} onChange={(v) => setT(t, "time_likely", v)} /></Field>
-                <Field label="max"><NumInput value={tval(t, "time_max")} onChange={(v) => setT(t, "time_max", v)} /></Field>
-              </div>
-              <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveLabor(t)} disabled={busy}>set</button>
-              <label style={{ gridColumn: "2 / 4", display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--ink-3)", cursor: "pointer", marginTop: -4 }}
-                     title="For an outsourced or bought-in assembly, where one quoted cost already includes the work on everything below. Sub-assemblies below stop counting as missing an assembly cost.">
-                <input type="checkbox" checked={!!tval(t, "covers_subassemblies")}
-                       onChange={(e) => { setT(t, "covers_subassemblies", e.target.checked); }} />
-                Assembly cost covers all sub-assemblies
-              </label>
-            </div>
-          ))}
-        </div>
-        <p style={{ fontSize: 11, color: "var(--ink-3)", margin: "10px 0 0" }}>
-          Tick per tier, then press <strong>set</strong> — sourcing can differ by volume
-          (built in house at @1, outsourced at @10k).
-        </p>
-      </div>
-    </>
+    </Accordion>
   );
 }
 
-// A leaf part's own price per volume tier.
-function DecidedCostCard({ itemId, decided, totalQty, reload, setError }) {
+// A leaf part's price and the evidence behind it, in one card: the number you commit to and
+// the quotes that justify it are the same conversation.
+function UnitCostCard({ itemId, decided, evidence, totalQty, reload, setError }) {
   const byTier = Object.fromEntries(decided.map((x) => [x.volume_tier, x]));
   const [draft, setDraft] = useState({});
   const [busy, setBusy] = useState(false);
@@ -1145,87 +1246,132 @@ function DecidedCostCard({ itemId, decided, totalQty, reload, setError }) {
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
-  return (
-    <div className="card">
-      <div className="card-head"><span className="card-title">Decided unit cost — € per piece</span><span className="card-meta">min · most-likely · max</span></div>
-      <p style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 12 }}>
-        Price of <strong>one piece</strong> (qty is multiplied automatically). <strong>Most-likely</strong> is
-        required; <strong>min/max</strong> are optional and give a cost range. The tier is the production-volume scenario.
-      </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {COST_TIERS.map((t) => (
-          <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 70px 44px", gap: 8, alignItems: "end" }}>
-            <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>~{(totalQty * t).toLocaleString()}</span></Field>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
-              <Field label="min €"><NumInput value={dval(t, "cost_min", "")} onChange={(v) => setD(t, "cost_min", v)} /></Field>
-              <Field label="likely €*"><NumInput value={dval(t, "unit_cost_eur", "")} onChange={(v) => setD(t, "unit_cost_eur", v)} /></Field>
-              <Field label="max €"><NumInput value={dval(t, "cost_max", "")} onChange={(v) => setD(t, "cost_max", v)} /></Field>
-            </div>
-            <Field label="Sourcing">
-              <select className="select" value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}
-                      title="How we get this part at this volume. It can differ by tier — a prototype made in house at @1 may be bought at @10k.">
-                <option value="">—</option>
-                <option value="buy">buy (off the shelf)</option>
-                <option value="made-to-order">made to order (our specs)</option>
-                <option value="make">make in house</option>
-              </select>
-            </Field>
-            <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveTier(t)} disabled={busy}>set</button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Quotes, invoices and estimates behind the decided cost. Kept for assemblies too — a
-// bought-in assembly has quotes like any part.
-function CostEvidenceCard({ itemId, evidence, reload, setError }) {
-  const [busy, setBusy] = useState(false);
-  const [ev, setEv] = useState({ source_type: "quote", unit_cost: "", volume_tier: 100, supplier_name: "", confidence: "high", note: "" });
+  const blank = { source_type: "", unit_cost: "", volume_tier: 100, supplier_name: "", confidence: "high", note: "", attachment_url: "" };
+  const [ev, setEv] = useState(blank);
+  // Costing produces two kinds of row: a quote with a price, and a plain note ("asked them,
+  // waiting on a price"). Nothing here is required on its own — one of the three is.
+  const hasSomething = !!(ev.unit_cost || ev.note.trim() || ev.attachment_url.trim());
   const addEvidence = async () => {
-    if (!ev.unit_cost) return;
+    if (!hasSomething) return;
     setBusy(true);
     try {
-      await api.addCostEvidence(itemId, { ...ev, unit_cost: toNum(ev.unit_cost), volume_tier: toNum(ev.volume_tier) });
-      setEv({ ...ev, unit_cost: "", supplier_name: "", note: "" }); reload();
+      await api.addCostEvidence(itemId, {
+        ...ev,
+        source_type: ev.source_type || null,
+        unit_cost: ev.unit_cost === "" ? null : toNum(ev.unit_cost),
+        volume_tier: toNum(ev.volume_tier) ?? 100,
+        supplier_name: ev.supplier_name || null,
+        note: ev.note.trim() || null,
+        attachment_url: ev.attachment_url.trim() || null,
+      });
+      setEv({ ...blank, volume_tier: ev.volume_tier, source_type: ev.source_type }); reload();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
+
   return (
-    <Accordion title="Cost evidence" meta={`${evidence.length} on file`} defaultOpen={evidence.length > 0}>
-      <div style={{ paddingTop: 12 }}>
-        {evidence.map((q) => (
-          <div key={q.id} style={{ borderTop: "1px solid var(--hair-faint)", padding: "8px 0", fontSize: 12.5 }}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <Pill kind={q.source_type === "invoice" ? "ok" : q.source_type?.startsWith("estimate") ? "warm" : "info"}>{(q.source_type || "").replace("estimate_", "est·")}</Pill>
-              <span style={{ flex: 1 }}>{q.supplier_name || <em style={{ color: "var(--ink-3)" }}>—</em>}</span>
-              <span className="mono">{q.currency} {q.unit_cost} @{q.volume_tier}</span>
-              <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
+    <Accordion title="Unit cost" meta={`€ per piece · ${evidence.length} evidence`}>
+      <div style={{ paddingTop: 14 }}>
+        <p style={{ fontSize: 12, color: "var(--ink-3)", margin: "0 0 12px" }}>
+          Price of <strong>one piece</strong> (qty is multiplied automatically). <strong>Most-likely</strong> is
+          required; <strong>min/max</strong> are optional and give a cost range. The tier is the production-volume scenario.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {COST_TIERS.map((t) => (
+            <div key={t} style={{ display: "grid", gridTemplateColumns: "60px minmax(0, 1fr) 78px 44px", gap: 8, alignItems: "end" }}>
+              <Field label={`@ ${tierLabel(t)} pcs`}><span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>~{(totalQty * t).toLocaleString()}</span></Field>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 5 }}>
+                <Field label="min €"><NumInput value={dval(t, "cost_min", "")} onChange={(v) => setD(t, "cost_min", v)} /></Field>
+                <Field label="likely €*"><NumInput value={dval(t, "unit_cost_eur", "")} onChange={(v) => setD(t, "unit_cost_eur", v)} /></Field>
+                <Field label="max €"><NumInput value={dval(t, "cost_max", "")} onChange={(v) => setD(t, "cost_max", v)} /></Field>
+              </div>
+              <Field label="Sourcing">
+                {/* The option labels are longer than any column that fits three price inputs
+                    beside them, so the closed select crops — the open list reads in full. */}
+                <select className="select" value={dval(t, "make_or_buy", "")} onChange={(e) => setD(t, "make_or_buy", e.target.value)}
+                        title="How we get this part at this volume. It can differ by tier — a prototype made in house at @1 may be bought at @10k.">
+                  <option value="">—</option>
+                  <option value="buy">buy (off the shelf)</option>
+                  <option value="made-to-order">made to order (our specs)</option>
+                  <option value="make">make in house</option>
+                </select>
+              </Field>
+              <button className="btn sm" style={{ marginBottom: 1 }} onClick={() => saveTier(t)} disabled={busy}>set</button>
             </div>
-            {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
-          </div>
-        ))}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 80px 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
-          <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
-          <Field label="Supplier"><RefSelect category="supplier" value={ev.supplier_name} onChange={(v) => setEv({ ...ev, supplier_name: v })} placeholder="—" /></Field>
-          <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
-          <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>
+          ))}
         </div>
-        <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button className="btn sm" onClick={addEvidence} disabled={busy}><Icon name="check" /> add evidence</button></div>
+
+        <div style={{ borderTop: "1px solid var(--hair-faint)", marginTop: 16, paddingTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <span className="input-label" style={{ margin: 0 }}>Evidence</span>
+            <span className="card-meta">{evidence.length} on file</span>
+          </div>
+          {evidence.map((q) => (
+            <div key={q.id} style={{ borderTop: "1px solid var(--hair-faint)", padding: "8px 0", fontSize: 12.5 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <Pill kind={q.source_type === "invoice" ? "ok" : q.source_type?.startsWith("estimate") ? "warm" : "info"}>
+                  {q.source_type ? q.source_type.replace("estimate_", "est·") : "note"}
+                </Pill>
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {q.supplier_name || <em style={{ color: "var(--ink-3)" }}>—</em>}
+                </span>
+                <span className="mono">
+                  {q.unit_cost != null ? `${q.currency} ${q.unit_cost} @${q.volume_tier}` : "—"}
+                </span>
+                <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
+              </div>
+              {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
+              {q.attachment_url && (
+                <a href={extUrl(q.attachment_url)} target="_blank" rel="noreferrer" className="mono" title={q.attachment_url}
+                  style={{ display: "block", marginTop: 3, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 11.5 }}>
+                  {q.attachment_url}
+                </a>
+              )}
+            </div>
+          ))}
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 80px 80px", gap: 8, marginTop: 12, alignItems: "end" }}>
+            <Field label="Source"><select className="select" value={ev.source_type} onChange={(e) => setEv({ ...ev, source_type: e.target.value })}><option value="">— note —</option>{SOURCES.map((s) => <option key={s}>{s}</option>)}</select></Field>
+            <Field label="Supplier"><RefSelect category="supplier" value={ev.supplier_name} onChange={(v) => setEv({ ...ev, supplier_name: v })} placeholder="—" /></Field>
+            <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
+            <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>
+          </div>
+          <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
+          <div style={{ marginTop: 8 }}><Field label="Link (quote, product page…)"><input className="input mono" value={ev.attachment_url} placeholder="https://…" onChange={(e) => setEv({ ...ev, attachment_url: e.target.value })} /></Field></div>
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 10 }}>
+            <span style={{ fontSize: 11, color: "var(--ink-3)" }}>a price, a note or a link — any one is enough</span>
+            <button className="btn sm" onClick={addEvidence} disabled={busy || !hasSomething}><Icon name="check" /> add evidence</button>
+          </div>
+        </div>
       </div>
     </Accordion>
   );
 }
 
-// Rare, structural actions — renumbering, BOM roots, export. Collapsed by default so the
-// Edit tab opens on the things people actually change every day.
-function AdvancedOptions({ itemId, item, isAssembly, parents, busy, changeCode, setTopLevel, exportBom }) {
+// Rare and structural: numbering, BOM roots, export, copying, archiving — and, for a leaf,
+// the button that gives it its first component. Collapsed, so the Edit tab opens on the
+// things people change every day and a destructive action is not one click away.
+function AdvancedOptions({ itemId, item, isAssembly, parents, busy, changeCode, setTopLevel,
+                           exportBom, copyItem, archive, restore, addComponent }) {
+  const row = { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                borderTop: "1px solid var(--hair-faint)", paddingTop: 12 };
+  const first = { ...row, borderTop: 0, paddingTop: 0 };
   return (
-    <Accordion title="Advanced options" meta="numbering · BOM root · export">
+    <Accordion title="Advanced options" meta="numbering · copy · archive · export">
       <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 14 }}>
+        {addComponent && !item.archived && (
+          <div style={first}>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div className="card-title">Add a component</div>
+              <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+                Putting something inside this part makes it an assembly — by the naming rule
+                its code changes from …P to …A.
+              </p>
+            </div>
+            <button className="btn ghost sm" onClick={addComponent} disabled={busy}>+ Add component</button>
+          </div>
+        )}
+
         {!item.archived && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={addComponent ? row : first}>
             <div style={{ flex: 1, minWidth: 220 }}>
               <div className="card-title">Item number</div>
               <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
@@ -1239,8 +1385,8 @@ function AdvancedOptions({ itemId, item, isAssembly, parents, busy, changeCode, 
         )}
 
         {isAssembly && !item.archived && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12, borderTop: "1px solid var(--hair-faint)", paddingTop: 12 }}>
-            <div style={{ flex: 1 }}>
+          <div style={row}>
+            <div style={{ flex: 1, minWidth: 220 }}>
               <div className="card-title">Top-level BOM</div>
               <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
                 {item.is_top_level
@@ -1258,13 +1404,42 @@ function AdvancedOptions({ itemId, item, isAssembly, parents, busy, changeCode, 
           </div>
         )}
 
+        <div style={row}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div className="card-title">Copy this item</div>
+            <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+              A copy lands in the catalog under a fresh number, with the fields, costs and
+              links of this one. It needs its own name.
+            </p>
+          </div>
+          <button className="btn ghost sm" onClick={() => copyItem()} disabled={busy}>
+            <Icon name="box" size={12} /> Make a copy
+          </button>
+        </div>
+
         {isAssembly && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, borderTop: "1px solid var(--hair-faint)", paddingTop: 12 }}>
+          <div style={row}>
             <span className="card-title" style={{ flex: 1 }}>Export this {item.is_top_level ? "BOM" : "assembly"}</span>
             <button className="btn ghost sm" onClick={() => exportBom("opml")} disabled={busy}><Icon name="box" size={12} /> OPML</button>
             <button className="btn ghost sm" onClick={() => exportBom("csv")} disabled={busy}><Icon name="box" size={12} /> CSV</button>
           </div>
         )}
+
+        <div style={row}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div className="card-title">{item.archived ? "Restore" : "Archive"}</div>
+            <p style={{ fontSize: 11.5, color: "var(--ink-3)", margin: "4px 0 0" }}>
+              {item.archived
+                ? "Put this item back into the active BOM."
+                : "Removes it from the BOM and keeps its data. Recoverable from the Archive."}
+            </p>
+          </div>
+          {item.archived
+            ? <button className="btn sm" onClick={restore} disabled={busy}>Restore</button>
+            : <button className="btn ghost sm danger" onClick={archive} disabled={busy}>
+                <Icon name="alert" size={12} /> Archive
+              </button>}
+        </div>
       </div>
     </Accordion>
   );

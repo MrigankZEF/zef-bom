@@ -38,6 +38,62 @@ def where_used(item_id: str, db: Session = Depends(get_db)):
     return g.where_used(item_id)
 
 
+@router.get("/flat")
+def get_flat(
+    db: Session = Depends(get_db),
+    root: str | None = Query(default=None, description="BOM root to flatten; omitted = all top-level BOMs"),
+    volume: int = Query(default=100),
+):
+    """A BOM flattened to one level: every descendant once, with the count the plant needs.
+
+    The nested tree answers "what is this made of"; this answers "how many of that part do
+    we buy". Rows come from the same graph as the tree and the treemaps, so the numbers
+    cannot drift apart.
+
+    Rows cover what is *inside* the root, so the root's own assembly labour is not one of
+    them — it comes back as `own_assembly_cost` instead. Leaf rows + assembly rows +
+    own_assembly_cost = `cost`.
+    """
+    g = BomGraph(db, volume_tier=volume)
+    if root and root not in g.items:
+        raise HTTPException(404, f"Item {root} not found")
+    roots = [g.items[root]] if root else g.roots()
+    out = []
+    for r in roots:
+        rl = g.rollup(r.item_id)
+        out.append({
+            "item_id": r.item_id,
+            "item_name": r.item_name,
+            "item_type": r.item_type,
+            "module_code": r.module_code,
+            "volume_tier": volume,
+            "cost": round(rl.cost, 2),
+            "own_assembly_cost": round(g.assembly_cost(r)[1], 2),
+            "coverage": round(rl.coverage, 4),
+            "rows": g.flat_rows(r.item_id),
+        })
+    return out if root is None else out[0]
+
+
+@router.get("/items/{item_id}/usage")
+def item_usage(item_id: str, db: Session = Depends(get_db), volume: int = Query(default=100)):
+    """Which top-level BOMs need this item, and how many of it.
+
+    `shared` means more than one BOM reaches it — then no single extended total is
+    meaningful, and the drawer says nothing rather than something wrong.
+    """
+    g = BomGraph(db, volume_tier=volume)
+    if item_id not in g.items:
+        raise HTTPException(404, f"Item {item_id} not found")
+    roots = g.roots_reaching(item_id)
+    return {
+        "item_id": item_id,
+        "roots": roots,
+        "total_count": round(sum(r["count"] for r in roots), 3),
+        "shared": len(roots) > 1,
+    }
+
+
 @router.get("/rollup")
 def get_rollup(
     db: Session = Depends(get_db),

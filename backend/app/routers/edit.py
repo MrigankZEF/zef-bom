@@ -130,7 +130,8 @@ def _merge_into(db: Session, src_id: str, dst_id: str, *, user: str) -> dict:
     src = db.get(Item, src_id)
     for col in ("item_name", "item_type", "materials", "material", "weight_grams",
                 "unit_of_measure", "supplier", "supplier_country", "supplier_part_number",
-                "lead_time_weeks", "cost_type_id", "drawing_url", "comment", "external_reference"):
+                "lead_time_weeks", "cost_type_id", "drawing_url", "thumbnail_file_id", "comment",
+                "external_reference"):
         setattr(dst, col, getattr(src, col))
     dst.updated_by = user
     db.execute(
@@ -632,13 +633,19 @@ def add_cost_evidence(
 ) -> CostEvidence:
     _get_item(db, item_id)
     data = body.model_dump(exclude={"change_reason"})
+    # A row with neither a price, a note, nor a link says nothing at all — that is a stray
+    # click on "add evidence", not a record worth keeping.
+    if data.get("unit_cost") is None and not (data.get("note") or "").strip()             and not (data.get("attachment_url") or "").strip():
+        raise HTTPException(422, "Cost evidence needs at least a price, a note or a link")
     ev = CostEvidence(item_id=item_id, created_by=user, **data)
     db.add(ev)
     db.flush()
     record_change(
         db, entity_type="cost_evidence", entity_id=item_id, change_type="create",
         field_changed="cost_evidence",
-        new_value=f"{ev.source_type} {ev.unit_cost} {ev.currency} @ {ev.volume_tier}",
+        new_value=(f"{ev.source_type or 'note'} "
+                   + (f"{ev.unit_cost} {ev.currency} @ {ev.volume_tier}" if ev.unit_cost is not None
+                      else (ev.note or ev.attachment_url or "")[:80])),
         changed_by=user, change_reason=body.change_reason,
     )
     db.commit()
@@ -655,7 +662,8 @@ def delete_cost_evidence(
         raise HTTPException(404, "Cost evidence not found")
     record_change(
         db, entity_type="cost_evidence", entity_id=item_id, change_type="remove",
-        field_changed="cost_evidence", old_value=f"{ev.source_type} {ev.unit_cost} @ {ev.volume_tier}",
+        field_changed="cost_evidence",
+        old_value=f"{ev.source_type or 'note'} {ev.unit_cost if ev.unit_cost is not None else '—'} @ {ev.volume_tier}",
         changed_by=user,
     )
     db.delete(ev)

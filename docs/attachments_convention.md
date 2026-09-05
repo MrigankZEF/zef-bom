@@ -24,6 +24,12 @@ ZEF BOM Attachments/
 - Cost evidence PDFs may additionally set `cost_evidence.attachment_url` to a specific
   file in that folder.
 - The team can also just drop files into the folder via the Drive UI.
+- One image per item can be **pinned as its thumbnail** (`items.thumbnail_file_id`), shown in
+  the drawer's Key figures card. There is no image processing: Drive already stores a
+  thumbnail for every format it can render, and the backend proxies those bytes because the
+  `thumbnailLink` Drive hands out expires within hours and only works with our credentials.
+  Pinned rather than "newest image in the folder", so a new upload never silently swaps the
+  picture.
 
 ## Config
 - `DRIVE_ATTACHMENTS_ROOT_ID` — the Drive folder ID of `ZEF BOM Attachments`.
