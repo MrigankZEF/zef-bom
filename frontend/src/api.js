@@ -59,14 +59,16 @@ export const api = {
   catalog: () => request("/catalog"),
   createCatalogItem: (body) => request("/catalog/items", { method: "POST", body: JSON.stringify(body) }),
 
-  // ── export (top-level BOM → OPML / CSV download) ──
-  exportBom: async (root, fmt) => {
+  // ── export (top-level BOM → OPML / CSV / Mermaid flow chart download) ──
+  // `filename` overrides the default when the route name is not the file extension
+  // (the assembly flow chart lives at /export/flowchart but downloads as .md).
+  exportBom: async (root, fmt, filename) => {
     const res = await fetch(`${BASE}/export/${fmt}?${new URLSearchParams({ root })}`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`Export failed: ${res.status} — ${await res.text().catch(() => "")}`);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `${root}.${fmt}`;
+    a.href = url; a.download = filename || `${root}.${fmt}`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   },

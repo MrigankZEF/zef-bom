@@ -12,7 +12,7 @@ node_modules/
 frontend/dist/
 .vite/
 
-# ─── Uploaded OPML files ───
+# ─── Uploaded Input files ───
 backend/uploads/
 
 # ─── Env / secrets ───

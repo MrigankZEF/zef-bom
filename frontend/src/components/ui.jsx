@@ -33,8 +33,8 @@ export function Icon({ name, size = 14, className = "", style }) {
   );
 }
 
-export function Pill({ kind = "warm", children }) {
-  return <span className={`pill ${kind}`}>{children}</span>;
+export function Pill({ kind = "warm", title, children }) {
+  return <span className={`pill ${kind}`} title={title}>{children}</span>;
 }
 
 export function ModulePill({ code }) {

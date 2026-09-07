@@ -317,7 +317,7 @@ def duplicate_item(
         db.add(AssemblyLabor(
             item_id=new_id, volume_tier=al.volume_tier, time_min=al.time_min,
             time_likely=al.time_likely, time_max=al.time_max,
-            covers_subassemblies=al.covers_subassemblies, updated_by=user,
+            covers=al.covers, updated_by=user,
         ))
     for fv in db.execute(select(FieldValue).where(FieldValue.item_id == item_id)).scalars():
         db.add(FieldValue(item_id=new_id, field_key=fv.field_key, value=fv.value))
@@ -817,13 +817,14 @@ def set_assembly_labor(
         )
     ).scalar_one_or_none()
     old = existing.time_likely if existing else None
+    old_covers = existing.covers if existing else "none"
     if existing is None:
         existing = AssemblyLabor(item_id=item_id, volume_tier=body.volume_tier)
         db.add(existing)
     existing.time_likely = body.time_likely
     existing.time_min = body.time_min
     existing.time_max = body.time_max
-    existing.covers_subassemblies = body.covers_subassemblies
+    existing.covers = body.covers
     existing.updated_by = user
     record_change(
         db, entity_type="assembly_labor", entity_id=item_id,
@@ -831,6 +832,15 @@ def set_assembly_labor(
         field_changed=f"assembly_time@{body.volume_tier}", old_value=old, new_value=body.time_likely,
         changed_by=user,
     )
+    # Logged separately: switching an assembly to a bought-in quote re-prices its whole
+    # subtree, which is a far bigger event than editing a time and deserves its own line
+    # in the history rather than being inferred from a time that went blank.
+    if body.covers != old_covers:
+        record_change(
+            db, entity_type="assembly_labor", entity_id=item_id, change_type="update",
+            field_changed=f"covers@{body.volume_tier}", old_value=old_covers,
+            new_value=body.covers, changed_by=user,
+        )
     db.commit()
     db.refresh(existing)
     return existing

@@ -302,8 +302,13 @@ class User(Base):
 
 
 class AssemblyLabor(Base):
-    """Minutes to assemble an item from its direct children, as a 3-point estimate
-    (min/likely/max) per volume tier. Cost = time × the item's cost-type rate."""
+    """How one assembly is costed at one volume tier.
+
+    Two things in one row, because they are the same decision: the minutes it takes to
+    put the thing together, and how far this row's cost reaches down the tree (`covers`).
+    Per tier throughout, because sourcing genuinely differs by volume — hand-built at @1,
+    quoted by a harness shop at @10k.
+    """
 
     __tablename__ = "assembly_labor"
     __table_args__ = (
@@ -316,12 +321,17 @@ class AssemblyLabor(Base):
     )
     volume_tier: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 | 100 | 10000
     time_min: Mapped[float | None] = mapped_column(Float)
-    time_likely: Mapped[float] = mapped_column(Float, nullable=False)  # minutes, most-likely
+    # Minutes, most-likely. Nullable: a `covers='all'` assembly is bought as a finished
+    # unit and has a price, not a time.
+    time_likely: Mapped[float | None] = mapped_column(Float)
     time_max: Mapped[float | None] = mapped_column(Float)
-    # "This assembly's cost already covers the work on everything beneath it" — an outsourced
-    # or bought-in unit. Per tier, because sourcing differs by volume (build @1, buy @10k).
-    # Affects coverage reporting only; the rollup arithmetic is untouched.
-    covers_subassemblies: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # How far this row's cost reaches down the tree:
+    #   none  — contents roll up, this assembly's time × rate is added on top (the default)
+    #   labor — this one time estimate covers the assembly work on everything below; parts
+    #           below are still priced individually and still roll up
+    #   all   — a supplier quote on this item (its DecidedCost at this tier) covers the parts
+    #           AND the labour below; the subtree is documentation and costs nothing
+    covers: Mapped[str] = mapped_column(String(8), nullable=False, default="none")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

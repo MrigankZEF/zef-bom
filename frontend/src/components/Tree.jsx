@@ -298,6 +298,22 @@ export default function Tree({ onOpenPart, focus, version }) {
                   <span className="num">{n.item_id}</span>
                   <span className={`lbl ${n.item_type === "assembly" ? "assembly" : ""}`}>{n.item_name}</span>
                   {n.item_type === "assembly" && <Pill kind="warm">asm</Pill>}
+                  {/* A bought-in assembly: one supplier price for everything under it. Badged
+                      here because the rows beneath it read as free otherwise — they cost
+                      nothing precisely because this line already paid for them. */}
+                  {n.covers === "all" && (
+                    <Pill kind={n.quote_missing ? "accent" : "info"}
+                          title={n.quote_missing
+                            ? "Marked as bought in, but no supplier quote has been entered at this tier — this whole branch is costing €0."
+                            : "Bought in: this quote covers the parts and the labour below it. The contents are here for reference and cost nothing."}>
+                      {n.quote_missing ? "no quote" : "bought in"}
+                    </Pill>
+                  )}
+                  {n.covers === "labor" && (
+                    <Pill kind="ok" title="One assembly time here covers the work on every sub-assembly below. Parts below are still priced individually.">
+                      covers work
+                    </Pill>
+                  )}
                 </div>
                 <div className="tree-data" title="Open details">
                 <div className="qty">× {n.quantity}</div>
