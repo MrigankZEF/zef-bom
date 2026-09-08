@@ -45,6 +45,12 @@ export default function Costing({ onOpenPart }) {
   const sortedByWeight = [...(data?.parts || [])].sort((a, b) => b.weight_grams - a.weight_grams);
   const topWeight = sortedByWeight[0];
   const ct = data?.totals;
+  // The headline follows the Min/Likely/Max switch. Sizing the tiles by the max estimate
+  // while the big number kept showing the likely one meant the total on screen didn't match
+  // the picture beside it, and there was no way to read the max total at all.
+  const scenarioCost = (t) => !t ? null
+    : scenario === "min" ? t.cost_min : scenario === "max" ? t.cost_max : t.cost;
+  const shownCost = scenarioCost(ct);
   const costRange = ct && ct.cost_min != null && (ct.cost_min < ct.cost || ct.cost_max > ct.cost)
     ? `${fmtEURcompact(ct.cost_min)}–${fmtEURcompact(ct.cost_max)}` : null;
 
@@ -75,11 +81,15 @@ export default function Costing({ onOpenPart }) {
         <>
           <div className="kpi-grid">
             <div className="kpi accent">
-              <span className="kpi-label">Unit cost — {data.root_name}</span>
-              <span className="kpi-val">{data.totals.cost > 0 ? fmtEURcompact(data.totals.cost) : "—"}</span>
-              <span className="kpi-sub">{ct?.assembly_cost > 0
-                ? `parts ${fmtEURcompact(ct.parts_cost)} + assembly ${fmtEURcompact(ct.assembly_cost)}`
-                : (costRange ? `range ${costRange}` : `@ ${volume.toLocaleString()} units`)}</span>
+              <span className="kpi-label">
+                Unit cost — {data.root_name}{scenario !== "likely" && <> · <strong>{scenario}</strong></>}
+              </span>
+              <span className="kpi-val">{shownCost > 0 ? fmtEURcompact(shownCost) : "—"}</span>
+              <span className="kpi-sub">{costRange
+                ? `min–max ${costRange}${ct?.assembly_cost > 0 ? ` · assembly ${fmtEURcompact(ct.assembly_cost)}` : ""}`
+                : (ct?.assembly_cost > 0
+                    ? `parts ${fmtEURcompact(ct.parts_cost)} + assembly ${fmtEURcompact(ct.assembly_cost)}`
+                    : `@ ${volume.toLocaleString()} units`)}</span>
             </div>
             <div className="kpi">
               <span className="kpi-label">Total weight</span>

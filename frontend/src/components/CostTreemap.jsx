@@ -67,7 +67,14 @@ const tileLabel = (t) => {
 
 // Equal-value instances are packed into a grid rather than scattered by the squarify rows —
 // identical parts stay adjacent AND come out near-square instead of as thin slivers.
+//
+// Every cell must come out the SAME AREA, because in a treemap area IS the number: two cells
+// costing the same that are drawn 3x apart make the picture lie. An exact rows x cols grid
+// gives that for free, but only when the count has a divisor that suits the box. Otherwise
+// each row gets a height proportional to how many cells it holds — a row of 6 out of 26 takes
+// 6/26 of the height — so its cells are wider and shorter and still cover w*h/n exactly.
 function gridCells(x, y, w, h, n) {
+  if (n <= 1) return [{ x, y, w, h }];
   let best = null;
   for (let cols = 1; cols <= n; cols++) {
     if (n % cols) continue;
@@ -80,11 +87,16 @@ function gridCells(x, y, w, h, n) {
       x: x + (i % best.cols) * cw, y: y + Math.floor(i / best.cols) * ch, w: cw, h: ch,
     }));
   }
-  const cols = Math.max(1, Math.round(Math.sqrt((n * w) / h)));  // prime counts: stretch the last row
-  const rows = Math.ceil(n / cols), ch = h / rows, out = [];
+  const cols = Math.max(1, Math.round(Math.sqrt((n * w) / h)));
+  const rows = Math.ceil(n / cols);
+  const out = [];
+  let cy = y;
   for (let r = 0; r < rows; r++) {
-    const count = Math.min(cols, n - r * cols), cw = w / count;
-    for (let c = 0; c < count; c++) out.push({ x: x + c * cw, y: y + r * ch, w: cw, h: ch });
+    const count = Math.min(cols, n - r * cols);
+    const rh = (h * count) / n;          // this row's share of the height = its share of the cells
+    const cw = w / count;                // ...so every cell is exactly w*h/n
+    for (let c = 0; c < count; c++) out.push({ x: x + c * cw, y: cy, w: cw, h: rh });
+    cy += rh;
   }
   return out;
 }
@@ -287,8 +299,13 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
     else onOpenPart?.(t.node?.item_id);
   };
   const onMove = (e, t) => {
-    const r = wrapRef.current?.getBoundingClientRect();
+    const r = rootRef.current?.getBoundingClientRect();
     if (r) setHover({ tile: t, x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+  // The assembly you are INSIDE isn't a tile, so it had no flyout while every child had one.
+  // Give the breadcrumb's current entry the same tooltip, built from the focused node.
+  const focusTile = {
+    node: focus, abs: costOf(focus) * mult, own: ownCost(focus) * mult, pctLevel: null,
   };
   const crumb = (n, i) => {
     const st = steps[i - 1];
@@ -296,17 +313,26 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
   };
 
   return (
-    <div ref={rootRef}>
+    <div ref={rootRef} style={{ position: "relative" }} onMouseLeave={() => setHover(null)}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4, marginBottom: 8, fontSize: 12 }}>
         {chain.map((n, i) => (
           <span key={n.item_id + i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             {i > 0 && <span style={{ color: "var(--ink-4)" }}>›</span>}
-            <button onClick={() => setPath(steps.slice(0, i))} disabled={i === chain.length - 1}
-              style={{ border: 0, background: "transparent", padding: "2px 4px", borderRadius: 4, fontSize: 12,
-                cursor: i === chain.length - 1 ? "default" : "pointer",
-                color: i === chain.length - 1 ? "var(--ink)" : "var(--accent)", fontWeight: i === chain.length - 1 ? 600 : 400 }}>
-              {crumb(n, i)}
-            </button>
+            {i === chain.length - 1 ? (
+              // A span, not a disabled button: a disabled element fires no mouse events, so
+              // the flyout never appeared. Same look, and now it can be hovered.
+              <span onMouseMove={(e) => onMove(e, focusTile)}
+                style={{ padding: "2px 4px", fontSize: 12, color: "var(--ink)", fontWeight: 600,
+                  textDecoration: "underline dotted var(--ink-4)", textUnderlineOffset: 3 }}>
+                {crumb(n, i)}
+              </span>
+            ) : (
+              <button onClick={() => setPath(steps.slice(0, i))} title={`Back to ${n.item_name}`}
+                style={{ border: 0, background: "transparent", padding: "2px 4px", borderRadius: 4,
+                  fontSize: 12, cursor: "pointer", color: "var(--accent)" }}>
+                {crumb(n, i)}
+              </button>
+            )}
           </span>
         ))}
         {chain.length > 1 && <span style={{ marginLeft: 6, fontSize: 11, color: "var(--ink-3)" }}>· click a tile to drill in, a name above to go back</span>}
@@ -315,7 +341,7 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
       {tiles.length === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "var(--ink-3)" }}>No {metric === "cost" ? "costed" : "weighed"} items at this level yet.</div>
       ) : (
-        <div ref={wrapRef} style={{ position: "relative" }} onMouseLeave={() => setHover(null)}>
+        <div ref={wrapRef}>
           <svg ref={svgRef} viewBox={`0 0 ${width} ${totalH}`} style={{ width: "100%", height: "auto", display: "block", fontFamily: "var(--font-body)" }}>
             <defs>
               {hatches.map((c, i) => (
@@ -425,13 +451,14 @@ export default function CostTreemap({ node, metric = "cost", colorMode = "cost",
             })}
           </svg>
 
-          {hover && (
-            <Tooltip tile={hover.tile} x={hover.x} y={hover.y}
-              flip={hover.x > (wrapRef.current?.offsetWidth || 800) * 0.6}
-              flipY={hover.y > (wrapRef.current?.offsetHeight || 400) - 180 && hover.y > 180}
-              metric={metric} scenario={scenario} format={format} bomTotal={bomTotal} />
-          )}
         </div>
+      )}
+
+      {hover && (
+        <Tooltip tile={hover.tile} x={hover.x} y={hover.y}
+          flip={hover.x > (rootRef.current?.offsetWidth || 800) * 0.6}
+          flipY={hover.y > (rootRef.current?.offsetHeight || 400) - 180 && hover.y > 180}
+          metric={metric} scenario={scenario} format={format} bomTotal={bomTotal} />
       )}
     </div>
   );
