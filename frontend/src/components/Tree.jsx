@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { Icon, ModulePill, Pill, fmtEURcompact } from "./ui";
 
+const TIERS = [1, 100, 10000];
+// The tier the UI opens on. 10k is the volume the business case is actually written at, so
+// it is the number people came to look at; the API keeps its own default of 100 so that a
+// direct caller's prices never move under it.
+const DEFAULT_TIER = 10000;
+
 // Browse / BOM tree — ported from the prototype, wired to GET /tree (nested nodes
 // with embedded rollups). Expand state + filtering live client-side.
 export default function Tree({ onOpenPart, focus, version }) {
@@ -11,7 +17,7 @@ export default function Tree({ onOpenPart, focus, version }) {
   const [query, setQuery] = useState("");
   const [moduleF, setModuleF] = useState("all");
   const [coverageF, setCoverageF] = useState("all");
-  const [tier, setTier] = useState(100);
+  const [tier, setTier] = useState(DEFAULT_TIER);
   // "tree" = the nested hierarchy; "flat" = each BOM one level deep with full counts.
   const [view, setView] = useState("tree");
   const [flat, setFlat] = useState(null);
@@ -180,7 +186,7 @@ export default function Tree({ onOpenPart, focus, version }) {
           </span>
           <span className="card-meta" style={{ marginRight: 2 }}>cost @</span>
           <span style={{ display: "inline-flex", border: "1px solid var(--hair)", borderRadius: 7, overflow: "hidden" }}>
-            {[1, 100, 10000].map((t) => (
+            {TIERS.map((t) => (
               <button key={t} onClick={() => setTier(t)} title={`${t.toLocaleString()} pcs`}
                 style={{ border: 0, cursor: "pointer", padding: "5px 11px", fontFamily: "var(--font-mono)", fontSize: 11,
                   background: tier === t ? "var(--accent)" : "transparent", color: tier === t ? "#fff" : "var(--ink-3)" }}>
@@ -271,8 +277,7 @@ export default function Tree({ onOpenPart, focus, version }) {
                 onDragLeave={() => setDropKey((d) => (d === key ? null : d))}
                 onDrop={(e) => { if (isValid) { e.preventDefault(); doMove(n.item_id); } }}
                 title={drag ? (isValid ? `Move ${drag.name} into ${n.item_name}` : "")
-                  : "Open details · drag to move"}
-                onClick={() => onOpenPart(n.item_id)}
+                  : depth > 0 ? "Drag to move" : ""}
               >
                 {depth > 0 && (
                   <span className="tree-rails" aria-hidden="true">
@@ -315,7 +320,10 @@ export default function Tree({ onOpenPart, focus, version }) {
                     </Pill>
                   )}
                 </div>
-                <div className="tree-data" title="Open details">
+                {/* The drawer opens from this zone alone, not from the row. The row's
+                    padding-left is the indent gutter — it belongs to neither zone, and a
+                    click there used to open details from what looks like empty space. */}
+                <div className="tree-data" title="Open details" onClick={() => onOpenPart(n.item_id)}>
                 <div className="qty">× {n.quantity}</div>
                 <div className={`cost ${n.rollup_cost === 0 ? "missing" : ""}`}>
                   {n.rollup_cost > 0 ? fmtEURcompact(n.rollup_cost) : "—"}
@@ -454,8 +462,7 @@ function FlatView({ boms, tier, tierLabel, expanded, toggle, matches, filtering,
           return (
             <div key={bom.item_id}>
               <div className={`tree-row ${focus === bom.item_id ? "on" : ""}`}
-                   style={{ "--indent": "12px", "--tint": "transparent" }}
-                   onClick={() => onOpenPart(bom.item_id)}>
+                   style={{ "--indent": "12px", "--tint": "transparent" }}>
                 <div className="tree-name expands" title={open ? "Collapse" : "Flatten this BOM"}
                      onClick={(e) => { e.stopPropagation(); toggle(bom.item_id); }}>
                   <button className="tree-toggle" onClick={(e) => { e.stopPropagation(); toggle(bom.item_id); }}>
@@ -465,7 +472,8 @@ function FlatView({ boms, tier, tierLabel, expanded, toggle, matches, filtering,
                   <span className="lbl assembly">{bom.item_name}</span>
                   <Pill kind="warm">asm</Pill>
                 </div>
-                <div className="tree-data flat" title="Open details">
+                <div className="tree-data flat" title="Open details"
+                     onClick={() => onOpenPart(bom.item_id)}>
                   <div className="qty">{rows.length} rows</div>
                   <div className="cost">—</div>
                   <div className={`cost ${bom.cost === 0 ? "missing" : ""}`}>
@@ -497,15 +505,18 @@ function FlatView({ boms, tier, tierLabel, expanded, toggle, matches, filtering,
 
               {open && rows.map((r) => (
                 <div key={r.item_id} className={`tree-row ${focus === r.item_id ? "on" : ""}`}
-                     style={{ "--indent": "34px", "--tint": "rgba(28,27,26,0.014)" }}
-                     title="Open details"
-                     onClick={() => onOpenPart(r.item_id)}>
-                  <div className="tree-name inert">
+                     style={{ "--indent": "34px", "--tint": "rgba(28,27,26,0.014)" }}>
+                  {/* A flattened row has nothing to expand, so both zones open the drawer —
+                      but the handler sits on the zones, not the row, so the indent gutter
+                      stays inert here too. */}
+                  <div className="tree-name opens" title="Open details"
+                       onClick={() => onOpenPart(r.item_id)}>
                     <span className="num">{r.item_id}</span>
                     <span className={`lbl ${r.is_leaf ? "" : "assembly"}`}>{r.item_name}</span>
                     {!r.is_leaf && <Pill kind="warm">asm</Pill>}
                   </div>
-                  <div className="tree-data flat">
+                  <div className="tree-data flat" title="Open details"
+                       onClick={() => onOpenPart(r.item_id)}>
                     <div className="qty">× {r.count.toLocaleString()}</div>
                     <div className={`cost ${r.unit_cost == null ? "missing" : ""}`}
                          title={r.is_leaf ? "decided unit cost" : "this assembly's own process cost per build"}>

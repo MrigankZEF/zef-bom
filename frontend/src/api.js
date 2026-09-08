@@ -56,6 +56,38 @@ export const api = {
     request(`/costing/breakdown?${new URLSearchParams({ root, volume })}`),
   pending: (module) =>
     request(`/pending${module ? `?${new URLSearchParams({ module })}` : ""}`),
+  // ── the COGS ladder (M7) ──
+  // The matrix schema is SERVED, never mirrored here: a second copy of the row list is a
+  // second thing to update when a basis handler is added, and this side would have no way
+  // to know it had gone stale.
+  cogsKinds: () => request("/cogs/kinds"),
+  cogsFacilities: (includeArchived = false) =>
+    request(`/cogs/facilities${includeArchived ? "?include_archived=true" : ""}`),
+  createCogsFacility: (body) =>
+    request("/cogs/facilities", { method: "POST", body: JSON.stringify(body) }),
+  patchCogsFacility: (id, body) =>
+    request(`/cogs/facilities/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteCogsFacility: (id) => request(`/cogs/facilities/${id}`, { method: "DELETE" }),
+  addCogsFacilityItem: (id, body) =>
+    request(`/cogs/facilities/${id}/items`, { method: "POST", body: JSON.stringify(body) }),
+  deleteCogsFacilityItem: (id, itemId) =>
+    request(`/cogs/facilities/${id}/items/${itemId}`, { method: "DELETE" }),
+  // One staged save: every changed cell in one request, one transaction. `value: null`
+  // deletes a cell — back to "not entered", which is not the same as storing 0.
+  saveCogsValues: (id, cells) =>
+    request(`/cogs/facilities/${id}/values`, { method: "PATCH", body: JSON.stringify({ cells }) }),
+  lockCogsRow: (id, rowKey) =>
+    request(`/cogs/facilities/${id}/locks/${encodeURIComponent(rowKey)}`, { method: "PUT" }),
+  unlockCogsRow: (id, rowKey) =>
+    request(`/cogs/facilities/${id}/locks/${encodeURIComponent(rowKey)}`, { method: "DELETE" }),
+  cogsLadder: (root, volume = 100) =>
+    request(`/cogs/ladder?${new URLSearchParams({ root, volume })}`),
+  // Per root, and only ever per root — two BOMs' COGS figures cannot be added.
+  cogsSummary: (root) => request(`/cogs/summary?${new URLSearchParams({ root })}`),
+  cogsBreakdown: (volume = 100, layer = null) =>
+    request(`/cogs/breakdown?${new URLSearchParams({ volume, ...(layer ? { layer } : {}) })}`),
+  cogsPending: () => request("/cogs/pending"),
+
   catalog: () => request("/catalog"),
   createCatalogItem: (body) => request("/catalog/items", { method: "POST", body: JSON.stringify(body) }),
 

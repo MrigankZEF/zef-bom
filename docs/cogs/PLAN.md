@@ -317,7 +317,16 @@ therefore costs the pooled heads at a salary no single cell actually pays. That 
 spec and genuinely surprising, so it gets a comment at the site — otherwise the next reader
 "fixes" it.
 
-### Regression anchors
+### Regression anchors — SUPERSEDED 2026-09-07
+
+> **These figures no longer describe the model.** See section 10. `rent` became a rate per
+> square metre, so `seed-facilities.json`'s absolute values (34,000; 55,000) can no longer be
+> read as rent at all, and the fixture cannot simply be recomputed. The replacement is
+> `test_cogs_the_whole_ladder_on_a_worked_example` in `backend/tests/test_invariants.py`,
+> which asserts every rung against the sum that produces it rather than against a committed
+> number. The table below is kept as the record of what the prototype's model produced.
+
+
 
 From the fixtures, no locks, with `hours`/`rate` deleted. The BOM column here is material only —
 the labour half now comes from the BOM, so the golden test builds a small synthetic BOM in-test,
@@ -435,3 +444,54 @@ without the model exploding. `NumInput`/`toNum` in `ui.jsx` already do this.
 Fixture figures computed from `handoff/seed-facilities.json` and `handoff/facility-kinds.json`
 by a throwaway implementation of the prototype's model, with the decisions above applied. Module
 sums reconcile to the handoff's own anchors at all three tiers: 231,700 / 125,600 / 70,700.
+
+---
+
+## 10. Row-schema changes, 2026-09-07
+
+Leonard reviewed the built screens and changed the cost model. Recorded here rather than in
+`handoff/`, which is provenance: this document wins where they disagree.
+
+**Floor area is now a priced quantity.** `area` (m²) × `rent` (€/m²/yr) → the overhead pool,
+the same shape as `fte` × `salary`. Rent was an absolute €/yr figure; it is now a rate, which
+means it also *inherits downward* when locked instead of counting once. Either half missing
+costs nothing, which is correct: an unpriced floor and a priced floor of zero size are both
+free. `basis: "info"` — display-only, never costed — is now unused by every kind; the handler
+stays, because deleting a basis deletes vocabulary.
+
+**Equipment is the amortised tooling pair; `dep` is gone.** `toolTotal` (€ total) ÷
+`toolUnits` (plants) is how a jig or fixture is actually bought, and amortised tooling is
+depreciation in all but name. A separate annual depreciation row was the same money entered
+twice. Tooling therefore moved out of layer 1 into layer 2.
+
+It needed its own accumulator (`Acc.oh_unit`) rather than joining `oh`. `toolTotal /
+toolUnits` is euros per **plant**; the pool is euros per **year**. Adding it to the pool would
+have sent it through `pool / tier` and made a €500,000 jig get cheaper per plant the more
+plants you build — the exact opposite of what amortising over a fixed plant count means.
+`compute` adds it on after dividing the pool, which also keeps `contrib` free of the tier.
+
+**Utilities are one annual bucket.** `meter` (€/plant, L1) folded into `util` (€/yr, L2).
+Two rows for one bill asked whoever fills this in to apportion a meter reading they do not
+have.
+
+**Dropped:** `systems` (Systems & customs admin — out for now), `commission` (the field
+crew's commissioning work is already in their salaries), `dep`, `meter`.
+
+**`install` repurposed, not replaced.** It was "Installation on site"; it is now "3rd party
+installation" — work bought in from outside, since our own crew's time is in their salaries.
+Same row key deliberately, so nothing already entered is orphaned. Same basis (`post`, L3).
+
+**Logistics' rent matches the hall's.** "Rent & yard", metered differently, made two things
+of one. It is now "Rent & facilities" at €/m²/yr like every other floor.
+
+**A facility with no sub-items is the record.** Previously a facility owned only its locked
+rows, so one with nothing beneath it could be filled in completely and contribute nothing —
+the values would sit under the `item_id = ''` sentinel and never be read. `own_roll` now
+costs every row when there are no sub-items, and the matrix makes every cell editable in that
+state. Lock toggles are disabled there, since locking decides *which level* a row is entered
+on and there is only one level.
+
+**No data migration needed.** No facilities existed in any database when this landed. Row keys
+that disappeared are rejected on write by `_check_row_key`, and `audit_cogs.py` reports any
+that arrive through a restore under "cells whose row_key is not a row on their kind" — so an
+old backup surfaces loudly rather than being silently costed.

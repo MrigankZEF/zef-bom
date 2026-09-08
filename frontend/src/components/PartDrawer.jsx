@@ -4,6 +4,8 @@ import { Icon, ModulePill, NumInput, Pill, fmtEURcompact, fmtPct, fmtWeight, toN
 import { RefSelect, MultiRef } from "./RefInputs.jsx";
 
 const COST_TIERS = [1, 100, 10000];
+// The tier the drawer opens on — see DEFAULT_TIER in Tree.jsx. The API default stays 100.
+const DEFAULT_TIER = 10000;
 const SOURCES = ["quote", "invoice", "estimate_math", "estimate_web", "estimate_ai", "other"];
 const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
@@ -62,7 +64,7 @@ const SOURCING_OPTS = [
 
 export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
   const [tab, setTab] = useState("overview");
-  const [tier, setTier] = useState(100);
+  const [tier, setTier] = useState(DEFAULT_TIER);
   const [addingChild, setAddingChild] = useState(false);
   // Quantities are read-only until you explicitly enter edit mode, matching the
   // "Add / edit" + "Save changes" pattern the details section already uses. Nothing is
@@ -1323,7 +1325,7 @@ function AssemblyCostCard({ itemId, item, labor, decided, evidence, costTypes, r
 function EvidenceBlock({ itemId, evidence, tier = null, reload, setError }) {
   const [busy, setBusy] = useState(false);
   const rows = tier == null ? evidence : evidence.filter((q) => q.volume_tier === tier);
-  const blank = { source_type: "", unit_cost: "", volume_tier: tier ?? 100, supplier_name: "", confidence: "high", note: "", attachment_url: "" };
+  const blank = { source_type: "", unit_cost: "", volume_tier: tier ?? DEFAULT_TIER, supplier_name: "", confidence: "high", note: "", attachment_url: "" };
   const [ev, setEv] = useState(blank);
   // Costing produces two kinds of row: a quote with a price, and a plain note ("asked them,
   // waiting on a price"). Nothing here is required on its own — one of the three is.
@@ -1336,7 +1338,7 @@ function EvidenceBlock({ itemId, evidence, tier = null, reload, setError }) {
         ...ev,
         source_type: ev.source_type || null,
         unit_cost: ev.unit_cost === "" ? null : toNum(ev.unit_cost),
-        volume_tier: tier ?? (toNum(ev.volume_tier) ?? 100),
+        volume_tier: tier ?? (toNum(ev.volume_tier) ?? DEFAULT_TIER),
         supplier_name: ev.supplier_name || null,
         note: ev.note.trim() || null,
         attachment_url: ev.attachment_url.trim() || null,

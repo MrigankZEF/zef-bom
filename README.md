@@ -68,3 +68,37 @@ npm run dev                  # http://localhost:5173
 - **M4** edit path + two-layer cost model + change_history
 - **M5** uploads diff + approve
 - **M6** costing, pending, history, Drive attachments, auth/roles
+- **M7** the COGS ladder + Facilities (backend landed; the input screen and the COGM/COGS
+  views are still to build — see `docs/cogs/PLAN.md` build order steps 4-7)
+
+## Costing, and the ladder on top of it
+
+The BOM rolls up to a cost per plant at each of three volume tiers (@1 / @100 / @10k):
+`rollup.cost = parts + assembly_cost`, where the assembly half is `AssemblyLabor` minutes x
+the cost type's EUR/hour rate. An assembly marked `covers='all'` is a boundary — a supplier
+quote replaces its whole subtree.
+
+**The COGS ladder** (`backend/app/cogs.py`) adds four rungs on top of that number:
+
+```
+L1  BOM        material = rollup.cost - rollup.assembly_cost;  labour = rollup.assembly_cost
+L2  Direct     rollup.cost / yield_factor + consumables + other
+L3  COGM       + overhead pool / tier            <- the tier IS plants per year
+L4  COGS       + freight + install + warranty (% of burdened)
+```
+
+Every figure is either read from the BOM or entered once on **Facilities** — a typed
+facility (assembly / logistics / field) whose `kind` decides which rows its cost matrix has.
+Nothing is entered twice, and nothing the BOM already knows is re-typed.
+
+Two things worth knowing before reading any COGS number:
+
+- **@1 is not "what a prototype costs."** It is "what a plant costs at a company producing
+  one plant a year" — that plant absorbs a whole year of overhead. On the fixtures overhead
+  is 84% of COGS at @1 and 19% at @10k. The divisor is named on screen for this reason.
+- **Two BOMs' COGS figures cannot be added.** Every facility is fully allocated to whichever
+  root is on screen, which is right for comparative simulation and makes the totals
+  non-additive. There is no grand-total COGS endpoint, deliberately.
+
+`python scripts/audit_cogs.py` re-derives all four rungs from the raw tables the long way and
+checks the module agrees — the same relationship `audit_rollups.py` has to `rollups.py`.

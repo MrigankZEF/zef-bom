@@ -619,6 +619,793 @@ def test_bought_in_time_is_not_our_time():
     assert g2.assembly_time_total("AEC920A") == 30.0
 
 
+
+# ══ the COGS ladder ═══════════════════════════════════════════════════════════
+# Four rungs on top of the rolled-up BOM. The cases below are the prototype's own,
+# re-run against `app.cogs`, plus the ones that only exist because the BOM is now
+# inside the ladder. See docs/cogs/PLAN.md section 6.
+#
+# A facility here is the plain dict `app.cogs` takes, at ONE tier — the router
+# selects the tier before calling in, so nothing in the arithmetic threads one.
+
+def _fac(kind="assembly", code="FAC-T", items=None, locks=None, own=None):
+    return {
+        "kind": kind, "code": code,
+        "locks": set(locks or ()), "own": own or {},
+        "items": [{"values": v} for v in (items or [])],
+    }
+
+
+def test_cogs_scrap_compounds_it_does_not_add():
+    """Two stations at 2% gross by 1/0.9604, not 1/0.96."""
+    from app import cogs
+    f = _fac(items=[{"scrap": 2}, {"scrap": 2}])
+    R = cogs.all_roll([f])
+    assert abs(R.yield_f - 0.9604) < 1e-12, R.yield_f
+    assert abs(R.yield_f - 0.96) > 1e-6           # the naive answer is genuinely different
+
+
+def test_cogs_floor_area_is_priced_by_rent_per_square_metre():
+    """Area x rent, the same shape as headcount x salary. Either half missing costs nothing:
+    an unpriced floor and a priced floor of zero size are both free."""
+    from app import cogs
+    both = cogs.all_roll([_fac(items=[{"area": 1200, "rent": 130}])])
+    assert both.oh == 1200 * 130
+    assert both.area == 1200          # still carried for display
+    assert cogs.all_roll([_fac(items=[{"area": 1200}])]).oh == 0.0
+    assert cogs.all_roll([_fac(items=[{"rent": 130}])]).oh == 0.0
+    # Locked, the rate flows DOWN — every cell's floor is costed at the facility's rate.
+    locked = _fac(items=[{"area": 1000, "rent": 999}, {"area": 500, "rent": 1}],
+                  locks={"rent"}, own={"rent": 100})
+    assert cogs.all_roll([locked]).oh == (1000 + 500) * 100
+
+
+def test_cogs_a_locked_rate_inherits_downward():
+    """salary locked at 90,000 costs every cell's headcount at that one salary."""
+    from app import cogs
+    f = _fac(
+        items=[{"fte": 2, "salary": 92000}, {"fte": 1.5, "salary": 88000}, {"fte": 1, "salary": 96000}],
+        locks={"salary"}, own={"salary": 90000},
+    )
+    # 4.5 heads x 90,000 — none of the three cell salaries is used.
+    assert cogs.all_roll([f]).oh == 405000.0, cogs.all_roll([f]).oh
+
+
+def test_cogs_a_locked_quantity_counts_once():
+    """maint locked at 50,000 puts 50,000 in the pool regardless of how many cells there
+    are, and the cells contribute nothing for that row.
+
+    `maint` rather than `rent`: rent became a per-m2 RATE, and a rate locks the other way
+    (it flows down instead of counting once), so it cannot demonstrate this rule any more.
+    """
+    from app import cogs
+    f = _fac(items=[{"maint": 34000}, {"maint": 55000}, {"maint": 21000}],
+             locks={"maint"}, own={"maint": 50000})
+    assert cogs.all_roll([f]).oh == 50000.0
+    # Unlocked, the same fixture pools all three.
+    unlocked = _fac(items=[{"maint": 34000}, {"maint": 55000}, {"maint": 21000}])
+    assert cogs.all_roll([unlocked]).oh == 34000.0 + 55000.0 + 21000.0
+
+
+def test_cogs_locked_fte_with_unlocked_salary_uses_the_cell_average():
+    """The awkward case where both directions of the lock rule meet.
+
+    4 pooled heads costed at the average of the non-zero cell salaries. The average is
+    UNWEIGHTED and deliberately so — see the comment in `own_roll`'s getter.
+    """
+    from app import cogs
+    f = _fac(items=[{"salary": 92000}, {"salary": 92000}], locks={"fte"}, own={"fte": 4})
+    assert cogs.all_roll([f]).oh == 368000.0
+    # Unequal salaries: the mean of the two, not a headcount-weighted mean.
+    f2 = _fac(items=[{"salary": 100000}, {"salary": 50000}], locks={"fte"}, own={"fte": 4})
+    assert cogs.all_roll([f2]).oh == 300000.0   # 4 x 75,000
+
+
+def test_cogs_a_facility_with_no_sub_items_is_the_record():
+    """Nothing below to enter anything on, so every row is costed from the facility itself —
+    locked or not.
+
+    Without this rule such a facility could be filled in completely and contribute nothing:
+    the values would sit under the `item_id = ''` sentinel and never be read.
+    """
+    from app import cogs
+    solo = _fac(items=[], own={"maint": 40000, "area": 500, "rent": 100, "consum": 25})
+    R = cogs.all_roll([solo])
+    assert R.oh == 40000 + 500 * 100
+    assert R.other == 25
+    # With a sub-item present, the same `own` values are ignored for unlocked rows — they
+    # are entered below, and counting both would double them.
+    withkid = _fac(items=[{"maint": 1000}], own={"maint": 40000})
+    assert cogs.all_roll([withkid]).oh == 1000
+
+
+def test_cogs_tooling_amortises_into_overhead_per_plant():
+    """Amortised tooling is depreciation, near enough — so it is overhead, not direct cost.
+
+    It lands in `oh_unit` rather than `oh` because it is already per PLANT while the pool is
+    per YEAR. Putting it in the pool would send it through `pool / tier` and make a jig get
+    cheaper per plant the more plants you build, which is the opposite of what amortising
+    over a fixed plant count means.
+    """
+    from app import cogs
+    none = cogs.all_roll([_fac(items=[{"toolTotal": 250000, "toolUnits": 0}])])
+    assert (none.oh_unit, none.oh, none.other) == (0.0, 0.0, 0.0)   # not infinity
+    got = cogs.all_roll([_fac(items=[{"toolTotal": 250000, "toolUnits": 100}])])
+    assert got.oh_unit == 2500.0
+    assert got.other == 0.0, "tooling is no longer direct cost"
+    assert got.oh == 0.0, "tooling is per-plant, so it must not join the annual pool"
+    # And the per-plant figure is the same at every tier — that is the point of amortising.
+    for tier in (1, 100, 10000):
+        L = cogs.compute(units_per_year=tier, rollup_cost=0, rollup_assembly_cost=0,
+                         facilities=[_fac(items=[{"toolTotal": 250000, "toolUnits": 100}])])
+        assert L.overhead == 2500.0, tier
+
+
+def test_cogs_warranty_moves_when_the_pool_moves():
+    """Warranty is a percentage of BURDENED, so it must compute after overhead."""
+    from app import cogs
+    facs = [_fac(items=[{"maint": 1000000}]), _fac("field", items=[{"warranty": 2.2}])]
+    a = cogs.compute(units_per_year=100, rollup_cost=125600, rollup_assembly_cost=0,
+                     facilities=facs)
+    facs[0]["items"].append({"values": {"maint": 1000000}})
+    b = cogs.compute(units_per_year=100, rollup_cost=125600, rollup_assembly_cost=0,
+                     facilities=facs)
+    assert b.warranty > a.warranty
+    # And it is exactly 2.2% of burdened at both ends, not of some earlier rung.
+    assert abs(b.warranty - b.burdened * 0.022) < 1e-9
+
+
+def test_cogs_tier_isolation_and_an_empty_facility():
+    """An empty facility contributes nothing without throwing, and the tier is the divisor."""
+    from app import cogs
+    assert cogs.all_roll([_fac(items=[])]).oh == 0.0
+    facs = [_fac(items=[{"maint": 100000}])]
+    at1 = cogs.compute(units_per_year=1, rollup_cost=0, rollup_assembly_cost=0, facilities=facs)
+    at100 = cogs.compute(units_per_year=100, rollup_cost=0, rollup_assembly_cost=0, facilities=facs)
+    assert at1.overhead == 100000.0 and at100.overhead == 1000.0
+    assert at1.pool_total == at100.pool_total       # the pool is a year, not a plant
+
+
+# ── the six that exist because the BOM is now inside the ladder ───────────────
+
+def test_cogs_direct_is_exactly_the_stated_identity():
+    """direct == rollup.cost / yieldFactor + consumables + other, at every tier.
+
+    The identity that makes the L1/labour split safe. `other` carries consumables, so the
+    plan's three-term form and this two-term one are the same sum.
+    """
+    from app import cogs
+    facs = [_fac(items=[{"scrap": 2, "consum": 45, "toolTotal": 1000, "toolUnits": 10}])]
+    for tier, cost in ((1, 231700.0), (100, 125600.0), (10000, 70700.0)):
+        L = cogs.compute(units_per_year=tier, rollup_cost=cost,
+                         rollup_assembly_cost=1234.5, facilities=facs)
+        assert abs(L.direct - (cost / L.yield_factor + L.other)) < 1e-9, tier
+        assert abs(L.bom_adj - cost / L.yield_factor) < 1e-9
+        assert L.consumables == 45.0
+        # Consumables alone. Tooling moved to the overhead layer, and metered utilities
+        # folded into the single annual `util` bucket, so neither is direct cost now.
+        assert L.other == 45.0, L.other
+        assert L.overhead == 100.0, "tooling should be the whole overhead here"
+        # The partition: material and labour halves reconstruct the rollup exactly.
+        assert abs((L.bom + L.labour) - cost) < 1e-9
+
+
+def _ladder_bom_fixture(minutes=60.0, rate=60.0):
+    """A synthetic BOM the ladder can sit on: BOAT x1 -> PLATE x2 @ EUR 100, with an
+    assembly time on the root so `cost` genuinely splits into two halves."""
+    from app.models import ReferenceValue
+    db = _db()
+    db.add(Item(item_id="AEC800A", item_name="Boat", item_type="assembly",
+                module_code="AEC", is_top_level=True, cost_type_id=1))
+    db.add(Item(item_id="AEC801P", item_name="Plate", item_type="part", module_code="AEC"))
+    # reference_values.id is an autoincrement integer, and cost_type_id points at it.
+    db.add(ReferenceValue(id=1, category="assembly_cost_type", value="Bench",
+                          meta={"rate_eur_h": rate}))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC800A", child_item_id="AEC801P", quantity=2))
+    db.add(DecidedCost(item_id="AEC801P", volume_tier=100, unit_cost_eur=100))
+    db.add(AssemblyLabor(item_id="AEC800A", volume_tier=100, time_likely=minutes))
+    db.commit()
+    return db
+
+
+def test_cogs_the_bom_labour_half_comes_from_the_rollup():
+    """L1 is a partition of one number, not two sums."""
+    from app.rollups import BomGraph
+    from app import cogs
+    g = BomGraph(_ladder_bom_fixture(), volume_tier=100)
+    r = g.rollup("AEC800A")
+    assert r.cost == 260.0, r.cost                 # 2 x 100 parts + 60 min at EUR 60/h
+    assert r.assembly_cost == 60.0
+    L = cogs.compute(units_per_year=100, rollup_cost=r.cost,
+                     rollup_assembly_cost=r.assembly_cost, facilities=[])
+    assert (L.bom, L.labour) == (200.0, 60.0)
+    assert L.bom_raw == 260.0
+
+
+def test_cogs_editing_an_assembly_time_moves_the_direct_line():
+    """No stale cache between BomGraph and compute."""
+    from app.rollups import BomGraph
+    from app import cogs
+
+    def direct_at(minutes):
+        g = BomGraph(_ladder_bom_fixture(minutes=minutes), volume_tier=100)
+        r = g.rollup("AEC800A")
+        return cogs.compute(units_per_year=100, rollup_cost=r.cost,
+                            rollup_assembly_cost=r.assembly_cost, facilities=[]).direct
+
+    assert direct_at(120) - direct_at(60) == 60.0   # one extra hour at EUR 60
+
+
+def test_cogs_scrap_grosses_the_labour_half_too():
+    """A scrapped part loses the hours already invested in it (PLAN 2.3)."""
+    from app import cogs
+    facs = [_fac(items=[{"scrap": 4}])]
+    L = cogs.compute(units_per_year=100, rollup_cost=260.0, rollup_assembly_cost=60.0,
+                     facilities=facs)
+    assert abs(L.bom_adj - 260.0 / 0.96) < 1e-9     # the WHOLE 260, not just the 200
+
+
+def test_cogs_a_quoted_assembly_contributes_its_quote_and_no_labour_of_ours():
+    from app.rollups import BomGraph
+    from app import cogs
+    g = BomGraph(_boundary_fixture(), volume_tier=100)
+    r = g.rollup("AEC920A")
+    L = cogs.compute(units_per_year=100, rollup_cost=r.cost,
+                     rollup_assembly_cost=r.assembly_cost, facilities=[],
+                     assembly_minutes=g.assembly_time_total("AEC920A"))
+    assert L.bom_raw == 80.0                        # 2 x the EUR 40 quote
+    assert L.labour == 0.0                          # none of it is our time
+    assert L.bom == 80.0                            # a supplier price is material
+    assert L.assembly_minutes == 0.0
+
+
+def test_cogs_a_row_key_outside_its_kind_is_not_costed():
+    """`warranty` belongs to `field`; on an assembly facility it is not a row at all."""
+    from app import cogs
+    assert cogs.row_of("assembly", "warranty") is None
+    assert cogs.all_roll([_fac("assembly", items=[{"warranty": 99}])]).warr_pct == 0.0
+    assert cogs.all_roll([_fac("field", items=[{"warranty": 2.2}])]).warr_pct == 2.2
+
+
+def test_cogs_the_deleted_rows_leave_nothing_orphaned():
+    """Rows that have been removed from the schema must not be reachable by the arithmetic.
+
+    `hours`/`rate` went in PLAN 2.2 (direct labour comes from the BOM). `dep`, `meter`,
+    `systems` and `commission` went on 2026-09-07: equipment is the amortised tooling pair,
+    utilities are one annual bucket, customs admin is out for now, and the crew's
+    commissioning is in their salaries.
+    """
+    from app import cogs
+    gone = {"hours", "rate", "dep", "meter", "systems", "commission"}
+    for kind in cogs.KINDS:
+        keys = {r["k"] for r in cogs.rows_for(kind)}
+        assert not (keys & gone), (kind, keys & gone)
+    # Stray values cannot reach the arithmetic even if a backup restores some.
+    stray = _fac("assembly", items=[{"hours": 150, "rate": 48, "dep": 90000, "meter": 320}])
+    R = cogs.all_roll([stray])
+    assert (R.other, R.oh, R.oh_unit) == (0.0, 0.0, 0.0)
+
+
+def test_cogs_the_whole_ladder_on_a_worked_example():
+    """Every rung, asserted against the arithmetic that produces it.
+
+    This replaces the fixture-based anchor table in docs/cogs/PLAN.md section 6, which the
+    2026-09-07 model change made unusable rather than merely stale: `docs/cogs/handoff/
+    seed-facilities.json` carries rent as an absolute EUR/yr figure (34,000; 55,000), and
+    rent is now a rate per square metre — read that way those numbers describe a hall
+    costing EUR 34,000 per m2 per year. Recomputing the anchors from it would have produced
+    internally consistent nonsense.
+
+    So the figures below are hand-built and realistic, and every assertion is written as the
+    sum it should equal rather than as a number copied out of a passing run. A magic constant
+    only proves the code still does what it did; an expression proves it does what it says.
+    """
+    from app import cogs
+
+    facs = [
+        {   # an assembly hall: floor priced per m2, indirect payroll, amortised tooling
+            "kind": "assembly", "code": "FAC-ASM", "locks": set(), "own": {},
+            "items": [{"values": {
+                "area": 1000, "rent": 120,          # 1,000 m2 at EUR 120/m2/yr
+                "fte": 4, "salary": 90_000,         # 4 indirect heads
+                "maint": 40_000, "util": 60_000,    # annual, straight into the pool
+                "toolTotal": 500_000, "toolUnits": 2_500,   # EUR 200 a plant, amortised
+                "scrap": 2,                         # 2% yield loss
+                "consum": 50,                       # EUR 50 a plant, direct
+            }}],
+        },
+        {   # logistics: warehouse floor is overhead, freight splits across L1 and L3
+            "kind": "logistics", "code": "FAC-SCM", "locks": set(), "own": {},
+            "items": [{"values": {
+                "area": 500, "rent": 80,
+                "inbound": 300, "duty": 100,        # direct, per plant
+                "outbound": 800, "crating": 200,    # post-manufacturing, per plant
+            }}],
+        },
+        {   # field works: crew payroll is overhead, everything they do on site is L3
+            "kind": "field", "code": "FAC-FLD", "locks": set(), "own": {},
+            "items": [{"values": {
+                "fte": 3, "salary": 70_000, "equip": 30_000,
+                "travel": 400, "install": 2_000,    # 3rd-party installation
+                "warranty": 2,                      # 2% of burdened
+            }}],
+        },
+    ]
+
+    R = cogs.all_roll(facs)
+
+    # ── the accumulators, each against its own sum ────────────────────────────
+    pool = (1000 * 120 + 4 * 90_000 + 40_000 + 60_000     # FAC-ASM
+            + 500 * 80                                     # FAC-SCM
+            + 3 * 70_000 + 30_000)                         # FAC-FLD
+    assert R.oh == pool == 860_000, R.oh
+    assert R.oh_unit == 500_000 / 2_500 == 200             # per plant, not per year
+    assert R.other == 50 + 300 + 100                       # consum + inbound + duty
+    assert R.post == 800 + 200 + 400 + 2_000               # crating/outbound + travel/install
+    assert R.warr_pct == 2
+    assert R.yield_f == 0.98
+    assert R.area == 1000 + 500
+    assert R.fte == 4 + 3
+
+    # ── the ladder, at one tier, rung by rung ─────────────────────────────────
+    BOM, LABOUR, TIER = 10_000.0, 1_000.0, 100
+    L = cogs.compute(units_per_year=TIER, rollup_cost=BOM,
+                     rollup_assembly_cost=LABOUR, facilities=facs)
+
+    assert (L.bom, L.labour) == (BOM - LABOUR, LABOUR)     # L1 is a partition
+    assert L.bom_adj == BOM / 0.98                          # scrap grosses the whole BOM
+    assert L.direct == BOM / 0.98 + 450                     # L2
+    assert L.overhead == 860_000 / TIER + 200               # pool over the tier, plus tooling
+    assert L.burdened == L.direct + L.overhead              # L3, COGM
+    assert L.warranty == L.burdened * 0.02                  # a share of BURDENED, not direct
+    assert L.cogs_unit == L.burdened + 3_400 + L.warranty   # L4
+    assert L.consumables == 50
+    assert L.overhead_share == L.overhead / L.cogs_unit
+
+    # ── the tier really is the divisor, and tooling really is not divided ─────
+    for tier in (1, 100, 10_000):
+        Lt = cogs.compute(units_per_year=tier, rollup_cost=BOM,
+                          rollup_assembly_cost=LABOUR, facilities=facs)
+        assert Lt.pool_total == pool, "the pool is a year, so it must not move with the tier"
+        assert Lt.overhead == pool / tier + 200, tier
+    # At one plant a year that plant carries the entire pool — the reading the tier switch
+    # invites people to get wrong.
+    assert cogs.compute(units_per_year=1, rollup_cost=BOM, rollup_assembly_cost=LABOUR,
+                        facilities=facs).overhead == pool + 200
+
+def test_backup_round_trips_the_cogs_facilities():
+    """A forgotten table is how a backup silently stops being a backup.
+
+    None of the Facilities screen is derivable from the BOM, so all four tables have to come
+    back whole — including the `item_id = ''` facility-own cells, which are the ones a
+    nullable column would have let a restore multiply.
+    """
+    from app.backup import build_backup_workbook, read_backup_workbook, restore_from_workbook
+    from app.models import CogsFacility, CogsFacilityItem, CogsLock, CogsValue
+    from app import cogs
+
+    db = _db()
+    # Restore refuses a workbook with no usable Items sheet, so the BOM side needs a row
+    # even though this case is about the facilities.
+    db.add(Item(item_id="AEC100A", item_name="Root", item_type="assembly",
+                module_code="AEC", is_top_level=True))
+    db.add(CogsFacility(id=1, code="FAC-ASM", kind="assembly", name="EGL assembly hall"))
+    db.commit()
+    db.add(CogsFacilityItem(id=1, facility_id=1, code="A-LINE", name="Final assembly", sort_order=0))
+    db.add(CogsFacilityItem(id=2, facility_id=1, code="A-CELL", name="Sub-assembly cells", sort_order=1))
+    # A sub-item cell, a stored zero (which is NOT the same as an absent row), and the
+    # facility's own value for the locked row.
+    db.add(CogsValue(facility_id=1, item_id="1", row_key="rent", volume_tier=100, value=260000))
+    db.add(CogsValue(facility_id=1, item_id="2", row_key="rent", volume_tier=100, value=0))
+    db.add(CogsValue(facility_id=1, item_id=cogs.OWN, row_key="salary", volume_tier=100, value=90000))
+    db.add(CogsLock(facility_id=1, row_key="salary"))
+    db.commit()
+
+    fresh = _db()
+    restore_from_workbook(fresh, read_backup_workbook(build_backup_workbook(db)))
+
+    facs = fresh.execute(select(CogsFacility)).scalars().all()
+    assert [(f.code, f.kind) for f in facs] == [("FAC-ASM", "assembly")]
+    items = sorted(i.code for i in fresh.execute(select(CogsFacilityItem)).scalars())
+    assert items == ["A-CELL", "A-LINE"]
+    locks = [(l.facility_id, l.row_key) for l in fresh.execute(select(CogsLock)).scalars()]
+    assert locks == [(1, "salary")]
+
+    vals = {
+        (v.item_id, v.row_key, v.volume_tier): float(v.value)
+        for v in fresh.execute(select(CogsValue)).scalars()
+    }
+    assert vals == {
+        ("1", "rent", 100): 260000.0,
+        ("2", "rent", 100): 0.0,          # a stored zero survives as a zero, not as absent
+        (cogs.OWN, "salary", 100): 90000.0,
+    }, vals
+
+
+def test_a_restore_does_not_multiply_the_facility_own_cells():
+    """The reason `cogs_value.item_id` is NOT NULL with an '' sentinel.
+
+    Restore dedups on the model's first unique constraint. Had `item_id` been nullable, the
+    facility-own cells would compare distinct from each other on both SQLite and Postgres and
+    a restore would stack a fresh copy on every run.
+    """
+    from app.backup import _natural_key_cols, build_backup_workbook, read_backup_workbook, restore_from_workbook
+    from app.models import CogsFacility, CogsValue
+    from app import cogs
+
+    assert _natural_key_cols(CogsValue) == ["facility_id", "item_id", "row_key", "volume_tier"]
+
+    db = _db()
+    db.add(Item(item_id="AEC100A", item_name="Root", item_type="assembly",
+                module_code="AEC", is_top_level=True))
+    db.add(CogsFacility(id=1, code="FAC-ASM", kind="assembly", name="Hall"))
+    db.commit()
+    db.add(CogsValue(facility_id=1, item_id=cogs.OWN, row_key="rent", volume_tier=100, value=50000))
+    db.commit()
+    raw = build_backup_workbook(db)
+
+    fresh = _db()
+    restore_from_workbook(fresh, read_backup_workbook(raw))
+    restore_from_workbook(fresh, read_backup_workbook(raw))   # twice, deliberately
+    own = [v for v in fresh.execute(select(CogsValue)).scalars() if v.item_id == cogs.OWN]
+    assert len(own) == 1, f"{len(own)} facility-own cells after two restores"
+
+
+"""The router, called as functions rather than over HTTP.
+
+`starlette.testclient` needs httpx, which this venv does not have and this suite does not
+want — it is designed to run with `python tests/test_invariants.py` and no test deps at all.
+Calling the handlers directly keeps that, and still exercises the pydantic payload models
+(constructed here by hand), which is where the kind-immutability guard actually lives.
+
+One trap that comes with it: a handler's `Query(default=X)` is only resolved to X by
+FastAPI. Called directly, the parameter arrives as the `Query` object itself, which is
+TRUTHY regardless of its default — so any test that cares about such a default must pass it
+explicitly. `include_archived` below is exactly that case.
+"""
+
+
+def _cogs_api_fixture():
+    """A BOM with a real cost: PLANT x1 -> STACK x4 @ EUR 250, plus 90 min of assembly."""
+    from app.models import ReferenceValue
+    db = _db()
+    db.add(Item(item_id="AEC700A", item_name="Plant", item_type="assembly",
+                module_code="AEC", is_top_level=True, cost_type_id=1))
+    db.add(Item(item_id="AEC701P", item_name="Stack", item_type="part", module_code="AEC"))
+    db.add(ReferenceValue(id=1, category="assembly_cost_type", value="Bench",
+                          meta={"rate_eur_h": 60}))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC700A", child_item_id="AEC701P", quantity=4))
+    db.add(DecidedCost(item_id="AEC701P", volume_tier=100, unit_cost_eur=250))
+    db.add(AssemblyLabor(item_id="AEC700A", volume_tier=100, time_likely=90))
+    db.commit()
+    return db
+
+
+def _mk_facility(db, code="FAC-ASM", kind="assembly", name="Hall"):
+    from app.routers import cogs as R
+    return R.create_facility(R.FacilityIn(code=code, kind=kind, name=name), db=db, user="t")
+
+
+def _mk_item(db, fid, code, name="Cell"):
+    from app.routers import cogs as R
+    return R.add_item(fid, R.FacilityItemIn(code=code, name=name), db=db, user="t")
+
+
+def _save(db, fid, cells):
+    from app.routers import cogs as R
+    return R.save_values(fid, R.ValuesPatch(cells=[R.CellIn(**c) for c in cells]),
+                         db=db, user="t")
+
+
+def test_cogs_api_ladder_matches_the_module():
+    """The endpoint is a loader plus `cogs.compute` — never a second implementation."""
+    from app.routers import cogs as R
+    from app import cogs
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+    it = _mk_item(db, f["id"], "A-LINE", "Line")
+    r = _save(db, f["id"], [
+        {"item_id": str(it["id"]), "row_key": "maint", "volume_tier": 100, "value": 260000},
+        {"item_id": str(it["id"]), "row_key": "scrap", "volume_tier": 100, "value": 2},
+        {"item_id": str(it["id"]), "row_key": "consum", "volume_tier": 100, "value": 300},
+    ])
+    assert r["saved"] == 3, r
+
+    L = R.get_ladder(root="AEC700A", db=db, volume=100)
+    # 4 x 250 parts + 90 min at EUR 60/h = 1,090, split into its two halves.
+    assert L["bom"] == 1000.0 and L["labour"] == 90.0
+    assert abs(L["bom_adj"] - 1090.0 / 0.98) < 1e-6
+    assert abs(L["direct"] - (1090.0 / 0.98 + 300.0)) < 1e-6
+    assert L["pool_total"] == 260000.0 and L["overhead"] == 2600.0
+    assert abs(L["burdened"] - (L["direct"] + 2600.0)) < 1e-9
+    # And it agrees, field for field, with calling the module directly.
+    want = cogs.compute(
+        units_per_year=100, rollup_cost=1090.0, rollup_assembly_cost=90.0,
+        facilities=[{"kind": "assembly", "code": "FAC-ASM", "locks": set(), "own": {},
+                     "items": [{"values": {"maint": 260000, "scrap": 2, "consum": 300}}]}],
+    )
+    assert abs(L["cogs_unit"] - want.cogs_unit) < 1e-9
+
+
+def test_cogs_api_a_facility_kind_is_immutable():
+    """Rejected server-side, not merely absent from the UI.
+
+    Pydantic's default is to DROP an unknown field, which would have reported a successful
+    save that changed nothing — hence extra="allow" plus an explicit check in the handler.
+    """
+    from fastapi import HTTPException
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+
+    patch = R.FacilityPatch(kind="field")
+    assert patch.model_extra == {"kind": "field"}, "extra='allow' is not in force"
+    try:
+        R.patch_facility(f["id"], patch, db=db, user="t")
+        raise AssertionError("a kind change was accepted")
+    except HTTPException as e:
+        assert e.status_code == 422 and "fixed when it is created" in str(e.detail)
+
+    # The name still patches normally, and the kind is untouched.
+    out = R.patch_facility(f["id"], R.FacilityPatch(name="Hall 2"), db=db, user="t")
+    assert (out["name"], out["kind"]) == ("Hall 2", "assembly")
+    # A typo'd field is refused too, rather than silently dropped.
+    try:
+        R.patch_facility(f["id"], R.FacilityPatch(nmae="x"), db=db, user="t")
+        raise AssertionError("an unknown field was accepted")
+    except HTTPException as e:
+        assert e.status_code == 422
+
+
+def test_cogs_api_a_row_key_outside_the_kind_is_rejected_on_write():
+    from fastapi import HTTPException
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+    it = _mk_item(db, f["id"], "A-LINE")
+
+    # `warranty` is a field-works row. On an assembly facility it is not a row at all.
+    try:
+        _save(db, f["id"], [{"item_id": str(it["id"]), "row_key": "warranty",
+                             "volume_tier": 100, "value": 2.5}])
+        raise AssertionError("a foreign row key was stored")
+    except HTTPException as e:
+        assert e.status_code == 422 and "not a row on a 'assembly'" in str(e.detail)
+
+    # A bad tier is refused too, and the WHOLE batch fails rather than half-writing.
+    try:
+        _save(db, f["id"], [
+            {"item_id": str(it["id"]), "row_key": "maint", "volume_tier": 100, "value": 1},
+            {"item_id": str(it["id"]), "row_key": "rent", "volume_tier": 7, "value": 1},
+        ])
+        raise AssertionError("a bad tier was accepted")
+    except HTTPException as e:
+        assert e.status_code == 422
+    assert R.list_facilities(db=db, include_archived=False)["facilities"][0]["items"][0]["values"] == {}, "the batch half-wrote"
+
+
+def test_cogs_api_clearing_a_cell_is_not_the_same_as_zero():
+    """Absent means "not entered" and shows an em dash; 0 means "known to be zero"."""
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+    it = _mk_item(db, f["id"], "A-LINE")
+    cell = {"item_id": str(it["id"]), "row_key": "maint", "volume_tier": 100}
+
+    _save(db, f["id"], [{**cell, "value": 0}])
+    got = R.list_facilities(db=db, include_archived=False)["facilities"][0]["items"][0]["values"]
+    assert got == {"maint": {100: 0.0}}, got           # a stored zero is present
+
+    _save(db, f["id"], [{**cell, "value": None}])
+    got = R.list_facilities(db=db, include_archived=False)["facilities"][0]["items"][0]["values"]
+    assert got == {}, got                              # cleared means gone, not zero
+
+
+def test_cogs_api_locking_seeds_from_the_aggregate_so_nothing_jumps():
+    """On locking, the facility's value is seeded from the current roll-up — a sum for a
+    quantity row, an average of the non-zero values for a rate row."""
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+    a = _mk_item(db, f["id"], "A-ONE")
+    b = _mk_item(db, f["id"], "A-TWO")
+    _save(db, f["id"], [
+        {"item_id": str(a["id"]), "row_key": "maint", "volume_tier": 100, "value": 40000},
+        {"item_id": str(b["id"]), "row_key": "maint", "volume_tier": 100, "value": 60000},
+        {"item_id": str(a["id"]), "row_key": "salary", "volume_tier": 100, "value": 90000},
+        {"item_id": str(b["id"]), "row_key": "salary", "volume_tier": 100, "value": 70000},
+    ])
+    pool_before = R.get_ladder(root="AEC700A", db=db, volume=100)["pool_total"]
+    assert pool_before == 100000.0
+
+    seeded = R.lock_row(f["id"], "maint", db=db, user="t")["seeded"]
+    assert seeded[100] == 100000.0                     # the SUM, for a quantity row
+    after = R.get_ladder(root="AEC700A", db=db, volume=100)
+    assert after["pool_total"] == pool_before, "locking moved the number"
+
+    # A rate row seeds from the average of the non-zero values instead.
+    assert R.lock_row(f["id"], "salary", db=db, user="t")["seeded"][100] == 80000.0
+
+    # Unlocking leaves the sub-item values alone — the parent is not distributed down.
+    R.unlock_row(f["id"], "maint", db=db, user="t")
+    vals = {it["code"]: it["values"]["maint"][100] for it in R.list_facilities(db=db, include_archived=False)["facilities"][0]["items"]}
+    assert vals == {"A-ONE": 40000.0, "A-TWO": 60000.0}, vals
+
+
+def test_cogs_api_reports_a_floor_when_the_bom_is_not_fully_costed():
+    """Coverage propagates all the way up: COGS on a half-priced BOM is a floor, and says so
+    rather than presenting a confident number."""
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    db.add(Item(item_id="AEC702P", item_name="Uncosted", item_type="part", module_code="AEC"))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC700A", child_item_id="AEC702P", quantity=1))
+    db.commit()
+    L = R.get_ladder(root="AEC700A", db=db, volume=100)
+    assert L["coverage"]["is_floor"] is True
+    assert L["coverage"]["missing"] == ["AEC702P"]
+    assert L["coverage"]["gaps"] == 1
+
+
+def test_cogs_api_names_the_divisor_out_loud():
+    """@1 is not "what a prototype costs" — it is "what a plant costs at a company running
+    one plant a year". The tier must never silently double as a production rate, so the
+    divisor is named in the payload rather than implied by the button."""
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    for tier, wanted in ((1, "1 plants/yr"), (100, "100 plants/yr"), (10000, "10,000 plants/yr")):
+        notes = R.get_ladder(root="AEC700A", db=db, volume=tier)["notes"]
+        assert any(wanted in n for n in notes), notes
+        assert any("cannot be added" in n for n in notes)
+        assert any("end of line" in n for n in notes)
+
+
+def test_cogs_api_has_no_grand_total_endpoint():
+    """Full allocation per root makes two roots' COGS unaddable — sum them and the company
+    is double-counted. So the endpoint does not exist, deliberately and permanently."""
+    from app.main import app
+    spec = app.openapi()
+    cogs_paths = {p for p in spec["paths"] if "/cogs" in p}
+    assert cogs_paths, "the cogs router is not mounted"
+    for p in cogs_paths:
+        assert "grand" not in p and "total" not in p, p
+    # And /cogs/summary is per-root: the root is required, not optional.
+    params = spec["paths"]["/api/cogs/summary"]["get"]["parameters"]
+    root = next(x for x in params if x["name"] == "root")
+    assert root["required"] is True
+
+
+def test_cogs_api_pending_lists_facility_gaps_but_not_locked_rows():
+    """A locked row is not a gap on a sub-item — it is not entered there by design."""
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db, code="FAC-FLD", kind="field", name="Field")
+    it = _mk_item(db, f["id"], "W-INST", "Install")
+
+    before = {r["volume_tier"]: set(r["missing"])
+              for r in R.get_pending(db=db) if r["item_id"] == it["id"]}
+    # `commission` is gone — the crew's commissioning work is in their salaries.
+    assert before[100] == {"fte", "salary", "equip", "travel", "install",
+                           "warranty"}, before[100]
+
+    R.lock_row(f["id"], "salary", db=db, user="t")
+    after = {r["volume_tier"]: set(r["missing"])
+             for r in R.get_pending(db=db) if r["item_id"] == it["id"]}
+    assert "salary" not in after[100], after[100]
+
+
+
+def test_cogs_facility_codes_are_their_own_namespace():
+    """Facility codes have no relation to part numbers, and the part-number rules must not
+    be applied to them — nor theirs to part numbers."""
+    import pydantic
+    from app.routers.cogs import FacilityIn, FacilityItemIn
+
+    # Every code in the handoff fixture validates.
+    for c in ("FAC-ASM", "FAC-QA", "FAC-SCM", "FAC-FLD"):
+        FacilityIn(code=c, kind="assembly", name="x")
+    for c in ("A-CELL", "A-LINE", "A-TEST", "Q-LAB", "Q-INSP",
+              "S-IN", "S-WH", "S-OUT", "W-INST", "W-COM"):
+        FacilityItemIn(code=c, name="x")
+
+    # A part number is not a facility code, and vice versa.
+    for bad in ("AEC066A", "fac-asm", "FACASM", "FAC_ASM"):
+        try:
+            FacilityIn(code=bad, kind="assembly", name="x")
+            raise AssertionError(f"accepted {bad} as a facility code")
+        except pydantic.ValidationError:
+            pass
+
+
+def test_cogs_api_serves_the_aggregates_the_matrix_renders():
+    """The facility screen does zero arithmetic, so the payload has to carry the numbers it
+    would otherwise have had to invent: the read-only aggregate behind an unlocked facility
+    cell, each facility's per-rung roll-up, and the totals for the KPI tiles."""
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+    a = _mk_item(db, f["id"], "A-ONE")
+    b = _mk_item(db, f["id"], "A-TWO")
+    _save(db, f["id"], [
+        {"item_id": str(a["id"]), "row_key": "maint", "volume_tier": 100, "value": 40000},
+        {"item_id": str(b["id"]), "row_key": "maint", "volume_tier": 100, "value": 60000},
+        {"item_id": str(a["id"]), "row_key": "salary", "volume_tier": 100, "value": 90000},
+        {"item_id": str(b["id"]), "row_key": "salary", "volume_tier": 100, "value": 70000},
+        {"item_id": str(a["id"]), "row_key": "consum", "volume_tier": 100, "value": 300},
+    ])
+    out = R.list_facilities(db=db, include_archived=False)
+    fac = out["facilities"][0]
+
+    # A quantity row aggregates by SUM; a rate row by the mean of the non-zero values. These
+    # are the two things a facility's read-only cell shows.
+    assert fac["aggregates"]["maint"][100] == 100000.0
+    assert fac["aggregates"]["salary"][100] == 80000.0
+    # An absent row has no aggregate at all — that is the em dash, not a zero. `util` is
+    # never entered by this fixture, so it must not appear even as 0.
+    assert "util" not in fac["aggregates"], fac["aggregates"].keys()
+
+    r = fac["rollup"][100]
+    assert r["pool_year"] == 100000.0
+    assert r["overhead_per_plant"] == 1000.0        # the pool over the tier
+    assert r["direct_per_plant"] == 300.0
+    assert r["per_plant_total"] == 1300.0
+    # A pool and a per-plant figure look identical on screen, so both are stated rather than
+    # one being derived from the other.
+    assert r["year_total"] == 100000.0 + 300.0 * 100
+
+    t100 = out["totals"][100]
+    assert (t100["pool_year"], t100["direct_per_plant"]) == (100000.0, 300.0)
+    # The tiers are independent: nothing was entered at @1 or @10k.
+    assert out["totals"][1]["pool_year"] == 0.0
+
+
+def test_cogs_api_archived_facilities_leave_the_ladder():
+    """Archiving is the editor's alternative to deletion — it keeps the numbers and the
+    history, but the facility stops being costed."""
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+    it = _mk_item(db, f["id"], "A-LINE")
+    _save(db, f["id"], [
+        {"item_id": str(it["id"]), "row_key": "maint", "volume_tier": 100, "value": 260000},
+    ])
+    assert R.get_ladder(root="AEC700A", db=db, volume=100)["pool_total"] == 260000.0
+
+    R.patch_facility(f["id"], R.FacilityPatch(archived=True), db=db, user="t")
+    assert R.get_ladder(root="AEC700A", db=db, volume=100)["pool_total"] == 0.0
+    # The figures are still there, and still returned when asked for.
+    assert R.list_facilities(db=db, include_archived=False)["facilities"] == []
+    kept = R.list_facilities(db=db, include_archived=True)["facilities"][0]
+    assert kept["items"][0]["values"]["maint"][100] == 260000.0
+    # But an archived facility is not in the totals it would otherwise inflate.
+    assert R.list_facilities(db=db, include_archived=True)["totals"][100]["pool_year"] == 0.0
+
+
+def test_history_filter_takes_several_entity_types():
+    """One filter chip legitimately covers four entity types. Filtering client-side instead
+    would have quietly broken `limit`, returning a short page of mostly-hidden rows."""
+    from app.routers.edit import global_history
+    from app.routers import cogs as R
+    db = _cogs_api_fixture()
+    f = _mk_facility(db)
+    it = _mk_item(db, f["id"], "A-LINE")
+    _save(db, f["id"], [
+        {"item_id": str(it["id"]), "row_key": "maint", "volume_tier": 100, "value": 1},
+    ])
+    R.lock_row(f["id"], "maint", db=db, user="t")
+
+    facilities = "cogs_facility,cogs_facility_item,cogs_value,cogs_lock"
+    types = {h.entity_type for h in global_history(db=db, entity_type=facilities)}
+    assert types == {"cogs_facility", "cogs_facility_item", "cogs_value", "cogs_lock"}, types
+    # A single type still works exactly as before.
+    only = {h.entity_type for h in global_history(db=db, entity_type="cogs_lock")}
+    assert only == {"cogs_lock"}
+    # And every one of these rows is genuinely in the log, not just filterable.
+    assert len(global_history(db=db, entity_type=facilities)) >= 4
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed, failed = 0, 0

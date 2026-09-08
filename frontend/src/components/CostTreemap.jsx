@@ -12,9 +12,10 @@ import { squarify, colorAt } from "./Treemap.jsx";
 // The viewBox is sized to the real pixel width, so text stays a constant size at any width.
 
 // ── ZEF design tokens, inlined ────────────────────────────────────────────────────────
-// The system is explicit: warm bone surfaces, charcoal ink, hairlines, ONE red, and
-// "no drop shadows". Concrete values (not var()) so the exported PNG matches the screen.
-const BG = "#F5F2EE";          // --bg
+// The system is explicit: a white ground with warm fills on it, charcoal ink, hairlines,
+// ONE red, and "no drop shadows". Concrete values (not var()) so the exported PNG matches
+// the screen — which means this has to be changed in step with --bg, not left to drift.
+const BG = "#FFFFFF";          // --bg
 const INK = "#1C1B1A";         // --ink
 const INK_3 = "#6B6862";       // --ink-3
 const HAIR = "rgba(28,27,26,0.12)";        // --hair

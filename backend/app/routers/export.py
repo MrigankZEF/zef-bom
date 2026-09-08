@@ -163,10 +163,10 @@ def export_csv(root: str = Query(...), db: Session = Depends(get_db)):
 # the highest number is final assembly — the fishbone spine runs left to right.
 
 _MERMAID_CLASSES = """
-    classDef product fill:#1C1B1A,stroke:#000000,color:#F5F2EE,stroke-width:2px;
+    classDef product fill:#1C1B1A,stroke:#000000,color:#FFFFFF,stroke-width:2px;
     classDef station fill:#E6E1D8,stroke:#3D5A6B,color:#1C1B1A,stroke-width:1.5px;
-    classDef part fill:#FBF9F5,stroke:#C9C2B8,color:#3D3B38;
-    classDef supplied fill:#FBF9F5,stroke:#3D5A6B,color:#3D5A6B,stroke-width:1.5px,stroke-dasharray:5 3;
+    classDef part fill:#F9F7F3,stroke:#C9C2B8,color:#3D3B38;
+    classDef supplied fill:#F9F7F3,stroke:#3D5A6B,color:#3D5A6B,stroke-width:1.5px,stroke-dasharray:5 3;
 """
 
 

@@ -871,5 +871,10 @@ def global_history(
         ChangeHistory.changed_at.desc(), ChangeHistory.id.desc()
     ).limit(limit)
     if entity_type:
-        stmt = stmt.where(ChangeHistory.entity_type == entity_type)
+        # Comma-separated, because one filter chip can legitimately cover several entity
+        # types: "Facilities" is four of them (cogs_facility, cogs_facility_item, cogs_value,
+        # cogs_lock). The alternative — the client fetching everything and filtering locally
+        # — would quietly break the `limit`, returning a short page of mostly-hidden rows.
+        wanted = [x.strip() for x in entity_type.split(",") if x.strip()]
+        stmt = stmt.where(ChangeHistory.entity_type.in_(wanted))
     return list(db.execute(stmt).scalars())
