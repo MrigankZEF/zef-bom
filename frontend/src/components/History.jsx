@@ -11,6 +11,12 @@ const FILTERS = [
   // Four entity types behind one chip. Without it the cogs_* rows land in "All" and are
   // filterable by nothing — the reason this list being hardcoded needed revisiting.
   { key: "cogs_facility,cogs_facility_item,cogs_value,cogs_lock", label: "Facilities" },
+  // Reference values carry `meta.rate_eur_h` for the assembly cost types — the EUR/hour behind
+  // every assembly cost in the system — and used to change with no trace at all.
+  { key: "reference_value", label: "Reference" },
+  // Whole-database events: a catalog wipe, a restore from backup. One row each, naming the
+  // safety backup that holds the previous state.
+  { key: "database", label: "Database" },
 ];
 
 const toneFor = (t) => (t === "create" ? "ok" : t === "remove" ? "accent" : "info");

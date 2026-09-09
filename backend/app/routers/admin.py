@@ -6,6 +6,8 @@ dropdowns and are managed here via '+ add'.
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -252,21 +254,35 @@ def add_reference(body: ReferenceIn, db: Session = Depends(get_db), user: str = 
     if existing:
         if existing.archived:  # un-archive instead of duplicating
             existing.archived = False
+            record_change(db, entity_type="reference_value", entity_id=str(existing.id),
+                          change_type="update", field_changed="archived",
+                          old_value="True", new_value="False", changed_by=user)
             db.commit()
         return {"id": existing.id, "category": existing.category, "value": existing.value}
     ref = ReferenceValue(category=body.category, value=body.value, label=body.label, meta=body.meta)
     db.add(ref)
+    db.flush()   # need the id for the history row
+    # Logged because for category 'assembly_cost_type' this row carries `meta.rate_eur_h` —
+    # the EUR/hour behind every assembly cost in the system. Nothing recorded who set a rate,
+    # or when, which also made "the BOM as of date X" unanswerable for any assembly.
+    record_change(db, entity_type="reference_value", entity_id=str(ref.id),
+                  change_type="create", field_changed=f"{ref.category}:{ref.value}",
+                  new_value=json.dumps(ref.meta, sort_keys=True) if ref.meta else None,
+                  changed_by=user)
     db.commit()
     db.refresh(ref)
     return {"id": ref.id, "category": ref.category, "value": ref.value}
 
 
 @router.delete("/reference/{ref_id}")
-def archive_reference(ref_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin)) -> dict:
+def archive_reference(ref_id: int, db: Session = Depends(get_db), admin: str = Depends(require_admin)) -> dict:
     ref = db.get(ReferenceValue, ref_id)
     if ref is None:
         raise HTTPException(404, "Reference value not found")
     ref.archived = True
+    record_change(db, entity_type="reference_value", entity_id=str(ref_id),
+                  change_type="remove", field_changed=f"{ref.category}:{ref.value}",
+                  old_value="live", new_value="archived", changed_by=admin)
     db.commit()
     return {"id": ref_id, "archived": True}
 
@@ -423,6 +439,8 @@ async def import_catalog(
     # backup failure block the import — but always report whether one was saved.
     pre_backup = run_drive_backup(db, reason="prewipe")
 
+    # Counted before it is gone, so the log can say what was removed.
+    wiped_items = db.execute(select(func.count()).select_from(Item)).scalar() or 0
     # wipe BOM data — keep users and reference values
     for model in (ChangeHistory, BomLink, DecidedCost, CostEvidence, AssemblyLabor, FieldValue, UploadBatch):
         db.execute(delete(model))
@@ -443,6 +461,22 @@ async def import_catalog(
                 cost_min=rec["fmin"], cost_max=rec["fmax"], decided_by=admin,
             ))
             costed += 1
+    # AFTER the wipe, not before: the wipe deletes ChangeHistory itself, so a row written
+    # first would be destroyed by the very event it records.
+    #
+    # One summary row rather than one per deleted item. An import removes tens of thousands of
+    # rows and the detail is already in the pre-wipe workbook, so the log says what happened,
+    # who did it, and where to find the previous state — which is what somebody reading the
+    # History tab a month later actually needs.
+    record_change(
+        db, entity_type="database", entity_id="catalog-import", change_type="remove",
+        field_changed="wiped_and_reimported",
+        old_value=f"{wiped_items} items", new_value=f"{created} items from {file.filename}",
+        changed_by=admin,
+        change_reason=(f"pre-wipe backup: {pre_backup.get('filename')}"
+                       if pre_backup.get("saved") else
+                       f"pre-wipe backup NOT saved ({pre_backup.get('error') or pre_backup.get('reason')})"),
+    )
     db.commit()
     return {"wiped": True, "items_created": created, "with_10k_cost": costed,
             "skipped": plan["skipped"], "backup": pre_backup}
@@ -538,4 +572,14 @@ async def restore_backup(
         result = restore_from_workbook(db, sheets)
     except Exception as exc:  # noqa: BLE001 — restore rolled back; report clearly
         raise HTTPException(500, f"Restore failed and was rolled back — nothing changed: {exc}") from exc
+    # After the restore, and for the same reason as the import above: ChangeHistory is one of
+    # the tables the workbook replaces, so the log now says whatever the backup said. Without
+    # this row there is nothing anywhere to explain why the log jumps.
+    record_change(
+        db, entity_type="database", entity_id="restore", change_type="update",
+        field_changed="restored_from_backup", new_value=file.filename, changed_by=admin,
+        change_reason=(f"pre-restore backup: {pre_backup.get('filename')}"
+                       if pre_backup.get("saved") else "pre-restore backup NOT saved"),
+    )
+    db.commit()
     return {**result, "backup": pre_backup, "safety_backup_saved": bool(pre_backup.get("saved"))}

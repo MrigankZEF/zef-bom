@@ -59,7 +59,12 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 - `POST /uploads/{id}/reject`
 
 ## M6 — history / attachments / auth
-- `GET /history?entity=&since=&as_of=` — change feed + "BOM as of date X"
+- `GET /history?entity=&since=&as_of=` — change feed + "BOM as of date X". `entity` takes a
+  comma-separated list. Beyond the per-item kinds, `reference_value` covers the admin lists
+  (including the EUR/hour on an assembly cost type) and `database` covers whole-database
+  events — a catalog wipe or a restore — one row each, naming the safety backup that holds
+  the previous state. Those rows are written AFTER the event, because `change_history` is
+  itself one of the tables a wipe or a restore replaces.
 - `GET /pending` — items missing required fields. `missing[]` holds the gaps; `covered{tier:
   {state, by}}` holds the tiers where there is nothing to fill because the work is paid for
   above — `labor` (an ancestor's cover, whose cost the rollup still adds on top) or `boundary`

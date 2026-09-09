@@ -19,11 +19,12 @@ from pathlib import Path
 # Make `app` importable when run as a plain script from backend/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import create_engine, event, select  # noqa: E402
+from sqlalchemy import create_engine, delete, event, func, select  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.db import Base  # noqa: E402
 from app import models  # noqa: F401,E402  (registers tables on Base.metadata)
+from app.history import record_change  # noqa: E402
 from app.models import AssemblyLabor, BomLink, DecidedCost, Item, ItemLink  # noqa: E402
 
 
@@ -1838,3 +1839,62 @@ def test_an_automatic_pin_says_so_in_the_history():
                if h.field_changed == "thumbnail_file_id")
     assert row.changed_by == AUTO_PIN_BY
     assert "AEC001A.png" in (row.change_reason or "")
+
+
+# ── the three write paths that used to change data with no trace ────────────
+def test_setting_a_reference_value_is_logged_with_its_rate():
+    """For category 'assembly_cost_type' this row carries the EUR/hour behind every assembly
+    cost in the system, and nothing recorded who set it."""
+    from app.models import ChangeHistory, ReferenceValue
+    from app.routers.admin import add_reference
+    from app.schemas import ReferenceIn
+
+    db = _db()
+    add_reference(ReferenceIn(category="assembly_cost_type", value="Bench", label=None,
+                              meta={"rate_eur_h": 60}), db=db, user="leonard@theflipflopi.com")
+    row = next(h for h in db.execute(select(ChangeHistory)).scalars()
+               if h.entity_type == "reference_value")
+    assert row.change_type == "create"
+    assert row.field_changed == "assembly_cost_type:Bench"
+    assert "60" in (row.new_value or ""), row.new_value
+    assert row.changed_by == "leonard@theflipflopi.com"
+    ref = db.execute(select(ReferenceValue)).scalar_one()
+    assert ref.meta == {"rate_eur_h": 60}
+
+
+def test_archiving_a_reference_value_is_logged():
+    from app.models import ChangeHistory, ReferenceValue
+    from app.routers.admin import archive_reference
+
+    db = _db()
+    db.add(ReferenceValue(id=7, category="supplier", value="Schultz"))
+    db.commit()
+    archive_reference(7, db=db, admin="admin@x")
+    row = next(h for h in db.execute(select(ChangeHistory)).scalars()
+               if h.entity_type == "reference_value")
+    assert (row.change_type, row.new_value, row.changed_by) == ("remove", "archived", "admin@x")
+
+
+def test_the_row_recording_a_wipe_survives_the_wipe():
+    """ChangeHistory is one of the tables a catalog import deletes, so the row has to be
+    written AFTER the wipe. Written first, it would be destroyed by the event it records."""
+    from app.models import ChangeHistory
+
+    db = _db()
+    db.add(Item(item_id="AEC001A", item_name="Old", item_type="part", module_code="AEC"))
+    db.commit()
+    # What the endpoint does, in order: count, wipe (history included), insert, then log.
+    before = db.execute(select(func.count()).select_from(Item)).scalar()
+    db.execute(delete(ChangeHistory))
+    db.execute(delete(Item))
+    db.flush()
+    db.add(Item(item_id="AEC002A", item_name="New", item_type="part", module_code="AEC"))
+    record_change(db, entity_type="database", entity_id="catalog-import", change_type="remove",
+                  field_changed="wiped_and_reimported", old_value=f"{before} items",
+                  new_value="1 items from inventory.xlsx", changed_by="admin@x",
+                  change_reason="pre-wipe backup: zef-bom-backup-prewipe.xlsx")
+    db.commit()
+    rows = list(db.execute(select(ChangeHistory)).scalars())
+    assert len(rows) == 1, "the wipe's own record must be the one thing that survives it"
+    assert rows[0].old_value == "1 items"
+    assert "prewipe" in rows[0].change_reason
