@@ -1449,3 +1449,51 @@ def test_backup_carries_the_part_number_ledger():
 
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)
+
+
+# ── weight coverage: the figure that qualifies € / kg ────────────────────────
+def test_weight_coverage_counts_the_same_parts_the_weight_is_summed_over():
+    """A rolled-up weight over half-weighed parts is as wrong as an unpriced BOM, and it is
+    what the Cost per kg tile divides by — so coverage has to be measured over exactly the
+    set `weight_grams` was summed over, or the tile contradicts the caveat beside it."""
+    from app.routers.tree import costing_breakdown
+
+    db = _boundary_fixture(covers="none", quote=None)
+    # Wire has a weight, Terminal's is cleared: one of the two priced leaves is unweighed.
+    db.get(Item, "AEC923P").weight_grams = None
+    db.commit()
+
+    t = costing_breakdown(db=db, root="AEC920A", volume=100)["totals"]
+    assert t["weight_total"] == 2, t["weight_total"]          # Terminal + Wire
+    assert t["weight_covered"] == 1, t["weight_covered"]
+    assert t["weight_missing"] == ["AEC923P"], t["weight_missing"]
+    assert t["weight_coverage"] == 0.5, t["weight_coverage"]
+    # 2 harnesses x 1 branch x 3 wire x 20 g
+    assert t["weight_grams"] == 120.0, t["weight_grams"]
+
+
+def test_weight_coverage_is_whole_when_everything_is_weighed():
+    from app.routers.tree import costing_breakdown
+
+    db = _boundary_fixture(covers="none", quote=None)
+    t = costing_breakdown(db=db, root="AEC920A", volume=100)["totals"]
+    assert t["weight_missing"] == []
+    assert t["weight_covered"] == t["weight_total"] == 2
+    assert t["weight_coverage"] == 1.0
+
+
+def test_a_bom_with_no_weights_at_all_reports_zero_coverage_not_a_crash():
+    """The Cost per kg tile shows an em dash here rather than dividing by zero. The API's job
+    is to say the weight is absent, without inventing one."""
+    from app.routers.tree import costing_breakdown
+
+    db = _boundary_fixture(covers="none", quote=None)
+    for iid in ("AEC923P", "AEC924P"):
+        db.get(Item, iid).weight_grams = None
+    db.commit()
+
+    t = costing_breakdown(db=db, root="AEC920A", volume=100)["totals"]
+    assert t["weight_grams"] == 0.0
+    assert t["weight_covered"] == 0
+    assert t["weight_coverage"] == 0.0
+    assert set(t["weight_missing"]) == {"AEC923P", "AEC924P"}

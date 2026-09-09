@@ -53,7 +53,6 @@ export default function Costing({ onOpenPart, tier, setTier }) {
 
   const fmt = metric === "cost" ? fmtEURcompact : fmtWeight;
   const exportPng = () => svgRef.current && exportSvgToPng(svgRef.current, `${(data?.root_name || root || "bom")}-cost-treemap.png`);
-  const topPart = data?.parts?.[0];
   const sortedByWeight = [...(data?.parts || [])].sort((a, b) => b.weight_grams - a.weight_grams);
   const topWeight = sortedByWeight[0];
   const ct = data?.totals;
@@ -65,6 +64,14 @@ export default function Costing({ onOpenPart, tier, setTier }) {
   const shownCost = scenarioCost(ct);
   const costRange = ct && ct.cost_min != null && (ct.cost_min < ct.cost || ct.cost_max > ct.cost)
     ? `${fmtEURcompact(ct.cost_min)}–${fmtEURcompact(ct.cost_max)}` : null;
+  // Density, so the unit is fixed at kg however light the BOM is — `fmtWeight` flips to grams
+  // under 1 kg, and a tile whose unit moves cannot be compared between two BOMs. Null rather
+  // than Infinity when nothing has been weighed.
+  const kg = (ct?.weight_grams || 0) / 1000;
+  const eurPerKg = kg > 0 && shownCost > 0 ? shownCost / kg : null;
+  // Every unweighed part drags the real €/kg down, so the figure on screen is a ceiling, not
+  // an estimate. Saying which it is costs one clause.
+  const unweighed = ct?.weight_missing?.length || 0;
 
   return (
     <div className="page">
@@ -122,7 +129,13 @@ export default function Costing({ onOpenPart, tier, setTier }) {
             <div className="kpi">
               <span className="kpi-label">Total weight</span>
               <span className="kpi-val">{fmtWeight(data.totals.weight_grams)}</span>
-              <span className="kpi-sub">rolled up</span>
+              {/* Weight coverage sits on the tile whose number it qualifies, not with the cost
+                  coverage — a rolled-up weight over half-weighed parts is as wrong as an
+                  unpriced BOM, and it is what € / kg divides by. */}
+              <span className="kpi-sub">{data.totals.weight_total
+                ? `${data.totals.weight_covered}/${data.totals.weight_total} parts weighed${
+                    unweighed > 0 ? ` · ${unweighed} missing` : ""}`
+                : "rolled up"}</span>
             </div>
             <div className="kpi">
               <span className="kpi-label">Coverage</span>
@@ -130,10 +143,15 @@ export default function Costing({ onOpenPart, tier, setTier }) {
               <span className="kpi-sub">{data.totals.covered}/{data.totals.total} inputs priced{
                 data.totals.parts_total != null && <> · {data.totals.parts_covered}/{data.totals.parts_total} parts</>}</span>
             </div>
+            {/* Was "Most expensive", which restated the first row of the breakdown below and
+                the biggest block in the treemap beside it. € / kg is the one figure on this
+                screen that neither of those shows. */}
             <div className="kpi">
-              <span className="kpi-label">Most expensive</span>
-              <span className="kpi-val" style={{ fontSize: 18 }}>{topPart && topPart.cost > 0 ? fmtEURcompact(topPart.cost) : "—"}</span>
-              <span className="kpi-sub">{topPart && topPart.cost > 0 ? topPart.item_name : "no costs yet"}</span>
+              <span className="kpi-label">Cost per kg{scenario !== "likely" && <> · <strong>{scenario}</strong></>}</span>
+              <span className="kpi-val">{eurPerKg != null ? `€ ${eurPerKg.toLocaleString(undefined, { maximumFractionDigits: eurPerKg < 100 ? 1 : 0 })}` : "—"}</span>
+              <span className="kpi-sub">{eurPerKg == null
+                ? "no weight rolled up"
+                : `over ${fmtWeight(data.totals.weight_grams)}${unweighed > 0 ? ` · ${unweighed} parts unweighed, so a ceiling` : ""}`}</span>
             </div>
           </div>
 

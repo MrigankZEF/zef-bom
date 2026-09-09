@@ -201,6 +201,7 @@ def costing_breakdown(
             "has_cost": unit_cost is not None, "has_weight": weight is not None,
         })
     parts.sort(key=lambda x: -x["cost"])
+    weighed = sum(1 for p in parts if p["has_weight"])
 
     # Per-assembly cost (its own time × rate × effective qty) — one entry per assembly.
     asm_costs = []
@@ -233,6 +234,15 @@ def costing_breakdown(
             # kept separate so the tab can still say how many PARTS specifically are priced
             "parts_covered": covered, "parts_total": len(leaves),
             "missing_assembly": sorted(set(rl.missing_assembly)),
+            # Weight has the same failure mode as cost and had no readout at all: the tile
+            # said "136.83 kg · rolled up" whether every part was weighed or half were never
+            # entered. Counted over `parts` rather than over `rl.weight_missing` on purpose —
+            # `weight_grams` above is summed across exactly this set, so the coverage that
+            # qualifies it has to be measured over the same set or the two disagree.
+            "weight_covered": weighed,
+            "weight_total": len(parts),
+            "weight_coverage": round(weighed / len(parts), 4) if parts else 0.0,
+            "weight_missing": sorted({p["item_id"] for p in parts if not p["has_weight"]}),
         },
     }
 
