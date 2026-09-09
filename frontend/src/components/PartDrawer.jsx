@@ -1427,7 +1427,9 @@ function EvidenceBlock({ itemId, evidence, tier = null, reload, setError }) {
             </span>
             <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
           </div>
-          {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
+          {/* pre-wrap, or a note typed over three lines reads back as one run and the textarea
+              above is decoration. Still wraps on long URLs. */}
+          {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{q.note}</div>}
           {q.attachment_url && (
             <a href={extUrl(q.attachment_url)} target="_blank" rel="noreferrer" className="mono" title={q.attachment_url}
               style={{ display: "block", marginTop: 3, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 11.5 }}>
@@ -1442,7 +1444,11 @@ function EvidenceBlock({ itemId, evidence, tier = null, reload, setError }) {
         <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
         {tier == null && <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>}
       </div>
-      <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
+      {/* A textarea, like the item's own Notes field. This is where the working behind a price
+          goes — a couple of lines of arithmetic, a link, why the last quote was rejected — and
+          a single-line input made all of that look like it did not belong. The column is Text;
+          only the box was small. */}
+      <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><textarea className="input" style={{ height: 64, padding: 8 }} value={ev.note} placeholder={"e.g. derived from 1.2 kg × €4.5/kg + machining\nsupplier quote 2026-04-12 was €6.10, rejected on lead time"} onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
       <div style={{ marginTop: 8 }}><Field label="Link (quote, product page…)"><input className="input mono" value={ev.attachment_url} placeholder="https://…" onChange={(e) => setEv({ ...ev, attachment_url: e.target.value })} /></Field></div>
       <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 10 }}>
         <span style={{ fontSize: 11, color: "var(--ink-3)" }}>a price, a note or a link — any one is enough</span>
