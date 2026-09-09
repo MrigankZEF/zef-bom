@@ -42,6 +42,86 @@ def top_level_reachable(db: Session) -> set[str]:
     return seen
 
 
+# How far each item is covered from ABOVE, per volume tier.
+#
+# `AssemblyLabor.covers` says how far one assembly's cost reaches DOWN. The question the review
+# queue needs is the mirror of that: for this item, is there any way down to it from a live
+# top-level root that is NOT already paid for? Because if every path to it is covered, then
+# filling in its numbers changes nothing anybody will ever read — and the queue was asking for
+# them anyway, which is how it stayed permanently red on rows nobody could usefully close.
+#
+# "Every path" is the whole point. An item used once under a covering assembly and once under
+# one that does not is a REAL gap: the second usage needs the number. So the weakest claim
+# along any path wins, and that is what the relaxation below computes.
+_OPEN, _LABOR, _BOUNDARY = 0, 1, 2
+COVER_STATE = {_OPEN: "open", _LABOR: "labor", _BOUNDARY: "boundary"}
+
+
+def cover_reach(db: Session, tiers: tuple[int, ...] = (1, 100, 10000)) -> dict[str, dict[int, tuple[str, str | None]]]:
+    """`{item_id: {tier: (state, covered_by)}}` for every item in a live BOM.
+
+    `state` is one of:
+      * `open`     — at least one path down to this item is not covered. A missing number here
+                     is a real gap.
+      * `labor`    — every path is under an ancestor whose `covers='labor'`. Nothing needs
+                     filling, but note that the rollup still ADDS an assembly cost entered
+                     here, on top of the covering assembly's own — see the drawer's note.
+      * `boundary` — every path is under a `covers='all'` assembly, whose one quoted price
+                     replaced the whole subtree. Anything entered below it is discarded.
+
+    `covered_by` names the nearest ancestor that established the cover, so the UI can say
+    *which* assembly is paying for this one rather than just that something is.
+    """
+    live = {
+        it.item_id: it
+        for it in db.execute(select(Item).where(Item.archived.is_(False))).scalars()
+    }
+    kids: dict[str, list[str]] = {}
+    for bl in db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars():
+        if bl.parent_item_id in live and bl.child_item_id in live:
+            kids.setdefault(bl.parent_item_id, []).append(bl.child_item_id)
+    covers: dict[tuple[str, int], str] = {
+        (al.item_id, al.volume_tier): al.covers
+        for al in db.execute(select(AssemblyLabor)).scalars()
+        if al.covers and al.covers != "none"
+    }
+
+    out: dict[str, dict[int, tuple[str, str | None]]] = {}
+    roots = [iid for iid, it in live.items() if it.is_top_level]
+    for tier in tiers:
+        # Relaxation rather than a plain walk: an item can be reached by many paths and the
+        # weakest one decides. Only re-expanding when a WEAKER state arrives makes this
+        # terminate on a shared sub-assembly and on a cycle alike.
+        best: dict[str, tuple[int, str | None]] = {}
+        queue: list[str] = []
+        for r in roots:
+            if best.get(r, (99, None))[0] > _OPEN:
+                best[r] = (_OPEN, None)
+                queue.append(r)
+        while queue:
+            cur = queue.pop()
+            rank, by = best[cur]
+            own = covers.get((cur, tier), "none")
+            # The cover applies to what is BELOW `cur`, never to `cur` itself.
+            if rank == _BOUNDARY:
+                child = (_BOUNDARY, by)
+            elif own == "all":
+                child = (_BOUNDARY, cur)
+            elif rank == _LABOR:
+                child = (_LABOR, by)
+            elif own == "labor":
+                child = (_LABOR, cur)
+            else:
+                child = (_OPEN, None)
+            for k in kids.get(cur, ()):
+                if best.get(k, (99, None))[0] > child[0]:
+                    best[k] = child
+                    queue.append(k)
+        for iid, (rank, by) in best.items():
+            out.setdefault(iid, {})[tier] = (COVER_STATE[rank], by)
+    return out
+
+
 @dataclass
 class Rollup:
     cost: float = 0.0         # most-likely: children parts + this assembly's process cost

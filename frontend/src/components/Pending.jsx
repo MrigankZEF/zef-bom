@@ -61,7 +61,7 @@ export default function Pending({ onOpenPart, onOpenFacilities, version }) {
   // missing all three tiers of a cost is one item with a cost gap), and which tiers appear.
   const groups = new Map();
   for (const i of items) {
-    for (const g of new Set(i.missing.map(groupOf))) {
+    for (const g of new Set((i.missing || []).map(groupOf))) {
       const e = groups.get(g) || { key: g, count: 0, tiers: new Set() };
       e.count += 1;
       groups.set(g, e);
@@ -72,8 +72,12 @@ export default function Pending({ onOpenPart, onOpenFacilities, version }) {
   }
   const known = GROUP_ORDER.filter((k) => groups.has(k));
   const unknown = [...groups.keys()].filter((k) => !GROUP_ORDER.includes(k)).sort();
+  // Rows whose only entry is "covered above" are not missing anything — they are in the list
+  // so that the reason is on screen, not so that somebody works through them.
+  const gapRows = items.filter((i) => (i.missing || []).length > 0);
+  const coveredRows = items.filter((i) => Object.keys(i.covered || {}).length > 0);
   const chips = [
-    { key: "any", label: "Any missing", count: items.length },
+    { key: "any", label: "Any missing", count: gapRows.length },
     ...[...known, ...unknown].map((k) => ({
       key: k,
       label: GROUP_LABELS[k] || k,
@@ -87,14 +91,17 @@ export default function Pending({ onOpenPart, onOpenFacilities, version }) {
     // loading, so the chip does not appear a moment after the others.
     ...(facRows.length > 0 || facGaps === null
       ? [{ key: "facility", label: "Facilities", count: facRows.length }] : []),
+    ...(coveredRows.length > 0
+      ? [{ key: "covered", label: "Covered above", count: coveredRows.length }] : []),
   ];
   // A chip can vanish under the current selection — fix a gap and its group empties — so fall
   // back to "any" rather than showing an empty table with a dead chip selected.
   const activeField = chips.some((c) => c.key === field) ? field : "any";
   const filtered = items.filter((i) => {
     if (moduleF !== "all" && i.module_code !== moduleF) return false;
-    if (activeField !== "any" && !i.missing.some((m) => groupOf(m) === activeField)) return false;
-    return true;
+    if (activeField === "any") return (i.missing || []).length > 0;
+    if (activeField === "covered") return Object.keys(i.covered || {}).length > 0;
+    return (i.missing || []).some((m) => groupOf(m) === activeField);
   });
 
   return (
@@ -139,10 +146,28 @@ export default function Pending({ onOpenPart, onOpenFacilities, version }) {
                 <td>{p.item_name}</td>
                 <td><ModulePill code={p.module_code} /></td>
                 <td>
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                    {p.missing.map((m) => (
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                    {(p.missing || []).map((m) => (
                       <span key={m} style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, padding: "1px 6px", borderRadius: 2, background: "var(--accent-soft)", color: "var(--accent)" }}>{m}</span>
                     ))}
+                    {/* Not a gap, and not silence either. `boundary` means one quoted price
+                        replaced this whole subtree, so nothing entered here reaches a total.
+                        `labor` means the work is paid for above — but the rollup still ADDS an
+                        assembly cost entered here, which is worth saying out loud rather than
+                        letting somebody fill it in and quietly double the labour. */}
+                    {Object.entries(p.covered || {})
+                      .sort((a, b) => Number(a[0]) - Number(b[0]))
+                      .map(([tier, c]) => (
+                        <span key={tier}
+                          onClick={(e) => { e.stopPropagation(); onOpenPart(c.by); }}
+                          title={c.state === "boundary"
+                            ? `${c.by} is bought in as one quoted unit at @${tierLabel(Number(tier))}, so anything priced below it is discarded — nothing to fill here.`
+                            : `${c.by} covers the assembly work below it at @${tierLabel(Number(tier))}. A time entered here is still added on top of it.`}
+                          style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, padding: "1px 6px",
+                            borderRadius: 2, background: "var(--hair)", color: "var(--ink-3)", cursor: "pointer" }}>
+                          @{tierLabel(Number(tier))} {c.state === "boundary" ? "quoted by" : "covered by"} {c.by}
+                        </span>
+                      ))}
                   </div>
                 </td>
                 <td className="num">{p.weight_grams != null ? fmtWeight(p.weight_grams) : "—"}</td>

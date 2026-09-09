@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from ..db import get_db
 from ..models import AssemblyLabor, BomLink, DecidedCost, Item
-from ..rollups import BomGraph, top_level_reachable
+from ..rollups import BomGraph, cover_reach, top_level_reachable
 
 router = APIRouter(tags=["bom"])
 
@@ -264,6 +264,11 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
         children_map.setdefault(bl.parent_item_id, []).append(bl.child_item_id)
     parents = set(children_map)
     linked = top_level_reachable(db)
+    # Per (item, tier): is there still an uncovered way down to this item? Asking each item
+    # about its OWN `covers` could only ever see the one case that is visible locally, so the
+    # queue demanded assembly times from every assembly under a covering ancestor — numbers
+    # that no total will ever read. See `cover_reach`.
+    reach = cover_reach(db)
     costed_tiers: dict[str, set] = {}
     for dc in db.execute(select(DecidedCost)).scalars():
         costed_tiers.setdefault(dc.item_id, set()).add(dc.volume_tier)
@@ -281,6 +286,18 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
         if module and it.module_code != module:
             continue
         is_leaf = it.item_id not in parents
+        mine = reach.get(it.item_id, {})
+        # `boundary` means a quoted assembly overhead replaced this whole subtree, so nothing
+        # priced down here reaches any total. `labor` means the work is paid for above. Either
+        # way there is no number worth asking for — but the row stays, saying which assembly
+        # is covering it, because the item still has to make sense the day somebody uses it
+        # under a parent that does NOT cover it.
+        state = lambda tier: mine.get(tier, ("open", None))[0]   # noqa: E731
+        covered_by = {}
+        for tier in (1, 100, 10000):
+            st, by = mine.get(tier, ("open", None))
+            if st != "open" and by:
+                covered_by[str(tier)] = {"state": st, "by": by}
         missing = []
         if is_leaf:
             if it.weight_grams is None:
@@ -291,7 +308,9 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
                 missing.append("supplier_country")
             have = costed_tiers.get(it.item_id, set())
             for tier, lbl in ((1, "cost@1"), (100, "cost@100"), (10000, "cost@10k")):
-                if tier not in have:
+                # A leaf under a quoted assembly is documentation: its price is discarded.
+                # Weight, material and country are physical and still wanted regardless.
+                if tier not in have and state(tier) != "boundary":
                     missing.append(lbl)
         else:  # assembly
             have_t = labored_tiers.get(it.item_id, set())
@@ -305,19 +324,28 @@ def pending(db: Session = Depends(get_db), module: str | None = Query(default=No
                 (100, "asm_time@100", "quote@100"),
                 (10000, "asm_time@10k", "quote@10k"),
             ):
+                if state(tier) != "open":
+                    continue        # paid for above, at this tier
                 if cov.get(tier) == "all":
                     if tier not in have_c:
                         missing.append(qlbl)
                 elif tier not in have_t:
                     missing.append(tlbl)
-            if it.cost_type_id is None and any(cov.get(t) != "all" for t in (1, 100, 10000)):
+            # A cost type is the EUR/hour behind an assembly time, so it is only wanted where a
+            # time is: at a tier that is open and not itself bought in as a finished unit.
+            if it.cost_type_id is None and any(
+                state(t) == "open" and cov.get(t) != "all" for t in (1, 100, 10000)
+            ):
                 missing.append("cost_type")
-        if missing:
+        if missing or covered_by:
             out.append({
                 "item_id": it.item_id, "item_name": it.item_name,
                 "module_code": it.module_code, "item_type": it.item_type,
                 "weight_grams": it.weight_grams, "material": it.material,
                 "missing": missing,
+                # Empty for the overwhelming majority. Present means "nothing to fill at these
+                # tiers, and here is the assembly that is paying for it".
+                "covered": covered_by,
             })
     out.sort(key=lambda x: (-len(x["missing"]), x["item_id"]))
     return out

@@ -1497,3 +1497,146 @@ def test_a_bom_with_no_weights_at_all_reports_zero_coverage_not_a_crash():
     assert t["weight_covered"] == 0
     assert t["weight_coverage"] == 0.0
     assert set(t["weight_missing"]) == {"AEC923P", "AEC924P"}
+
+
+# ── cover_reach: is there still an uncovered way down to this item? ──────────
+def _cover_fixture():
+    """Two roots over one shared harness, so "covered on one path, open on another" exists.
+
+        BOAT   ×1 → HARNESS ×2 → {TERMINAL ×10, BRANCH ×1 → WIRE ×3}
+        BENCH  ×1 → HARNESS ×1
+
+    BOAT's harness covers the work below it at @100 only. BENCH's does not cover anything, so
+    everything under the harness is still open at @100 by way of BENCH — which is the case the
+    rule exists for: filling the numbers in is real work, because the second usage needs them.
+    """
+    db = _db()
+    db.add(Item(item_id="AEC920A", item_name="Boat", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC930A", item_name="Bench", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC921A", item_name="Harness", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC922A", item_name="Branch", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC923P", item_name="Terminal", item_type="part", module_code="AEC", weight_grams=5))
+    db.add(Item(item_id="AEC924P", item_name="Wire", item_type="part", module_code="AEC", weight_grams=20))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC920A", child_item_id="AEC921A", quantity=2))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC923P", quantity=10))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC922A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC922A", child_item_id="AEC924P", quantity=3))
+    db.add(DecidedCost(item_id="AEC923P", volume_tier=100, unit_cost_eur=1))
+    db.add(DecidedCost(item_id="AEC924P", volume_tier=100, unit_cost_eur=2))
+    db.commit()
+    return db
+
+
+def test_a_labor_cover_reaches_every_depth_below_it():
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor"))
+    db.commit()
+    r = cover_reach(db)
+    # Not the covering assembly itself — a cover pays for what is BELOW it.
+    assert r["AEC921A"][100][0] == "open"
+    # ...but every depth under it, not just the direct children.
+    assert r["AEC922A"][100] == ("labor", "AEC921A")
+    assert r["AEC924P"][100] == ("labor", "AEC921A")
+
+
+def test_a_cover_at_one_tier_leaves_the_others_open():
+    """`covers` is per tier because sourcing is: hand-built at @1, outsourced at @10k."""
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=10000, covers="labor"))
+    db.commit()
+    r = cover_reach(db)
+    assert r["AEC922A"][10000][0] == "labor"
+    assert r["AEC922A"][100][0] == "open"
+    assert r["AEC922A"][1][0] == "open"
+
+
+def test_one_uncovered_usage_is_enough_to_keep_it_open():
+    """The whole reason the rule is "every path": a sub-assembly lifted into a parent that does
+    not cover it needs its own numbers, so the queue must still ask for them."""
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor"))
+    db.commit()
+    # Reached only through the harness, so the harness's cover pays for it.
+    assert cover_reach(db)["AEC924P"][100][0] == "labor"
+    # Now BENCH uses the BRANCH directly, going around the harness entirely. That second usage
+    # is nobody's covered work, so the branch and the wire under it need their own numbers.
+    db.add(BomLink(parent_item_id="AEC930A", child_item_id="AEC922A", quantity=1))
+    db.commit()
+    r = cover_reach(db)
+    assert r["AEC922A"][100][0] == "open"
+    assert r["AEC924P"][100][0] == "open"
+
+
+def test_a_quoted_assembly_puts_its_whole_subtree_below_a_boundary():
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="all"))
+    db.commit()
+    r = cover_reach(db)
+    assert r["AEC923P"][100] == ("boundary", "AEC921A")
+    assert r["AEC924P"][100] == ("boundary", "AEC921A")
+
+
+def test_a_boundary_outranks_a_labor_cover_on_another_path():
+    """Weakest claim wins, and `labor` is weaker than `boundary` — a cost entered under a
+    labour cover is still ADDED by the rollup, so it is not the same as one that is discarded."""
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(BomLink(parent_item_id="AEC930A", child_item_id="AEC921A", quantity=1))
+    db.add(AssemblyLabor(item_id="AEC920A", volume_tier=100, covers="all"))
+    db.add(AssemblyLabor(item_id="AEC930A", volume_tier=100, covers="labor"))
+    db.commit()
+    assert cover_reach(db)["AEC921A"][100][0] == "labor"
+
+
+def test_pending_stops_asking_for_times_that_are_paid_for_above():
+    from app.routers.tree import pending
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor"))
+    db.commit()
+    rows = {r["item_id"]: r for r in pending(db=db, module=None)}
+    branch = rows["AEC922A"]
+    assert "asm_time@100" not in branch["missing"], branch["missing"]
+    # The other two tiers are untouched, and the row is still in the queue for them.
+    assert "asm_time@1" in branch["missing"] and "asm_time@10k" in branch["missing"]
+    # ...and it says which assembly is paying for @100, so the row can explain itself.
+    assert branch["covered"]["100"] == {"state": "labor", "by": "AEC921A"}
+
+
+def test_pending_stops_pricing_leaves_under_a_quoted_assembly():
+    from app.routers.tree import pending
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="all"))
+    db.commit()
+    rows = {r["item_id"]: r for r in pending(db=db, module=None)}
+    wire = rows["AEC924P"]
+    assert "cost@100" not in wire["missing"], wire["missing"]
+    assert wire["covered"]["100"]["state"] == "boundary"
+    # Weight and material are physical facts and stay wanted whoever is paying.
+    assert "material" in wire["missing"]
+
+
+def test_pending_only_wants_a_cost_type_where_a_time_is_wanted():
+    """The cost type is the EUR/hour behind an assembly time. With every tier covered from
+    above there is no time to price, so asking for the rate is asking for nothing."""
+    from app.routers.tree import pending
+
+    db = _cover_fixture()
+    for tier in (1, 100, 10000):
+        db.add(AssemblyLabor(item_id="AEC921A", volume_tier=tier, covers="labor"))
+    db.commit()
+    rows = {r["item_id"]: r for r in pending(db=db, module=None)}
+    assert "cost_type" not in rows["AEC922A"]["missing"], rows["AEC922A"]["missing"]
+    # The covering harness itself is not covered by anything, so it still needs its rate.
+    assert "cost_type" in rows["AEC921A"]["missing"]
