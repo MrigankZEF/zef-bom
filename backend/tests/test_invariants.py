@@ -1397,12 +1397,17 @@ def test_history_filter_takes_several_entity_types():
     ])
     R.lock_row(f["id"], "maint", db=db, user="t")
 
+    # Rows come back as dicts now, annotated with whether each one can be undone.
     facilities = "cogs_facility,cogs_facility_item,cogs_value,cogs_lock"
-    types = {h.entity_type for h in global_history(db=db, entity_type=facilities)}
+    types = {h["entity_type"] for h in global_history(db=db, entity_type=facilities)}
     assert types == {"cogs_facility", "cogs_facility_item", "cogs_value", "cogs_lock"}, types
     # A single type still works exactly as before.
-    only = {h.entity_type for h in global_history(db=db, entity_type="cogs_lock")}
+    only = {h["entity_type"] for h in global_history(db=db, entity_type="cogs_lock")}
     assert only == {"cogs_lock"}
+    # None of the ladder kinds is undoable — nothing has audited how to reverse them yet, so
+    # they say why rather than offering a button that guesses.
+    assert all(not h["undoable"] and h["undo_blocked"]
+               for h in global_history(db=db, entity_type=facilities))
     # And every one of these rows is genuinely in the log, not just filterable.
     assert len(global_history(db=db, entity_type=facilities)) >= 4
 
@@ -1898,3 +1903,135 @@ def test_the_row_recording_a_wipe_survives_the_wipe():
     assert len(rows) == 1, "the wipe's own record must be the one thing that survives it"
     assert rows[0].old_value == "1 items"
     assert "prewipe" in rows[0].change_reason
+
+
+# ── undo: a new forward change, never a rewrite of the log ──────────────────
+def _undo_db():
+    db = _db()
+    db.add(Item(item_id="AEC001A", item_name="Cell", item_type="assembly", module_code="AEC",
+                weight_grams=120))
+    db.add(Item(item_id="AEC002P", item_name="Plate", item_type="part", module_code="AEC"))
+    db.commit()
+    return db
+
+
+def test_undo_restores_the_value_and_appends_rather_than_deletes():
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=999), db=db, user="someone")
+    h = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    before = db.execute(select(func.count()).select_from(ChangeHistory)).scalar()
+
+    undo_history_entry(h.id, db=db, user="leonard@theflipflopi.com")
+
+    assert db.get(Item, "AEC001A").weight_grams == 120.0
+    after = db.execute(select(func.count()).select_from(ChangeHistory)).scalar()
+    assert after == before + 1, "an undo appends; the log is append-only"
+    assert db.get(ChangeHistory, h.id) is not None, "the original row must still be there"
+    undo_row = db.execute(select(ChangeHistory).order_by(ChangeHistory.id.desc()).limit(1)).scalar_one()
+    assert undo_row.change_reason == f"undo of change #{h.id}"
+    assert undo_row.changed_by == "leonard@theflipflopi.com"
+
+
+def test_an_undo_can_itself_be_undone():
+    """Falls out of the append-only rule for free, and is the proof that it holds."""
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=999), db=db, user="s")
+    first = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    undo_history_entry(first.id, db=db, user="u")
+    assert db.get(Item, "AEC001A").weight_grams == 120.0
+
+    latest = db.execute(select(ChangeHistory).order_by(ChangeHistory.id.desc()).limit(1)).scalar_one()
+    undo_history_entry(latest.id, db=db, user="u")
+    assert db.get(Item, "AEC001A").weight_grams == 999.0
+
+
+def test_a_superseded_change_is_refused_rather_than_silently_discarding_the_later_one():
+    from fastapi import HTTPException
+
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=200), db=db, user="a")
+    old = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    patch_item("AEC001A", ItemPatch(weight_grams=300), db=db, user="b")
+
+    try:
+        undo_history_entry(old.id, db=db, user="c")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "superseded" in exc.detail
+    else:
+        raise AssertionError("undoing a superseded change must be refused")
+    assert db.get(Item, "AEC001A").weight_grams == 300.0, "b's edit must survive"
+
+
+def test_the_latest_change_to_a_DIFFERENT_field_does_not_supersede_this_one():
+    """Supersession is per field. Editing the name must not lock the weight."""
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=200), db=db, user="a")
+    w = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    patch_item("AEC001A", ItemPatch(item_name="Cell mk2"), db=db, user="b")
+
+    undo_history_entry(w.id, db=db, user="c")
+    assert db.get(Item, "AEC001A").weight_grams == 120.0
+    assert db.get(Item, "AEC001A").item_name == "Cell mk2"
+
+
+def test_undoing_an_added_component_removes_the_link_again():
+    from app.models import ChangeHistory
+    from app.rollups import BomGraph
+    from app.routers.edit import add_child, undo_history_entry
+    from app.schemas import AddChildIn
+
+    db = _undo_db()
+    add_child("AEC001A", AddChildIn(child_id="AEC002P", quantity=4), db=db, user="a")
+    g = BomGraph(db)
+    assert g.children.get("AEC001A")
+
+    h = db.execute(select(ChangeHistory).where(ChangeHistory.entity_type == "bom_link")).scalar_one()
+    undo_history_entry(h.id, db=db, user="b")
+    # Archived rather than deleted, so the link's own history still points at a row.
+    link = db.execute(select(BomLink)).scalar_one()
+    assert link.archived is True
+    assert not BomGraph(db).children.get("AEC001A")
+
+
+def test_cost_evidence_is_not_offered_because_the_log_cannot_say_which_row():
+    from app.models import ChangeHistory
+    from app.undo import undoable
+
+    db = _undo_db()
+    record_change(db, entity_type="cost_evidence", entity_id="AEC001A", change_type="create",
+                  field_changed="unit_cost", new_value="12", changed_by="a")
+    db.commit()
+    h = db.execute(select(ChangeHistory)).scalar_one()
+    ok, why = undoable(db, h)
+    assert not ok
+    assert "which evidence row" in why
+
+
+def test_undo_is_refused_when_the_item_is_gone():
+    from app.models import ChangeHistory
+    from app.undo import undoable
+
+    db = _undo_db()
+    record_change(db, entity_type="item", entity_id="AEC999A", change_type="update",
+                  field_changed="item_name", old_value="Old", new_value="New", changed_by="a")
+    db.commit()
+    h = db.execute(select(ChangeHistory)).scalar_one()
+    ok, why = undoable(db, h)
+    assert not ok and "no longer exists" in why

@@ -26,10 +26,11 @@ export default function History({ onOpenPart, version }) {
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
   const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(null);   // id of the row being undone
 
-  useEffect(() => {
-    api.history(filter || undefined).then(setRows).catch((e) => setError(e.message));
-  }, [filter, version]);
+  const load = () => api.history(filter || undefined).then(setRows).catch((e) => setError(e.message));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [filter, version]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
 
@@ -61,13 +62,28 @@ export default function History({ onOpenPart, version }) {
       {!rows ? <p className="muted">Loading…</p> : (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           {shown.map((h) => {
+            const undo = async (e) => {
+              e.stopPropagation();
+              // Spells out the subject, the field and current -> restored, because "undo" on
+              // its own does not say what is about to change. `undo_summary` is built
+              // server-side from the row itself.
+              if (!window.confirm(`Undo this change?
+
+${h.undo_summary}
+
+This is recorded as a new change; nothing is erased from the history.`)) return;
+              setBusy(h.id);
+              try { await api.undoChange(h.id); await load(); }
+              catch (err) { window.alert(err.message); }
+              finally { setBusy(null); }
+            };
             // Facility rows are deliberately absent: a cogs_* entity_id is a facility id or
             // a "facility:sub-item" pair, not a part number, so there is no part to open.
             const isItem = h.entity_type === "item" || h.entity_type === "decided_cost" || h.entity_type === "cost_evidence" || h.entity_type === "field_value";
             return (
               <div key={h.id}
                 onClick={() => isItem && /^[A-Z]/.test(h.entity_id) && onOpenPart(h.entity_id)}
-                style={{ display: "grid", gridTemplateColumns: "150px 90px 1fr 150px", gap: 10, padding: "9px 16px", borderBottom: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 12.5, cursor: isItem ? "pointer" : "default" }}>
+                style={{ display: "grid", gridTemplateColumns: "150px 90px 1fr 150px 80px", gap: 10, padding: "9px 16px", borderBottom: "1px solid var(--hair-faint)", alignItems: "center", fontSize: 12.5, cursor: isItem ? "pointer" : "default" }}>
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" }}>{(h.changed_at || "").slice(0, 16).replace("T", " ")}</span>
                 <span><Pill kind={toneFor(h.change_type)}>{h.change_type}</Pill></span>
                 <span>
@@ -78,6 +94,21 @@ export default function History({ onOpenPart, version }) {
                   <span>{h.new_value ?? ""}</span>
                 </span>
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)", textAlign: "right" }}>{h.changed_by}</span>
+                {/* A button only where the row can actually be put back. Where it cannot, the
+                    reason is shown instead of a control that would fail — "superseded by a
+                    later change" is the common one, and it is information, not an error. */}
+                <span style={{ textAlign: "right" }}>
+                  {h.undoable ? (
+                    <button className="btn ghost sm" disabled={busy === h.id} onClick={undo}>
+                      {busy === h.id ? "…" : "undo"}
+                    </button>
+                  ) : (
+                    <span title={h.undo_blocked || ""}
+                          style={{ fontSize: 10.5, color: "var(--ink-4)", whiteSpace: "nowrap" }}>
+                      {h.undo_blocked === "superseded by a later change" ? "superseded" : ""}
+                    </span>
+                  )}
+                </span>
               </div>
             );
           })}

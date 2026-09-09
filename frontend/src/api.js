@@ -182,6 +182,9 @@ export const api = {
   itemHistory: (id) => request(`/items/${encodeURIComponent(id)}/history`),
   history: (entityType) =>
     request(`/history${entityType ? `?${new URLSearchParams({ entity_type: entityType })}` : ""}`),
+  // Puts a change back by making a new one — see backend/app/undo.py. 409 when the row has
+  // been superseded since the list was fetched, which is re-checked server-side.
+  undoChange: (id) => request(`/history/${id}/undo`, { method: "POST" }),
 
   // ── M5: uploads ──
   listUploads: () => request("/uploads"),

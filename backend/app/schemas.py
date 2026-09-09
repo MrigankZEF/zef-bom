@@ -207,6 +207,12 @@ class ChangeHistoryOut(BaseModel):
     new_value: str | None = None
     change_type: str
     change_reason: str | None = None
+    # Whether this row is the latest change to its field, and undoable at all — worked out
+    # server-side because it is a question about the whole table, not about the page the
+    # client happens to be holding.
+    undoable: bool = False
+    undo_blocked: str | None = None
+    undo_summary: str | None = None
 
 
 class CostEvidenceOut(BaseModel):

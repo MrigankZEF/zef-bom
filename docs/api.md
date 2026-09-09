@@ -70,6 +70,13 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
   above — `labor` (an ancestor's cover, whose cost the rollup still adds on top) or `boundary`
   (a quoted assembly, whose one price replaced the subtree). A row can carry only `covered`,
   which means it is in the list to explain itself, not to be worked through.
+- `POST /history/{id}/undo` — put one change back. Rows from `/history` carry `undoable`,
+  `undo_blocked` (why not, in words) and `undo_summary` (what would change). An undo is a
+  **new forward change**, never a deletion: the log stays append-only, the original row
+  stays, and an undo can itself be undone. Only the LATEST change to a field is offered —
+  undoing an older one would silently discard everything since, so it is refused with 409.
+  `cost_evidence` is never offered: its `entity_id` is the item and nothing records which
+  evidence row changed. See `app/undo.py`.
 - `POST /items/{id}/attachments` — create/locate Drive folder, return URL
 - `PUT /items/{id}/thumbnail` — `{file_id}`; pin a Drive file as the item's picture
   (`null` clears it)
