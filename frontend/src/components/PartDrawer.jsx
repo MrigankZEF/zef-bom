@@ -432,7 +432,8 @@ Create this copy anyway? It gets its own new code.`)) {
             <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} labor={labor} usage={usage} />
 
             {!isLeaf && <AssemblyCostWarnings itemId={itemId} rollups={rollups} decided={decided}
-              labor={labor} reload={() => { load(); onChanged?.(); }} setError={setError} />}
+              labor={labor} onOpenPart={onOpenPart}
+              reload={() => { load(); onChanged?.(); }} setError={setError} />}
 
             {!isLeaf && (
               <AssemblyCostCard itemId={itemId} item={item} labor={labor} decided={decided}
@@ -1111,7 +1112,7 @@ function CostOverviewCard({ isLeaf, rollups, decided, labor, usage }) {
 // Everything that prices an assembly: the warnings, the cost type and the time per tier.
 // Two contradictions worth interrupting for. Deliberately NOT collapsible: a warning nobody
 // can see is not a warning.
-function AssemblyCostWarnings({ itemId, rollups, decided, labor, reload, setError }) {
+function AssemblyCostWarnings({ itemId, rollups, decided, labor, onOpenPart, reload, setError }) {
   const [busy, setBusy] = useState(false);
   const dropDecided = async (vt) => {
     if (!window.confirm(`Remove the decided cost at @${tierLabel(vt)} from ${itemId}? The rollup already ignores it.`)) return;
@@ -1119,24 +1120,68 @@ function AssemblyCostWarnings({ itemId, rollups, decided, labor, reload, setErro
     try { await api.deleteDecidedCost(itemId, vt); reload(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
-  // A descendant carrying its own assembly cost under an ancestor marked as covering it.
+  // Descendants carrying their own assembly cost under an ancestor marked as covering the work.
+  // Both are counted, on purpose — see AssemblyLabor.double_count_ack — so this is a question
+  // about double counting, not a contradiction to resolve.
   const conflicts = [...new Set(COST_TIERS.flatMap((t) => rollups[t]?.covered_conflict || []))];
+  // Accepted once, stays accepted — until the set of items below the cover CHANGES, which is
+  // the case worth surfacing again. Stored per tier because `covers` is per tier; a cover
+  // ticked at @10k must not quietly accept @1 as well.
+  const ackByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l.double_count_ack || []]));
+  const coveringTiers = COST_TIERS.filter((tv) => (rollups[tv]?.covered_conflict || []).length > 0);
+  const unacked = [...new Set(coveringTiers.flatMap((tv) =>
+    (rollups[tv]?.covered_conflict || []).filter((id) => !(ackByTier[tv] || []).includes(id))))];
+  const anyAck = coveringTiers.some((tv) => (ackByTier[tv] || []).length > 0);
+  const accept = async () => {
+    setBusy(true);
+    try {
+      for (const tv of coveringTiers) {
+        const l = (labor || []).find((x) => x.volume_tier === tv) || {};
+        await api.setAssemblyLabor(itemId, {
+          volume_tier: tv,
+          time_likely: l.time_likely ?? null, time_min: l.time_min ?? null, time_max: l.time_max ?? null,
+          covers: l.covers || "none",
+          double_count_ack: rollups[tv]?.covered_conflict || [],
+        });
+      }
+      reload();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
   // On a quoted tier the decided cost IS the cost, so it is the opposite of unused. Without
   // this filter the card would flag the quote the user had just entered and offer to delete it.
   const coversByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l.covers]));
   const stray = decided.filter((dc) => coversByTier[dc.volume_tier] !== "all");
-  if (!conflicts.length && !stray.length) return null;
+  // Nothing to say once every item below the cover has been looked at.
+  if (!unacked.length && !stray.length) return null;
   return (
     <>
-      {conflicts.length > 0 && (
-        <div className="card" style={{ borderColor: "var(--accent)" }}>
-          <div className="card-head"><span className="card-title">Conflicting assembly costs</span></div>
-          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: 0 }}>
-            {conflicts.join(", ")} {conflicts.length === 1 ? "carries" : "carry"} an assembly
-            cost, but an assembly above {conflicts.length === 1 ? "it is" : "them are"} marked
-            as already covering the work below. One of the two is wrong — either untick the
-            cover, or clear the assembly cost below it.
+      {/* A note, not an error — no accent border. Neither entry is wrong: the rollup adds both
+          on purpose, so that a sub-assembly keeps a labour figure that works the day it is
+          built under a parent that does not cover it. What is worth checking is whether the
+          reader meant to pay for the work twice. */}
+      {unacked.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <span className="card-title">Assembly costs below this cover</span>
+            {anyAck && <span className="card-meta">{unacked.length} new since this was accepted</span>}
+          </div>
+          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "0 0 10px" }}>
+            {unacked.length === 1 ? "This item" : "These items"} below this assembly
+            {unacked.length === 1 ? " carries" : " carry"} an assembly cost of
+            {unacked.length === 1 ? " its" : " their"} own, and this assembly is marked as
+            covering the work beneath it. <strong>Both are being counted.</strong> That is
+            deliberate — it keeps those sub-assemblies usable somewhere the work is
+            <em> not</em> covered — but check it is what you meant here.
           </p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {unacked.map((id) => (
+              <button key={id} className="btn ghost sm" onClick={() => onOpenPart(id)}
+                      style={{ fontFamily: "var(--font-mono)", fontSize: 11.5 }}>{id}</button>
+            ))}
+          </div>
+          <button className="btn ghost sm" disabled={busy} onClick={accept}>
+            {anyAck ? "accept these too" : "yes, that is intended"}
+          </button>
         </div>
       )}
       {stray.length > 0 && (

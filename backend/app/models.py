@@ -332,6 +332,19 @@ class AssemblyLabor(Base):
     #   all   — a supplier quote on this item (its DecidedCost at this tier) covers the parts
     #           AND the labour below; the subtree is documentation and costs nothing
     covers: Mapped[str] = mapped_column(String(8), nullable=False, default="none")
+    # Which descendants somebody has looked at and decided the double count is intentional.
+    #
+    # An assembly marked `covers='labor'` says its one time covers the work beneath it, but the
+    # rollup still adds every descendant's own assembly cost on top — deliberately, so that a
+    # sub-assembly keeps a usable figure for the day it is built under a parent that does NOT
+    # cover it. That makes the drawer's warning a question rather than an error, and a question
+    # needs an answer that sticks.
+    #
+    # The accepted ITEM LIST rather than a flag: a flag would go stale the moment somebody adds
+    # assembly time to a new item below the cover, leaving the note suppressed over a double
+    # count nobody has ever looked at. With the set stored, the note comes back and can say what
+    # changed. `updated_at` / `updated_by` below already record who accepted and when.
+    double_count_ack: Mapped[list | None] = mapped_column(JSONB_OR_JSON)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

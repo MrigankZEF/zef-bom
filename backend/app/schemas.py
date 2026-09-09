@@ -115,6 +115,9 @@ class AssemblyLaborIn(BaseModel):
     time_max: float | None = None
     # How far this row's cost reaches down — see AssemblyLabor.covers.
     covers: COVERS = "none"
+    # Omitted leaves the stored acceptance alone: this endpoint is also how a TIME is edited,
+    # and editing a time is not a statement about the double count either way.
+    double_count_ack: list[str] | None = None
 
 
 class AssemblyLaborOut(BaseModel):
@@ -126,6 +129,7 @@ class AssemblyLaborOut(BaseModel):
     time_likely: float | None = None
     time_max: float | None = None
     covers: COVERS = "none"
+    double_count_ack: list[str] | None = None
 
 
 class AddChildIn(BaseModel):

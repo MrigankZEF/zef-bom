@@ -1640,3 +1640,126 @@ def test_pending_only_wants_a_cost_type_where_a_time_is_wanted():
     assert "cost_type" not in rows["AEC922A"]["missing"], rows["AEC922A"]["missing"]
     # The covering harness itself is not covered by anything, so it still needs its rate.
     assert "cost_type" in rows["AEC921A"]["missing"]
+
+
+# ── accepting a double count, and what un-accepts it ────────────────────────
+def _double_count_fixture():
+    """HARNESS covers the labour below it at @100, and BRANCH under it charges for its own
+    time anyway. The rollup adds both, on purpose — so the drawer asks rather than accuses."""
+    from app.models import ReferenceValue
+
+    db = _db()
+    db.add(ReferenceValue(id=1, category="assembly_cost_type", value="Bench", meta={"rate_eur_h": 60}))
+    db.add(Item(item_id="AEC920A", item_name="Boat", item_type="assembly", module_code="AEC",
+                is_top_level=True, cost_type_id=1))
+    db.add(Item(item_id="AEC921A", item_name="Harness", item_type="assembly", module_code="AEC", cost_type_id=1))
+    db.add(Item(item_id="AEC922A", item_name="Branch", item_type="assembly", module_code="AEC", cost_type_id=1))
+    db.add(Item(item_id="AEC924P", item_name="Wire", item_type="part", module_code="AEC", weight_grams=20))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC920A", child_item_id="AEC921A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC922A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC922A", child_item_id="AEC924P", quantity=3))
+    db.add(DecidedCost(item_id="AEC924P", volume_tier=100, unit_cost_eur=2))
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor", time_likely=30))
+    db.add(AssemblyLabor(item_id="AEC922A", volume_tier=100, covers="none", time_likely=10))
+    db.commit()
+    return db
+
+
+def test_the_rollup_still_counts_both_and_says_so():
+    """The arithmetic is deliberately unchanged: a covered descendant's own assembly cost is
+    added on top, and the contradiction is reported rather than silently resolved."""
+    from app.rollups import BomGraph
+
+    db = _double_count_fixture()
+    g = BomGraph(db, volume_tier=100)
+    r = g.rollup("AEC920A")
+    assert r.covered_conflict == ["AEC922A"], r.covered_conflict
+    # 3 x EUR 2 wire + 10 min branch + 30 min harness + 0 for the boat = 6 + 10 + 30
+    assert round(r.cost, 2) == 46.0, r.cost
+
+
+def test_accepting_a_double_count_persists_and_is_logged():
+    from app.routers.edit import set_assembly_labor
+    from app.schemas import AssemblyLaborIn
+
+    db = _double_count_fixture()
+    set_assembly_labor(
+        "AEC921A",
+        AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor", double_count_ack=["AEC922A"]),
+        db=db, user="leonard@theflipflopi.com",
+    )
+    row = db.execute(
+        select(AssemblyLabor).where(AssemblyLabor.item_id == "AEC921A", AssemblyLabor.volume_tier == 100)
+    ).scalar_one()
+    assert row.double_count_ack == ["AEC922A"]
+    from app.models import ChangeHistory
+
+    logged = [h for h in db.execute(select(ChangeHistory)).scalars()
+              if h.field_changed == "double_count_ack@100"]
+    assert len(logged) == 1 and logged[0].new_value == "AEC922A"
+    assert logged[0].changed_by == "leonard@theflipflopi.com"
+
+
+def test_editing_a_time_does_not_clear_an_acceptance():
+    """The same endpoint edits times. A time edit says nothing about the double count, so an
+    omitted field has to leave the stored answer alone rather than wiping it."""
+    from app.routers.edit import set_assembly_labor
+    from app.schemas import AssemblyLaborIn
+
+    db = _double_count_fixture()
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor",
+                                                  double_count_ack=["AEC922A"]), db=db, user="u")
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=45, covers="labor"),
+                       db=db, user="u")
+    row = db.execute(
+        select(AssemblyLabor).where(AssemblyLabor.item_id == "AEC921A", AssemblyLabor.volume_tier == 100)
+    ).scalar_one()
+    assert row.time_likely == 45
+    assert row.double_count_ack == ["AEC922A"], "a time edit must not un-accept anything"
+
+
+def test_a_new_descendant_below_the_cover_is_not_covered_by_an_old_acceptance():
+    """Why the accepted SET is stored and not a flag: a boolean would keep the note suppressed
+    over a double count nobody had ever looked at."""
+    from app.rollups import BomGraph
+    from app.routers.edit import set_assembly_labor
+    from app.schemas import AssemblyLaborIn
+
+    db = _double_count_fixture()
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor",
+                                                  double_count_ack=["AEC922A"]), db=db, user="u")
+    # A second assembly, added under the cover later, charging for its own time too. It needs
+    # a child of its own: an "assembly" with nothing in it is costed as a leaf, so it would
+    # never be an assembly-cost conflict in the first place.
+    db.add(Item(item_id="AEC925A", item_name="Splice", item_type="assembly", module_code="AEC", cost_type_id=1))
+    db.add(Item(item_id="AEC926P", item_name="Ferrule", item_type="part", module_code="AEC", weight_grams=1))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC925A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC925A", child_item_id="AEC926P", quantity=2))
+    db.add(DecidedCost(item_id="AEC926P", volume_tier=100, unit_cost_eur=1))
+    db.add(AssemblyLabor(item_id="AEC925A", volume_tier=100, covers="none", time_likely=5))
+    db.commit()
+
+    conflicts = set(BomGraph(db, volume_tier=100).rollup("AEC920A").covered_conflict)
+    row = db.execute(
+        select(AssemblyLabor).where(AssemblyLabor.item_id == "AEC921A", AssemblyLabor.volume_tier == 100)
+    ).scalar_one()
+    unacked = conflicts - set(row.double_count_ack or [])
+    assert unacked == {"AEC925A"}, unacked
+
+
+def test_copying_an_item_does_not_copy_the_acceptance():
+    """A copy is a fresh subtree and a fresh decision; inheriting the answer would hide the
+    question on the new item for ever."""
+    from app.routers.edit import duplicate_item, set_assembly_labor
+    from app.schemas import AssemblyLaborIn, DuplicateItemIn
+
+    db = _double_count_fixture()
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor",
+                                                  double_count_ack=["AEC922A"]), db=db, user="u")
+    new_id = duplicate_item("AEC921A", DuplicateItemIn(item_name="Harness copy"), db=db, user="u")["item_id"]
+    rows = list(db.execute(select(AssemblyLabor).where(AssemblyLabor.item_id == new_id)).scalars())
+    assert rows, "the copy should still carry the labour rows"
+    assert all(r.double_count_ack is None for r in rows)
+    assert all(r.covers == "labor" for r in rows), "the cover itself is part of how it is costed"

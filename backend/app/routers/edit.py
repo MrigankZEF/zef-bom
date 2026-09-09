@@ -318,6 +318,10 @@ def duplicate_item(
             item_id=new_id, volume_tier=al.volume_tier, time_min=al.time_min,
             time_likely=al.time_likely, time_max=al.time_max,
             covers=al.covers, updated_by=user,
+            # `double_count_ack` is deliberately NOT copied. It records that somebody looked at
+            # a specific set of descendants and decided the double count was intended; a copy
+            # is a fresh decision about a fresh subtree, and inheriting the answer would hide
+            # the question on the new item for ever.
         ))
     for fv in db.execute(select(FieldValue).where(FieldValue.item_id == item_id)).scalars():
         db.add(FieldValue(item_id=new_id, field_key=fv.field_key, value=fv.value))
@@ -825,6 +829,20 @@ def set_assembly_labor(
     existing.time_min = body.time_min
     existing.time_max = body.time_max
     existing.covers = body.covers
+    # Only when the caller actually says something about it. A time edit arriving with the
+    # field omitted must not silently clear an acceptance somebody made deliberately.
+    if body.double_count_ack is not None:
+        old_ack = list(existing.double_count_ack or [])
+        new_ack = sorted(set(body.double_count_ack))
+        existing.double_count_ack = new_ack or None
+        if new_ack != sorted(old_ack):
+            record_change(
+                db, entity_type="assembly_labor", entity_id=item_id, change_type="update",
+                field_changed=f"double_count_ack@{body.volume_tier}",
+                old_value=",".join(sorted(old_ack)) or None, new_value=",".join(new_ack) or None,
+                changed_by=user,
+                change_reason="accepted that the assembly costs below this cover are also counted",
+            )
     existing.updated_by = user
     record_change(
         db, entity_type="assembly_labor", entity_id=item_id,

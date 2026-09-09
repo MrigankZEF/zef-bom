@@ -60,7 +60,11 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 
 ## M6 — history / attachments / auth
 - `GET /history?entity=&since=&as_of=` — change feed + "BOM as of date X"
-- `GET /pending` — items missing required fields
+- `GET /pending` — items missing required fields. `missing[]` holds the gaps; `covered{tier:
+  {state, by}}` holds the tiers where there is nothing to fill because the work is paid for
+  above — `labor` (an ancestor's cover, whose cost the rollup still adds on top) or `boundary`
+  (a quoted assembly, whose one price replaced the subtree). A row can carry only `covered`,
+  which means it is in the list to explain itself, not to be worked through.
 - `POST /items/{id}/attachments` — create/locate Drive folder, return URL
 - `PUT /items/{id}/thumbnail` — `{file_id}`; pin a Drive file as the item's picture
   (`null` clears it)

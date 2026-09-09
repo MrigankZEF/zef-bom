@@ -56,9 +56,21 @@ cost = time × the item's cost-type rate. `covers_subassemblies` marks an outsou
 bought-in assembly whose single quoted cost already includes the work on everything
 beneath it — descendants then stop counting as missing an assembly cost. It is **per
 tier** because sourcing differs by volume (built in house at @1, outsourced at @10k).
-It affects coverage reporting only; the rollup arithmetic is unchanged. A descendant
-that carries its own assembly cost under a covering ancestor is reported in
-`covered_conflict[]`.
+It affects coverage reporting only; the rollup arithmetic is unchanged — a descendant under a
+covering ancestor still has its own assembly cost added on top. That is deliberate: it keeps a
+sub-assembly's own labour figure usable the day it is built under a parent that does *not* cover
+it. So both figures being counted is not an error to resolve but a question worth asking, and
+such descendants are reported in `covered_conflict[]` for the drawer to ask it.
+`double_count_ack` stores the answer — the list of descendant ids somebody has looked at and
+accepted, per tier. A list rather than a flag, so a *new* assembly appearing below the cover
+raises the question again instead of inheriting an old answer. It is not carried over when an
+item is copied: a copy is a fresh subtree and a fresh decision.
+
+`covers` also decides what the review queue asks for. `rollups.cover_reach` answers, per
+(item, tier), whether any path down from a live top-level root reaches an item *uncovered* —
+one uncovered usage is enough to keep a gap real, because that usage needs the number. `/pending`
+uses it to stop demanding assembly times that are paid for above and prices that a quoted
+assembly discards.
 
 ### Sourcing (`decided_costs.make_or_buy`)
 **One source of truth, per volume tier.** `buy` (off the shelf) · `made-to-order` (our
