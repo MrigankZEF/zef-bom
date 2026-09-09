@@ -1763,3 +1763,78 @@ def test_copying_an_item_does_not_copy_the_acceptance():
     assert rows, "the copy should still carry the labour rows"
     assert all(r.double_count_ack is None for r in rows)
     assert all(r.covers == "labor" for r in rows), "the cover itself is part of how it is costed"
+
+
+# ── a file named after the item becomes its picture ─────────────────────────
+def _thumb_db():
+    db = _db()
+    db.add(Item(item_id="AEC001A", item_name="Cell", item_type="assembly", module_code="AEC"))
+    db.commit()
+    return db
+
+
+def _files(*names):
+    return [{"id": f"drive-{i}", "name": n, "has_thumbnail": True} for i, n in enumerate(names)]
+
+
+def test_a_file_named_after_the_item_is_pinned():
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("quote.pdf", "AEC001A.png")) == "drive-1"
+    assert it.thumbnail_file_id == "drive-1"
+
+
+def test_the_match_is_case_insensitive():
+    """A photo off a phone or from a colleague arrives however it arrives."""
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("aec001a.JPG")) == "drive-0"
+
+
+def test_a_pdf_named_after_the_item_is_not_a_picture():
+    """Drive renders a thumbnail for a PDF, so `has_thumbnail` cannot be the test — AEC001A.pdf
+    is a drawing or a datasheet, and pinning it would put a page of A4 in the Key figures card."""
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("AEC001A.pdf", "AEC001A.dxf")) is None
+    assert it.thumbnail_file_id is None
+
+
+def test_only_an_exact_stem_counts():
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("AEC001A_front.png", "AEC001A rev B.png")) is None
+
+
+def test_auto_pin_never_replaces_a_picture_somebody_chose():
+    """The whole convention is "pinned, never newest" — this must not become a back door to
+    swapping a picture that was chosen by hand."""
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    it.thumbnail_file_id = "chosen-by-hand"
+    db.commit()
+    assert _auto_pin_thumbnail(db, it, _files("AEC001A.png")) is None
+    assert it.thumbnail_file_id == "chosen-by-hand"
+
+
+def test_an_automatic_pin_says_so_in_the_history():
+    """The history log is read by people. An automatic decision must not carry somebody's name."""
+    from app.models import ChangeHistory
+    from app.routers.attachments import AUTO_PIN_BY, _auto_pin_thumbnail
+
+    db = _thumb_db()
+    _auto_pin_thumbnail(db, db.get(Item, "AEC001A"), _files("AEC001A.png"))
+    row = next(h for h in db.execute(select(ChangeHistory)).scalars()
+               if h.field_changed == "thumbnail_file_id")
+    assert row.changed_by == AUTO_PIN_BY
+    assert "AEC001A.png" in (row.change_reason or "")
