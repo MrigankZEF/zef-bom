@@ -13,7 +13,9 @@ export default function Costing({ onOpenPart, tier, setTier }) {
   const [root, setRoot] = useState("");
   const volume = tier, setVolume = setTier;   // local names, shared value
   const [metric, setMetric] = useState("cost"); // cost | weight
-  const [colorMode, setColorMode] = useState("cost"); // cost (heat) | module
+  // Branch by default: the treemap's AREA already says what a thing costs, so colour is
+  // better spent on which subsystem a block belongs to than on saying the price twice.
+  const [colorMode, setColorMode] = useState("branch"); // branch | cost (heat) | module
   const [expanded, setExpanded] = useState(false);    // full-width treemap
   const [scenario, setScenario] = useState("likely"); // min | likely | max (cost only)
   const [depth, setDepth] = useState(1);              // 1 = drill-down; >1 = nested overview
@@ -171,7 +173,10 @@ export default function Costing({ onOpenPart, tier, setTier }) {
                     <button className={metric === "weight" ? "on" : ""} onClick={() => setMetric("weight")}>Weight</button>
                   </div>
                   <div className="segmented-mini">
-                    <button className={colorMode === "cost" ? "on" : ""} onClick={() => setColorMode("cost")}>Heat</button>
+                    <button className={colorMode === "branch" ? "on" : ""} onClick={() => setColorMode("branch")}
+                            title="One colour per top-level branch, kept all the way down">Branch</button>
+                    <button className={colorMode === "cost" ? "on" : ""} onClick={() => setColorMode("cost")}
+                            title="Cost intensity — a single red ramp">Heat</button>
                     <button className={colorMode === "module" ? "on" : ""} onClick={() => setColorMode("module")}>Module</button>
                   </div>
                   {metric === "cost" && (
