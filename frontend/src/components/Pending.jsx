@@ -3,18 +3,31 @@ import { api } from "../api";
 import { Icon, ModulePill, fmtWeight } from "./ui";
 import { tierLabel } from "../tiers";
 
-const FIELD_CHIPS = [
-  { key: "any", label: "Any missing" },
-  { key: "weight", label: "Weight" },
-  { key: "material", label: "Material" },
-  { key: "supplier_country", label: "Country" },
-  { key: "cost", label: "Cost" },
-  // A facility sub-item with nothing entered at a tier is the same kind of gap as a part
-  // with no decided cost, and belongs in the same queue rather than being discoverable only
-  // by opening every drawer. It comes from /cogs/pending, not /pending — `tree.py` stays
-  // untouched by the ladder — so the two lists are merged here.
-  { key: "facility", label: "Facilities" },
-];
+// The chips are DERIVED from what the queue actually contains, not declared here. A fixed list
+// drifts from the backend's vocabulary in both directions: it showed a "Cost" chip that could
+// never match (the API emits `cost@1`, never a bare `cost`, and the counter is an exact array
+// membership test, so it read 0 on every database there has ever been), while `asm_time@*` —
+// the single commonest gap — had no chip at all. Deriving them fixes the stale list, the dead
+// chip and the chips that sat there reading 0, in one move.
+//
+// A tier-suffixed label groups to its stem, so `cost@1 / @100 / @10k` are one "Cost" chip
+// rather than three. The row's own chips already say which tier, and the chip's tooltip lists
+// the tiers it covers.
+const groupOf = (m) => (m.includes("@") ? m.slice(0, m.indexOf("@")) : m);
+
+const GROUP_LABELS = {
+  weight: "Weight",
+  material: "Material",
+  supplier_country: "Country",
+  cost: "Cost",
+  asm_time: "Assembly time",
+  quote: "Quote",
+  cost_type: "Cost type",
+};
+// Display order for the groups we know about. Anything the backend starts emitting that is not
+// in here still gets a chip — appended, labelled with its raw key — because a new kind of gap
+// going unnoticed is the failure this whole change exists to stop.
+const GROUP_ORDER = ["weight", "material", "supplier_country", "cost", "asm_time", "quote", "cost_type"];
 
 export default function Pending({ onOpenPart, onOpenFacilities, version }) {
   const [items, setItems] = useState(null);
@@ -44,17 +57,43 @@ export default function Pending({ onOpenPart, onOpenFacilities, version }) {
     return acc;
   }, {}));
 
-  const counts = Object.fromEntries(
-    FIELD_CHIPS.map((c) => [
-      c.key,
-      c.key === "any" ? items.length
-        : c.key === "facility" ? facRows.length
-        : items.filter((i) => i.missing.includes(c.key)).length,
-    ])
-  );
+  // One pass over the queue: how many ITEMS each group has (not how many labels — an item
+  // missing all three tiers of a cost is one item with a cost gap), and which tiers appear.
+  const groups = new Map();
+  for (const i of items) {
+    for (const g of new Set(i.missing.map(groupOf))) {
+      const e = groups.get(g) || { key: g, count: 0, tiers: new Set() };
+      e.count += 1;
+      groups.set(g, e);
+    }
+    for (const m of i.missing) {
+      if (m.includes("@")) groups.get(groupOf(m))?.tiers.add(m.slice(m.indexOf("@") + 1));
+    }
+  }
+  const known = GROUP_ORDER.filter((k) => groups.has(k));
+  const unknown = [...groups.keys()].filter((k) => !GROUP_ORDER.includes(k)).sort();
+  const chips = [
+    { key: "any", label: "Any missing", count: items.length },
+    ...[...known, ...unknown].map((k) => ({
+      key: k,
+      label: GROUP_LABELS[k] || k,
+      count: groups.get(k).count,
+      tiers: [...groups.get(k).tiers],
+    })),
+    // A facility sub-item with nothing entered at a tier is the same kind of gap as a part
+    // with no decided cost, and belongs in the same queue rather than being discoverable only
+    // by opening every drawer. It comes from /cogs/pending, not /pending — `tree.py` stays
+    // untouched by the ladder — so the two lists are merged here. Kept while the list is still
+    // loading, so the chip does not appear a moment after the others.
+    ...(facRows.length > 0 || facGaps === null
+      ? [{ key: "facility", label: "Facilities", count: facRows.length }] : []),
+  ];
+  // A chip can vanish under the current selection — fix a gap and its group empties — so fall
+  // back to "any" rather than showing an empty table with a dead chip selected.
+  const activeField = chips.some((c) => c.key === field) ? field : "any";
   const filtered = items.filter((i) => {
     if (moduleF !== "all" && i.module_code !== moduleF) return false;
-    if (field !== "any" && !i.missing.includes(field)) return false;
+    if (activeField !== "any" && !i.missing.some((m) => groupOf(m) === activeField)) return false;
     return true;
   });
 
@@ -75,16 +114,17 @@ export default function Pending({ onOpenPart, onOpenFacilities, version }) {
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
-        {FIELD_CHIPS.map((c) => (
+        {chips.map((c) => (
           <button key={c.key} className="btn ghost sm"
-            style={{ background: field === c.key ? "var(--ink)" : "transparent", color: field === c.key ? "var(--bg)" : "var(--ink)", borderColor: field === c.key ? "var(--ink)" : "var(--hair-strong)" }}
+            title={c.tiers?.length ? `at ${c.tiers.join(", ")}` : undefined}
+            style={{ background: activeField === c.key ? "var(--ink)" : "transparent", color: activeField === c.key ? "var(--bg)" : "var(--ink)", borderColor: activeField === c.key ? "var(--ink)" : "var(--hair-strong)" }}
             onClick={() => setField(c.key)}>
-            {c.label}<span style={{ marginLeft: 6, fontFamily: "var(--font-mono)", fontSize: 10.5, opacity: 0.75 }}>{counts[c.key]}</span>
+            {c.label}<span style={{ marginLeft: 6, fontFamily: "var(--font-mono)", fontSize: 10.5, opacity: 0.75 }}>{c.count}</span>
           </button>
         ))}
       </div>
 
-      {field === "facility" ? (
+      {activeField === "facility" ? (
         <FacilityGaps rows={facRows} onOpenFacilities={onOpenFacilities} loading={facGaps === null} />
       ) : (
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
