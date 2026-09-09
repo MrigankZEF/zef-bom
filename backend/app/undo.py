@@ -86,14 +86,28 @@ def undoable(db: Session, h: ChangeHistory) -> tuple[bool, str]:
     return True, ""
 
 
+def _short(v: str | None, cap: int = 70) -> str:
+    """One line, and short enough to read in a confirmation dialog.
+
+    Values here are arbitrary text: a `comment` can be three pasted supplier URLs across six
+    lines, which turns a yes/no question into a wall nobody reads — and an unreadable
+    confirmation is worse than none, because it trains people to click through it.
+    """
+    if v is None or v == "":
+        return "—"
+    one = " ".join(str(v).split())
+    return one if len(one) <= cap else one[: cap - 1] + "…"
+
+
 def describe(h: ChangeHistory) -> str:
     """What a confirmation has to spell out: the subject, the field, and current -> restored."""
     what = h.field_changed or h.entity_type
     if h.change_type == "create":
-        return f"remove {what} on {h.entity_id} (added as {h.new_value or '—'})"
+        return f"remove {what} on {h.entity_id} (added as {_short(h.new_value)})"
     if h.change_type == "remove":
-        return f"put {what} back on {h.entity_id} (was {h.old_value or '—'})"
-    return f"set {what} on {h.entity_id} back to {h.old_value or '—'} (currently {h.new_value or '—'})"
+        return f"put {what} back on {h.entity_id} (was {_short(h.old_value)})"
+    return (f"set {what} on {h.entity_id}\n  from  {_short(h.new_value)}"
+            f"\n  back to  {_short(h.old_value)}")
 
 
 def apply_undo(db: Session, h: ChangeHistory, user: str) -> dict:
