@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Icon, ModulePill, fmtWeight } from "./ui";
+import { tierLabel } from "../tiers";
 
 const FIELD_CHIPS = [
   { key: "any", label: "Any missing" },
@@ -122,7 +123,6 @@ export default function Pending({ onOpenPart, onOpenFacilities, version }) {
 // number, no module and no weight — so they get their own columns rather than being forced
 // into the parts table with four empty cells.
 function FacilityGaps({ rows, onOpenFacilities, loading }) {
-  const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
   if (loading) return <p className="muted">Loading facility gaps…</p>;
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>

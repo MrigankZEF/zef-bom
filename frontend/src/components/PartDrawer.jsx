@@ -3,11 +3,8 @@ import { api } from "../api";
 import { Icon, ModulePill, NumInput, Pill, fmtEURcompact, fmtPct, fmtWeight, toNum } from "./ui";
 import { RefSelect, MultiRef } from "./RefInputs.jsx";
 
-const COST_TIERS = [1, 100, 10000];
-// The tier the drawer opens on — see DEFAULT_TIER in Tree.jsx. The API default stays 100.
-const DEFAULT_TIER = 10000;
+import { TIERS as COST_TIERS, DEFAULT_TIER, tierLabel } from "../tiers";
 const SOURCES = ["quote", "invoice", "estimate_math", "estimate_web", "estimate_ai", "other"];
-const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
 function Accordion({ title, meta, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -65,9 +62,10 @@ const SOURCING_OPTS = [
   { value: "make", label: "Make", title: "Built in house." },
 ];
 
-export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
+// `tier` comes from App. The drawer used to own its own copy, so a tree read at @10k could
+// sit next to a drawer reading @100 with nothing saying why. The tier is set in Browse.
+export default function PartDrawer({ itemId, tier, onClose, onOpenPart, onChanged }) {
   const [tab, setTab] = useState("overview");
-  const [tier, setTier] = useState(DEFAULT_TIER);
   const [addingChild, setAddingChild] = useState(false);
   // Quantities are read-only until you explicitly enter edit mode, matching the
   // "Add / edit" + "Save changes" pattern the details section already uses. Nothing is
@@ -402,7 +400,7 @@ Create this copy anyway? It gets its own new code.`)) {
 
         {tab === "overview" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} setTier={setTier} item={item} parents={parents} links={links} />
+            <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} item={item} parents={parents} links={links} />
             <WhereUsed itemId={itemId} parents={parents} onOpenPart={onOpenPart}
               onMoved={(r) => { onChanged?.(); onOpenPart(r.child_id); }} setError={setError} />
             {node.children.length > 0 && (
@@ -606,22 +604,6 @@ function Shell({ children }) {
   return <aside className="drawer">{children}</aside>;
 }
 
-function TierToggle({ tier, setTier }) {
-  return (
-    <span style={{ display: "inline-flex", border: "1px solid var(--hair)", borderRadius: 7, overflow: "hidden" }}>
-      {COST_TIERS.map((t) => (
-        <button key={t} onClick={() => setTier(t)} title={`${t.toLocaleString()} pieces`}
-          style={{
-            border: 0, cursor: "pointer", padding: "3px 10px", fontFamily: "var(--font-mono)", fontSize: 11,
-            background: tier === t ? "var(--accent)" : "transparent",
-            color: tier === t ? "#fff" : "var(--ink-3)",
-          }}>
-          {tierLabel(t)}
-        </button>
-      ))}
-    </span>
-  );
-}
 
 // Make a user-entered URL absolute, so a value like "drive.google.com/x" or "www.foo.com"
 // opens externally instead of being treated as a localhost-relative path.
@@ -720,7 +702,7 @@ function LinksEditor({ itemId, links, reload, setError }) {
   );
 }
 
-function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) {
+function Readouts({ isAssembly, rollups, tier, item, parents, links }) {
   const rollup = rollups[tier] || {};
   const hasRange = rollup.cost_min != null && (rollup.cost_min < rollup.cost || rollup.cost_max > rollup.cost);
   const rng = hasRange ? `${fmtEURcompact(rollup.cost_min)}–${fmtEURcompact(rollup.cost_max)}` : null;
@@ -729,11 +711,9 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) 
     <div className="card">
       <div className="card-head">
         <span className="card-title">Key figures</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-          <span className="card-meta">cost @</span>
-          <TierToggle tier={tier} setTier={setTier} />
-          <span className="card-meta">pcs</span>
-        </span>
+        {/* No tier switch here any more — the second one on screen. It reads the app tier,
+            which Browse sets. */}
+        <span className="card-meta">cost @ {tierLabel(tier)} pcs</span>
       </div>
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
         <Thumbnail itemId={item.item_id} fileId={item.thumbnail_file_id} />

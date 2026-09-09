@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { ModulePill, fmtEURcompact } from "./ui";
 
-const TIERS = [1, 100, 10000];
-const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
+import { TIERS, tierLabel } from "../tiers";
 const COLS = "104px 1fr 64px 96px 96px 96px";
 
 function CostCell({ c }) {

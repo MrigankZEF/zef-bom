@@ -3,15 +3,15 @@ import { api } from "../api";
 import { BreakdownList, Icon, fmtEURcompact, fmtPct, fmtWeight } from "./ui";
 import CostTreemap from "./CostTreemap.jsx";
 
-const TIERS = [1, 100, 10000];
-// The tier the UI opens on — see DEFAULT_TIER in Tree.jsx. The API default stays 100.
-const DEFAULT_TIER = 10000;
-const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
+import { TIERS, tierLabel } from "../tiers";
 
-export default function Costing({ onOpenPart }) {
+// Costing keeps its own tier CONTROL — it is never on screen with Browse, so two controls
+// are not the confusion this fixes; two independent values were. The value lives in App,
+// so switching Browse -> Costing lands on the tier you were already looking at.
+export default function Costing({ onOpenPart, tier, setTier }) {
   const [roots, setRoots] = useState(null);
   const [root, setRoot] = useState("");
-  const [volume, setVolume] = useState(DEFAULT_TIER);
+  const volume = tier, setVolume = setTier;   // local names, shared value
   const [metric, setMetric] = useState("cost"); // cost | weight
   const [colorMode, setColorMode] = useState("cost"); // cost (heat) | module
   const [expanded, setExpanded] = useState(false);    // full-width treemap
