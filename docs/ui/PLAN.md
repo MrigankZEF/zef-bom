@@ -9,6 +9,28 @@ Branch: `bom-ui-fixes`, cut from `origin/main` at `6eb9db2`, with the COGS ladde
 Migrations `0001`–`0015` exist. This plan claims **`0016`–`0018`**, in the order the phases
 below run — so nothing renumbers if a phase slips.
 
+## Where this has got to (2026-09-09)
+
+| Phase | State |
+| --- | --- |
+| D3 · Pending's chips from the data | done — `1a6f981` |
+| B1 · weight coverage + € / kg | done — `f9fccf1` |
+| C1 · one volume tier | done — `7f76a4b` |
+| A · treemap areas and colour | done — `1680aee`, as ONE commit; see its message for why |
+| D1 · queue stops asking for covered numbers | done — `7d0666c` |
+| D2 · the double-count note, and accepting it | done — `8e5a05c`, migration `0016` |
+| E · thumbnails pin themselves | done — `c11a9fb` |
+| F1 · close the change_history holes | done — `71045fd` |
+| I1 · undo from the History tab | done — `2a386e9` |
+| B2 · cost as a distribution | **next** |
+| G · milestones and diff | not started — claims migration `0017` |
+| H · import duty structure | not started — claims migration `0018` |
+
+Phase A grew past its plan while being reviewed on the real BOM: colour by branch, the
+hover ring, the title-collision handling and the flyout's item count all came out of looking
+at it, and none of them were in A1 or A2. That is the working rule below doing its job, not
+scope creep — but it is why A is one commit and not two.
+
 ## Working rule: run it before committing
 
 Each phase is **built and run locally first**, checked against the real BOM in the browser, and
