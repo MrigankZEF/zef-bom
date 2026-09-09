@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { fmtEURcompact, fmtPct, fmtWeight } from "./ui";
+import { BreakdownList, Icon, fmtEURcompact, fmtPct, fmtWeight } from "./ui";
 import CostTreemap from "./CostTreemap.jsx";
 
 const TIERS = [1, 100, 10000];
+// The tier the UI opens on — see DEFAULT_TIER in Tree.jsx. The API default stays 100.
+const DEFAULT_TIER = 10000;
 const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
 export default function Costing({ onOpenPart }) {
   const [roots, setRoots] = useState(null);
   const [root, setRoot] = useState("");
-  const [volume, setVolume] = useState(100);
+  const [volume, setVolume] = useState(DEFAULT_TIER);
   const [metric, setMetric] = useState("cost"); // cost | weight
   const [colorMode, setColorMode] = useState("cost"); // cost (heat) | module
   const [expanded, setExpanded] = useState(false);    // full-width treemap
@@ -18,6 +20,11 @@ export default function Costing({ onOpenPart }) {
   const [split, setSplit] = useState(true);           // draw a ×26 part as 26 numbered tiles, not one
   const [data, setData] = useState(null);
   const [tree, setTree] = useState(null);
+  // BOM+ is this tab exactly as it was, plus the direct-cost rungs. COGM and COGS are the
+  // ladder, cumulative — each shows every rung up to its own and no further.
+  const [view, setView] = useState("bom");         // bom | cogm | cogs
+  const [ladder, setLadder] = useState(null);
+  const [lines, setLines] = useState(null);        // the breakdown, per layer
   const [error, setError] = useState(null);
   const svgRef = useRef(null);
 
@@ -31,8 +38,13 @@ export default function Costing({ onOpenPart }) {
   useEffect(() => {
     if (!root) return;
     setData(null); setTree(null);
+    setLadder(null); setLines(null);
     api.costingBreakdown(root, volume).then(setData).catch((e) => setError(e.message));
     api.tree(root, volume).then(setTree).catch((e) => setError(e.message));
+    // The ladder is fetched for every view, not just the COGS ones: BOM+ shows the direct
+    // rungs, and switching view should never be a loading state.
+    api.cogsLadder(root, volume).then(setLadder).catch((e) => setError(e.message));
+    api.cogsBreakdown(volume).then((b) => setLines(b.lines)).catch((e) => setError(e.message));
   }, [root, volume]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
@@ -75,9 +87,25 @@ export default function Costing({ onOpenPart }) {
             </button>
           ))}
         </div>
+        <span style={{ flex: 1 }} />
+        {/* Cumulative: COGM is COGS minus the post-manufacturing rung, and BOM+ is the BOM
+            plus the direct rung. Each view shows every rung up to its own. */}
+        <div className="seg" role="group" aria-label="Cost view">
+          <button aria-pressed={view === "bom"} onClick={() => setView("bom")}
+                  title="The BOM as it rolls up, plus the direct-cost rungs on top of it">BOM+</button>
+          <button aria-pressed={view === "cogm"} onClick={() => setView("cogm")}
+                  title="Fully burdened manufacturing cost — direct plus this tier's share of the overhead pool">COGM</button>
+          <button aria-pressed={view === "cogs"} onClick={() => setView("cogs")}
+                  title="Cost of goods sold per plant — COGM plus freight, install and the warranty accrual">COGS</button>
+        </div>
       </div>
 
-      {!data ? <p className="muted">Loading {root}…</p> : (
+      {view !== "bom" && (
+        <LadderView view={view} ladder={ladder} lines={lines} volume={volume}
+                    rootName={data?.root_name || root} />
+      )}
+
+      {view === "bom" && !data ? <p className="muted">Loading {root}…</p> : view === "bom" && (
         <>
           <div className="kpi-grid">
             <div className="kpi accent">
@@ -171,6 +199,8 @@ export default function Costing({ onOpenPart }) {
             </div>
           </div>
 
+          {ladder && <DirectRungs ladder={ladder} lines={lines} volume={volume} />}
+
           {data.totals.total - data.totals.covered > 0 && (
             <div className="card" style={{ marginTop: 16 }}>
               <span style={{ fontSize: 13 }}>
@@ -221,7 +251,7 @@ function VolumeChart({ tiers, selected }) {
 // Rasterise the treemap SVG to a PNG and download it (for decks/emails). The treemap paints in
 // concrete ZEF token values, so the export matches the screen; the only var()s left are the font
 // stacks, which don't resolve in an isolated SVG and are swapped for concrete equivalents.
-const BONE = "#F5F2EE";  // --bg; the export is bone-on-bone like the app, not white
+const PAGE = "#FFFFFF";  // --bg; the export sits on the same white ground as the app
 
 async function exportSvgToPng(svg, filename) {
   try {
@@ -242,8 +272,8 @@ async function exportSvgToPng(svg, filename) {
       const f = FONTS[el.getAttribute("font-family")];
       if (f) el.setAttribute("font-family", f);
     });
-    clone.querySelectorAll("[stroke]").forEach((el) => { if ((el.getAttribute("stroke") || "").includes("var(")) el.setAttribute("stroke", BONE); });
-    clone.querySelectorAll("[fill]").forEach((el) => { if ((el.getAttribute("fill") || "").includes("var(")) el.setAttribute("fill", BONE); });
+    clone.querySelectorAll("[stroke]").forEach((el) => { if ((el.getAttribute("stroke") || "").includes("var(")) el.setAttribute("stroke", PAGE); });
+    clone.querySelectorAll("[fill]").forEach((el) => { if ((el.getAttribute("fill") || "").includes("var(")) el.setAttribute("fill", PAGE); });
     const str = new XMLSerializer().serializeToString(clone);
     const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(str);
     const img = new Image();
@@ -252,7 +282,7 @@ async function exportSvgToPng(svg, filename) {
     const canvas = document.createElement("canvas");
     canvas.width = w * scale; canvas.height = h * scale;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = BONE; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = PAGE; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.drawImage(img, 0, 0, w, h);
     canvas.toBlob((blob) => {
@@ -265,4 +295,242 @@ async function exportSvgToPng(svg, filename) {
   } catch (e) {
     alert("Couldn't export the image: " + e.message);
   }
+}
+
+// ── the COGS ladder, read-only ────────────────────────────────────────────────
+// Read-only on purpose: every figure here is either from the BOM tool or entered once on
+// Facilities. Nothing on this screen computes anything — `ladder` arrives with every rung
+// and every intermediate already on it, and these components render fields.
+
+const layerLines = (lines, layer) => (lines || []).filter((l) => l.layer === layer);
+
+// The three assumptions a reader cannot infer and the numbers depend on. Served with the
+// ladder rather than written here, so they cannot drift from the arithmetic that needs them.
+function LadderNotes({ ladder }) {
+  return (
+    <ul className="micro" style={{ color: "var(--ink-3)", margin: "10px 0 0", paddingLeft: 18 }}>
+      {(ladder.notes || []).map((n) => <li key={n} style={{ marginBottom: 2 }}>{n}</li>)}
+    </ul>
+  );
+}
+
+function FloorNote({ ladder }) {
+  const c = ladder.coverage;
+  if (!c?.is_floor) return null;
+  const bits = [];
+  if (c.missing.length) bits.push(`${c.missing.length} part${c.missing.length === 1 ? "" : "s"} with no decided cost`);
+  if (c.missing_assembly.length) bits.push(`${c.missing_assembly.length} assembl${c.missing_assembly.length === 1 ? "y" : "ies"} with no time or rate`);
+  if (c.missing_quote.length) bits.push(`${c.missing_quote.length} bought-in assembl${c.missing_quote.length === 1 ? "y" : "ies"} with no quote`);
+  return (
+    <div className="banner warn" style={{ marginBottom: 16 }}>
+      <Icon name="alert" size={15} className="ico" />
+      <div>
+        <h4>This is a floor, not a price</h4>
+        <p>
+          {bits.join(", ")} — so every rung above the BOM is understated.{" "}
+          {/* Named explicitly, because the KPI on BOM+ reads 100%: that one counts leaf
+              parts, this one counts assemblies too, and two bare percentages a click apart
+              would look like a contradiction rather than two different questions. */}
+          Coverage across parts <em>and</em> assemblies is {fmtPct(c.coverage)}; fill the
+          gaps in <strong>Pending</strong>.
+          {c.below_boundary.length > 0 && ` ${c.below_boundary.length} more items sit under a bought-in assembly and are deliberately not costed.`}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// The rungs BOM+ adds under the treemap: what the BOM becomes once scrap and the direct
+// facility costs are on it. Stops before overhead — that is COGM's rung.
+function DirectRungs({ ladder, lines, volume }) {
+  const wide = { gridTemplateColumns: "minmax(0,1fr) 120px" };
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-head">
+        <span className="card-title">1 · Direct manufacturing cost</span>
+        <span className="card-meta">per plant @ {volume.toLocaleString()}</span>
+      </div>
+      <div className="derived" style={wide}>
+        <span>BOM, rolled up — material {fmtEURcompact(ladder.bom)} + our labour {fmtEURcompact(ladder.labour)}</span>
+        <span>{fmtEURcompact(ladder.bom_raw)}</span>
+      </div>
+      <div className="derived" style={wide}>
+        <span>
+          Grossed for scrap — {ladder.scrap_pct.toFixed(3)}% loss, applied to the whole BOM
+          cost because a scrapped part loses the hours already in it
+        </span>
+        <span>{fmtEURcompact(ladder.bom_adj)}</span>
+      </div>
+      <div className="derived" style={wide}>
+        <span>Direct facility cost — consumables, metered utilities, tooling amortisation</span>
+        <span>{fmtEURcompact(ladder.other)}</span>
+      </div>
+      <div className="derived total" style={wide}>
+        <span>Direct manufacturing cost</span>
+        <span>{fmtEURcompact(ladder.direct)}</span>
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <BreakdownList lines={layerLines(lines, "direct")} fmt={fmtEURcompact}
+                       total={ladder.other} totalLabel="Entered on Facilities"
+                       empty="No direct facility costs entered yet — the BOM is the whole direct cost." />
+      </div>
+      <p className="micro" style={{ color: "var(--ink-4)", marginTop: 8 }}>
+        Switch to <strong>COGM</strong> to add this tier&apos;s share of the overhead pool.
+      </p>
+    </div>
+  );
+}
+
+function LadderView({ view, ladder, lines, volume, rootName }) {
+  if (!ladder) return <p className="muted">Loading the ladder…</p>;
+  const showPost = view === "cogs";
+  const headline = showPost ? ladder.cogs_unit : ladder.burdened;
+  const narrow = { gridTemplateColumns: "minmax(0,1fr) 110px" };
+
+  return (
+    <>
+      <FloorNote ladder={ladder} />
+
+      <div className="kpi-grid">
+        <div className="kpi accent">
+          <span className="kpi-label">{showPost ? "COGS per plant" : "COGM per plant"} — {rootName}</span>
+          <span className="kpi-val">{fmtEURcompact(headline)}</span>
+          <span className="kpi-sub">@ {volume.toLocaleString()} plants/yr</span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Direct</span>
+          <span className="kpi-val">{fmtEURcompact(ladder.direct)}</span>
+          <span className="kpi-sub">BOM + scrap + consumables</span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Overhead / plant</span>
+          <span className="kpi-val">{fmtEURcompact(ladder.overhead)}</span>
+          <span className="kpi-sub">
+            {fmtEURcompact(ladder.pool_total)} pool ÷ {volume.toLocaleString()}
+          </span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">Overhead share</span>
+          <span className="kpi-val">{fmtPct(ladder.overhead_share, 1)}</span>
+          <span className="kpi-sub">of {showPost ? "COGS" : "COGM"}</span>
+        </div>
+      </div>
+
+      <Waterfall ladder={ladder} showPost={showPost} />
+
+      <div style={{ display: "grid", gridTemplateColumns: showPost ? "1fr 1fr 1fr" : "1fr 1fr", gap: 16, marginTop: 16 }}>
+        <div className="card">
+          <div className="card-head">
+            <span className="card-title">1 · Direct manufacturing cost</span>
+            <span className="card-meta">per plant</span>
+          </div>
+          <div className="derived" style={narrow}>
+            <span>BOM, grossed for {ladder.scrap_pct.toFixed(3)}% scrap</span>
+            <span>{fmtEURcompact(ladder.bom_adj)}</span>
+          </div>
+          <BreakdownList lines={layerLines(lines, "direct")} fmt={fmtEURcompact}
+                         total={ladder.direct} totalLabel="Direct"
+                         empty="The BOM is the whole direct cost — nothing entered on Facilities." />
+          <p className="micro" style={{ color: "var(--ink-3)", marginTop: 8 }}>
+            The BOM contributes {fmtEURcompact(ladder.bom)} of material and{" "}
+            {fmtEURcompact(ladder.labour)} of our own assembly labour
+            {ladder.assembly_minutes > 0 && `, ${Math.round(ladder.assembly_minutes)} minutes a plant`}.
+          </p>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <span className="card-title">2 · Manufacturing overhead</span>
+            <span className="card-meta">pool ÷ {volume.toLocaleString()}</span>
+          </div>
+          <BreakdownList lines={layerLines(lines, "overhead")} fmt={fmtEURcompact}
+                         total={ladder.pool_total} totalLabel="Pool, full year"
+                         empty="No overhead entered on Facilities yet." />
+          <div className="derived total" style={{ ...narrow, marginTop: 6 }}>
+            <span>Per plant</span>
+            <span>{fmtEURcompact(ladder.overhead)}</span>
+          </div>
+          <p className="micro" style={{ color: "var(--ink-3)", marginTop: 8 }}>
+            {fmtPct(ladder.overhead_share, 1)} of the {showPost ? "COGS" : "COGM"} figure.
+            {volume === 1 && " At one plant a year, that plant absorbs a whole year of it — which is what this column means, not what a prototype costs."}
+          </p>
+        </div>
+
+        {showPost && (
+          <div className="card">
+            <div className="card-head">
+              <span className="card-title">3 · Post-manufacturing</span>
+              <span className="card-meta">produced = sold</span>
+            </div>
+            <BreakdownList lines={layerLines(lines, "post")} fmt={fmtEURcompact}
+                           total={ladder.post} totalLabel="Freight + install"
+                           empty="Nothing entered for after the plant leaves the hall." />
+            <div className="derived" style={{ ...narrow, marginTop: 6 }}>
+              <span>Warranty accrual — {ladder.warranty_pct.toFixed(2)}% of burdened</span>
+              <span>{fmtEURcompact(ladder.warranty)}</span>
+            </div>
+            <div className="derived total" style={narrow}>
+              <span>COGS per plant</span>
+              <span>{fmtEURcompact(ladder.cogs_unit)}</span>
+            </div>
+            <p className="micro" style={{ color: "var(--ink-3)", marginTop: 8 }}>
+              Warranty is a percentage of the burdened cost, so it moves whenever the overhead
+              pool does.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-head"><span className="card-title">What these numbers assume</span></div>
+        <LadderNotes ladder={ladder} />
+        <p className="micro" style={{ color: "var(--ink-3)", marginTop: 10 }}>
+          The BOM comes from the BOM tool — every other cost is entered on{" "}
+          <strong>Facilities</strong>.
+        </p>
+      </div>
+    </>
+  );
+}
+
+// A stacked bar rather than a true waterfall: the rungs are cumulative and all positive, so
+// stacking them shows both each rung's size and the total in one read. Widths are a share of
+// the headline figure — the only division on this screen, and it is a layout measurement
+// rather than a cost.
+function Waterfall({ ladder, showPost }) {
+  const total = showPost ? ladder.cogs_unit : ladder.burdened;
+  if (!total) return null;
+  const segs = [
+    { k: "bom", label: "BOM + scrap", v: ladder.bom_adj, c: "var(--data-1)" },
+    { k: "dir", label: "Direct facility", v: ladder.other, c: "var(--warm)" },
+    { k: "oh", label: "Overhead / plant", v: ladder.overhead, c: "var(--info)" },
+    ...(showPost ? [
+      { k: "post", label: "Freight + install", v: ladder.post, c: "var(--warn)" },
+      { k: "warr", label: "Warranty", v: ladder.warranty, c: "var(--accent)" },
+    ] : []),
+  ].filter((s) => s.v > 0);
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-head">
+        <span className="card-title">{showPost ? "COGS" : "COGM"} per plant, by rung</span>
+        <span className="card-meta mono">{fmtEURcompact(total)}</span>
+      </div>
+      <div style={{ display: "flex", height: 26, borderRadius: 3, overflow: "hidden", border: "1px solid var(--hair)" }}>
+        {segs.map((s) => (
+          <div key={s.k} style={{ width: `${(s.v / total) * 100}%`, background: s.c }}
+               title={`${s.label} — ${fmtEURcompact(s.v)} (${((s.v / total) * 100).toFixed(1)}%)`} />
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 8 }}>
+        {segs.map((s) => (
+          <span key={s.k} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--ink-2)" }}>
+            <span style={{ width: 9, height: 9, background: s.c, borderRadius: 2, display: "inline-block" }} />
+            {s.label}
+            <span className="mono" style={{ color: "var(--ink-3)" }}>{fmtEURcompact(s.v)}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }

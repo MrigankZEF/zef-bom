@@ -14,14 +14,16 @@ import io
 import json
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Float, Integer, JSON, Numeric, UniqueConstraint, delete, select, text,
+    Boolean, Date, DateTime, Float, Integer, JSON, Numeric, String, Text, UniqueConstraint,
+    delete, select, text,
 )
 from sqlalchemy.orm import Session
 
 from . import drive
 from .models import (
-    AssemblyLabor, BomLink, ChangeHistory, CodeRegistry, CostEvidence, DecidedCost,
-    FieldDefinition, FieldValue, Item, ItemLink, ReferenceValue, UploadBatch, User,
+    AssemblyLabor, BomLink, ChangeHistory, CodeRegistry, CogsFacility, CogsFacilityItem,
+    CogsLock, CogsValue, CostEvidence, DecidedCost, FieldDefinition, FieldValue, Item,
+    ItemLink, ReferenceValue, UploadBatch, User,
 )
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -41,6 +43,13 @@ BACKUP_SHEETS = [
     ("ChangeHistory", ChangeHistory),
     ("CodeRegistry", CodeRegistry),
     ("Users", User),
+    # The COGS ladder. A forgotten table is how a backup silently stops being a backup —
+    # these carry every figure on the Facilities screen, and none of it is derivable from
+    # the BOM.
+    ("CogsFacilities", CogsFacility),
+    ("CogsFacilityItems", CogsFacilityItem),
+    ("CogsValues", CogsValue),
+    ("CogsLocks", CogsLock),
 ]
 
 # Scheduled snapshots carry this marker so retention only ever trims THEM — never the
@@ -156,6 +165,12 @@ RESTORE_ORDER = [
     ("BomLinks", BomLink),
     ("ChangeHistory", ChangeHistory),
     ("CodeRegistry", CodeRegistry),
+    # facility -> sub-item -> value -> lock, which is what the foreign keys require on
+    # insert. Not merge-only: these tables are replaced wholesale like the rest.
+    ("CogsFacilities", CogsFacility),
+    ("CogsFacilityItems", CogsFacilityItem),
+    ("CogsValues", CogsValue),
+    ("CogsLocks", CogsLock),
 ]
 RESTORE_MODELS = dict(RESTORE_ORDER)
 
@@ -186,6 +201,13 @@ def _coerce(value, column):
     import pandas as pd
 
     if _is_na(value):
+        # A blank cell in a NOT NULL text column is the EMPTY STRING, not a missing value.
+        # Excel cannot tell the two apart — it writes '' as an empty cell and reads it back
+        # as NaN — so a column that uses '' as a meaningful sentinel would fail its own NOT
+        # NULL constraint on restore. `cogs_value.item_id` is exactly that: '' means "the
+        # facility's own value for a locked row".
+        if not column.nullable and isinstance(column.type, (String, Text)):
+            return ""
         return None
     t = column.type
     try:

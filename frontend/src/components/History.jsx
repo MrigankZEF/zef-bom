@@ -8,6 +8,9 @@ const FILTERS = [
   { key: "bom_link", label: "Structure" },
   { key: "decided_cost", label: "Cost" },
   { key: "cost_evidence", label: "Evidence" },
+  // Four entity types behind one chip. Without it the cogs_* rows land in "All" and are
+  // filterable by nothing — the reason this list being hardcoded needed revisiting.
+  { key: "cogs_facility,cogs_facility_item,cogs_value,cogs_lock", label: "Facilities" },
 ];
 
 const toneFor = (t) => (t === "create" ? "ok" : t === "remove" ? "accent" : "info");
@@ -52,6 +55,8 @@ export default function History({ onOpenPart, version }) {
       {!rows ? <p className="muted">Loading…</p> : (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           {shown.map((h) => {
+            // Facility rows are deliberately absent: a cogs_* entity_id is a facility id or
+            // a "facility:sub-item" pair, not a part number, so there is no part to open.
             const isItem = h.entity_type === "item" || h.entity_type === "decided_cost" || h.entity_type === "cost_evidence" || h.entity_type === "field_value";
             return (
               <div key={h.id}

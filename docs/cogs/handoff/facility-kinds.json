@@ -1,0 +1,194 @@
+{
+  "assembly": {
+    "label": "Assembly & manufacturing",
+    "blurb": "Floor, indirect staff and equipment sit in the overhead pool; hours, scrap, metered utilities and tooling land in layer 1 as direct cost per plant.",
+    "rows": [
+      {
+        "k": "area",
+        "label": "Floor area",
+        "unit": "m²",
+        "basis": "info"
+      },
+      {
+        "k": "fte",
+        "label": "Indirect headcount",
+        "unit": "FTE",
+        "basis": "fte"
+      },
+      {
+        "k": "salary",
+        "label": "Average salary",
+        "unit": "€ / yr",
+        "basis": "salary"
+      },
+      {
+        "k": "rent",
+        "label": "Rent & facilities",
+        "unit": "€ / yr",
+        "basis": "oh"
+      },
+      {
+        "k": "dep",
+        "label": "Equipment depreciation",
+        "unit": "€ / yr",
+        "basis": "oh"
+      },
+      {
+        "k": "maint",
+        "label": "Maintenance & calibration",
+        "unit": "€ / yr",
+        "basis": "oh"
+      },
+      {
+        "k": "util",
+        "label": "Indirect utilities",
+        "unit": "€ / yr",
+        "basis": "oh"
+      },
+      {
+        "k": "hours",
+        "label": "Direct labour hours",
+        "unit": "h / plant",
+        "basis": "hours"
+      },
+      {
+        "k": "rate",
+        "label": "Blended labour rate",
+        "unit": "€ / h",
+        "basis": "rate"
+      },
+      {
+        "k": "scrap",
+        "label": "Scrap / yield loss",
+        "unit": "% of BOM",
+        "basis": "scrap"
+      },
+      {
+        "k": "meter",
+        "label": "Metered utilities",
+        "unit": "€ / plant",
+        "basis": "direct"
+      },
+      {
+        "k": "toolTotal",
+        "label": "Tooling & fixtures",
+        "unit": "€ total",
+        "basis": "toolTotal"
+      },
+      {
+        "k": "toolUnits",
+        "label": "Amortised over",
+        "unit": "plants",
+        "basis": "toolUnits"
+      }
+    ]
+  },
+  "logistics": {
+    "label": "Supply chain & logistics",
+    "blurb": "Inbound transport and customs are direct cost on the plant; the warehouse itself is overhead; outgoing shipping and crating sit below the manufacturing line in layer 3.",
+    "rows": [
+      {
+        "k": "area",
+        "label": "Floor area",
+        "unit": "m²",
+        "basis": "info"
+      },
+      {
+        "k": "fte",
+        "label": "Headcount",
+        "unit": "FTE",
+        "basis": "fte"
+      },
+      {
+        "k": "salary",
+        "label": "Average salary",
+        "unit": "€ / yr",
+        "basis": "salary"
+      },
+      {
+        "k": "rent",
+        "label": "Rent & yard",
+        "unit": "€ / yr",
+        "basis": "oh"
+      },
+      {
+        "k": "systems",
+        "label": "Systems & customs admin",
+        "unit": "€ / yr",
+        "basis": "oh"
+      },
+      {
+        "k": "inbound",
+        "label": "Inbound transport",
+        "unit": "€ / plant",
+        "basis": "direct"
+      },
+      {
+        "k": "duty",
+        "label": "Customs & duties",
+        "unit": "€ / plant",
+        "basis": "direct"
+      },
+      {
+        "k": "outbound",
+        "label": "Outgoing shipping",
+        "unit": "€ / plant",
+        "basis": "post"
+      },
+      {
+        "k": "crating",
+        "label": "Packing & crating",
+        "unit": "€ / plant",
+        "basis": "post"
+      }
+    ]
+  },
+  "field": {
+    "label": "Field works",
+    "blurb": "Crew payroll and field equipment are overhead; installation, commissioning, travel and the warranty accrual are layer 3, added after the plant leaves the hall.",
+    "rows": [
+      {
+        "k": "fte",
+        "label": "Field crew",
+        "unit": "FTE",
+        "basis": "fte"
+      },
+      {
+        "k": "salary",
+        "label": "Average salary",
+        "unit": "€ / yr",
+        "basis": "salary"
+      },
+      {
+        "k": "equip",
+        "label": "Field equipment & tools",
+        "unit": "€ / yr",
+        "basis": "oh"
+      },
+      {
+        "k": "travel",
+        "label": "Travel & per diem",
+        "unit": "€ / plant",
+        "basis": "post"
+      },
+      {
+        "k": "install",
+        "label": "Installation on site",
+        "unit": "€ / plant",
+        "basis": "post"
+      },
+      {
+        "k": "commission",
+        "label": "Commissioning & handover",
+        "unit": "€ / plant",
+        "basis": "post"
+      },
+      {
+        "k": "warranty",
+        "label": "Warranty accrual",
+        "unit": "% of burdened",
+        "basis": "warranty"
+      }
+    ]
+  }
+}

@@ -58,10 +58,13 @@
 :root {
   /* ---------- PALETTE ---------- */
 
-  /* Surfaces — warm, paper-like, never pure white */
-  --bg:        #F5F2EE;   /* default page surface — bone */
-  --bg-sunk:   #EEEAE4;   /* recessed wells, subdued cards */
-  --bg-raised: #FBF9F5;   /* faint lift over --bg */
+  /* Surfaces — a white page, with the warmth moved off the ground and onto the things
+     standing on it. The whole scale shifted down one step to get here: the bone that used
+     to be the page is now the fill behind data, which is the role it plays on paper.
+     A lift can no longer be brighter than the page, so --bg-raised lifts by warmth. */
+  --bg:        #FFFFFF;   /* default page surface — white */
+  --bg-sunk:   #F5F2EE;   /* recessed wells, row hover, fill behind data — bone */
+  --bg-raised: #F9F7F3;   /* faint warm lift over --bg */
 
   /* Ink — true charcoal scale, not blue-black */
   --ink:       #1C1B1A;   /* primary text, structural ink */
@@ -718,7 +721,9 @@ body { background: var(--bg); }
   align-items: center;
   padding: 7px 12px 7px var(--indent, 12px);
   border-bottom: 1px solid var(--hair-faint);
-  cursor: pointer;
+  /* Not pointer: the row itself does nothing. Its two zones each carry their own click and
+     their own cursor; what is left is the indent gutter, which only ever drags. */
+  cursor: default;
   transition: background var(--dur-fast) var(--ease);
   position: relative;
   background: var(--tint, transparent);   /* deepens with nesting; :hover/.on override */
@@ -790,10 +795,16 @@ body { background: var(--bg); }
    Without this the details half looked inert. */
 .tree-name.expands:hover,
 .tree-name.dismisses:hover,
+.tree-name.opens:hover,
 .tree-row .tree-data:hover { background: var(--warm-3); }
+.tree-name.expands,
+.tree-name.dismisses,
+.tree-name.opens,
+.tree-row .tree-data { cursor: pointer; }
 /* A leaf has nothing to expand, so its left zone only ever dismisses the details panel —
    it lights up exactly while there is one open, and is inert otherwise. Affordance follows
-   what the click will actually do. */
+   what the click will actually do. `.opens` is the flattened view's case: nothing to expand
+   there either, so the name zone opens the drawer like the data columns beside it. */
 .tree-name.inert { cursor: default; }
 .tree-name .num {
   font-family: var(--font-mono); font-size: 11px;
@@ -1058,3 +1069,156 @@ body { background: var(--bg); }
 .ico-14 { width: 14px; height: 14px; }
 .ico-18 { width: 18px; height: 18px; }
 .ico-20 { width: 20px; height: 20px; }
+
+/* ---------- the COGS ladder: facilities, the tier matrix, breakdowns ----------
+   The matrix is the heart of the Facilities screen: one row per row-key for the record's
+   kind, three tier columns. It reuses the tree's row rhythm so the two read as one screen,
+   but it is its own grid — the tree's columns are BOM figures and these are cost inputs. */
+
+/* Numeric columns on the facility tree, shared by header and rows so they stay aligned.
+   FTE · L2 pool/yr · L1+L3 per plant · cost at the tier in force. */
+.fac-data {
+  display: grid;
+  grid-template-columns: 44px 84px 84px 76px;
+  align-items: center;
+  gap: 8px;
+  margin: -7px -12px -7px 0;
+  padding: 7px 12px 7px 0;
+  border-radius: 3px 0 0 3px;
+}
+.fac-data > * {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 11px; text-align: right; color: var(--ink-2);
+}
+.fac-data .muted-cell { color: var(--ink-4); }
+.tree-head .fac-data > * { color: var(--ink-3); font-size: 10px; }
+
+/* ---------- the tier matrix ---------- */
+.matrix { display: flex; flex-direction: column; }
+.matrix-head,
+.matrix-row {
+  display: grid;
+  /* lock · label+unit · L-tag · three tiers. The lock column collapses to 0 on a sub-item
+     drawer, because locking is a facility-level decision — see `.matrix.no-lock`. */
+  grid-template-columns: 22px minmax(0, 1fr) 26px repeat(3, 96px);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--hair-faint);
+}
+.matrix.no-lock .matrix-head,
+.matrix.no-lock .matrix-row { grid-template-columns: 0 minmax(0, 1fr) 26px repeat(3, 96px); }
+.matrix.no-lock .lock-cell { display: none; }
+.matrix-head {
+  border-bottom: 1px solid var(--hair);
+  padding-bottom: 6px;
+}
+.matrix-head > span:nth-child(n+4) {
+  font-family: var(--font-mono); font-size: 10px; color: var(--ink-3);
+  text-align: center; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.matrix-row:hover { background: var(--bg-sunk); }
+.matrix-label { font-size: 12.5px; color: var(--ink); min-width: 0; }
+.matrix-label .u {
+  font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); margin-left: 6px;
+  white-space: nowrap;
+}
+/* A locked row is the one being entered at facility level — worth seeing at a glance,
+   because it changes what every cell below it means. */
+.matrix-row.locked .matrix-label { font-weight: 500; }
+
+/* Cells. An input, or one of two flavours of read-only: an aggregate the facility rolled
+   up, or a value inherited from above. */
+.matrix .cell { width: 100%; }
+.matrix .cell-ro {
+  height: 25px; display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 7px;
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px;
+  border: 1px solid transparent; border-radius: 4px;
+}
+.matrix .cell-ro.agg { color: var(--ink-2); background: var(--bg-sunk); }
+.matrix .cell-ro.inherited { color: var(--ink-3); }
+.matrix .cell-ro.at-facility { color: var(--ink-4); }
+
+.layer-tag {
+  font-family: var(--font-mono); font-size: 10px; color: var(--ink-3);
+  text-align: center; cursor: help;
+  /* Pinned: this sits in a 26px grid track, and anything that stretches it stretches the
+     whole matrix row. `.none` rather than `.empty` for the same reason — `.empty` is the
+     global empty-state block further down this file, and it carries `padding: 60px 24px`,
+     which turned three matrix rows into 146px-tall rows the first time this shipped. */
+  line-height: 1.4; white-space: nowrap; overflow: hidden; min-width: 0;
+}
+.layer-tag.none { color: var(--ink-4); cursor: default; }
+
+/* 14px, ink fill when on. Hover changes colour only — nothing moves or lifts. */
+.lock {
+  width: 14px; height: 14px; padding: 0;
+  display: grid; place-items: center;
+  border: 1px solid var(--hair-strong); border-radius: 2px;
+  background: var(--bg); color: var(--bg);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.lock:hover { border-color: var(--ink); }
+.lock.on { background: var(--ink); border-color: var(--ink); }
+.lock[disabled] { opacity: 0.35; cursor: not-allowed; }
+.lock[disabled]:hover { border-color: var(--hair-strong); }
+
+/* ---------- derived rows under the matrix ---------- */
+.derived {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 96px);
+  align-items: center; gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+.derived + .derived { border-top: 1px solid var(--hair-faint); }
+.derived > span:nth-child(n+2) {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px;
+  text-align: right; padding-right: 7px;
+}
+.derived.oh    > span:nth-child(n+2) { color: var(--info); }
+.derived.dir   > span:nth-child(n+2) { color: var(--ink); }
+.derived.post  > span:nth-child(n+2) { color: var(--warn); }
+.derived.total { border-top: 1px solid var(--hair); font-weight: 500; }
+.derived.total > span:nth-child(n+2) { color: var(--accent); font-size: 12.5px; }
+
+/* ---------- breakdown lists (the Costing layer cards) ---------- */
+.breakdown { display: flex; flex-direction: column; margin-top: 4px; }
+.breakdown-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 68px 96px;
+  align-items: center; gap: 8px; padding: 4px 0;
+  font-size: 12.5px;
+}
+.breakdown-row + .breakdown-row { border-top: 1px solid var(--hair-faint); }
+.breakdown-label { color: var(--ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.breakdown-src { font-size: 10px; color: var(--ink-4); text-align: left; }
+.breakdown-val { font-variant-numeric: tabular-nums; font-size: 11.5px; text-align: right; color: var(--ink); }
+.breakdown-row.total {
+  border-top: 1px solid var(--hair); margin-top: 2px; padding-top: 6px; font-weight: 500;
+}
+.breakdown-row.total .breakdown-val { color: var(--accent); font-size: 12.5px; }
+
+/* ---------- the new-facility menu ---------- */
+/* One of the two things on this screen that physically floats, so one of the two that gets
+   a shadow. Surface is --bg-raised: a menu is not the page. */
+.fac-menu { position: relative; }
+.fac-menu-pop {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 60;
+  width: 320px; padding: 4px;
+  background: var(--bg-raised); border: 1px solid var(--hair-strong); border-radius: 6px;
+  box-shadow: var(--shadow-2);
+}
+.fac-menu-pop button {
+  display: block; width: 100%; text-align: left;
+  border: 0; background: transparent; cursor: pointer;
+  padding: 8px 10px; border-radius: 4px;
+  transition: background var(--dur-fast) var(--ease);
+}
+.fac-menu-pop button:hover { background: var(--warm-3); }
+.fac-menu-pop .k {
+  display: block; font-family: var(--font-display); font-size: 12.5px;
+  font-weight: 500; color: var(--ink);
+}
+.fac-menu-pop .d { display: block; font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
