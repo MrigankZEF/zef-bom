@@ -677,6 +677,20 @@ body { background: var(--bg); }
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
   margin-bottom: 24px;
 }
+/* The unit-cost tile carries three figures and a curve, not one number, so it gets width and
+   gives height back. The split is `1fr 2.3fr` — deliberately the SAME basis as the row of cards
+   below it, with the same 16px gap — so the tile lines up exactly with the Cost vs volume card
+   underneath at any window width. Approximating it with `2fr 1fr 1fr 1fr` cannot: that only
+   coincides at one particular width and drifts everywhere else.
+
+   The other three tiles share the second column in a nested grid of their own. */
+.kpi-grid.with-spread { grid-template-columns: 1fr 2.3fr; }
+.kpi-rest { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.kpi.spread { padding: 14px 18px 12px; gap: 4px; }
+@media (max-width: 1100px) {
+  .kpi-grid.with-spread { grid-template-columns: 1fr; }
+  .kpi-rest { grid-template-columns: repeat(3, 1fr); }
+}
 .kpi {
   background: var(--bg); border: 1px solid var(--hair);
   border-radius: 6px; padding: 16px 18px;

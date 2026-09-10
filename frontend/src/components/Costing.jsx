@@ -4,6 +4,7 @@ import { BreakdownList, Icon, fmtEURcompact, fmtPct, fmtWeight } from "./ui";
 import CostTreemap from "./CostTreemap.jsx";
 
 import { TIERS, tierLabel } from "../tiers";
+import { spreadPath, spreadX } from "../spread";
 
 // Costing keeps its own tier CONTROL — it is never on screen with Browse, so two controls
 // are not the confusion this fixes; two independent values were. The value lives in App,
@@ -64,8 +65,6 @@ export default function Costing({ onOpenPart, tier, setTier }) {
   const scenarioCost = (t) => !t ? null
     : scenario === "min" ? t.cost_min : scenario === "max" ? t.cost_max : t.cost;
   const shownCost = scenarioCost(ct);
-  const costRange = ct && ct.cost_min != null && (ct.cost_min < ct.cost || ct.cost_max > ct.cost)
-    ? `${fmtEURcompact(ct.cost_min)}–${fmtEURcompact(ct.cost_max)}` : null;
   // Density, so the unit is fixed at kg however light the BOM is — `fmtWeight` flips to grams
   // under 1 kg, and a tile whose unit moves cannot be compared between two BOMs. Null rather
   // than Infinity when nothing has been weighed.
@@ -74,6 +73,9 @@ export default function Costing({ onOpenPart, tier, setTier }) {
   // Every unweighed part drags the real €/kg down, so the figure on screen is a ceiling, not
   // an estimate. Saying which it is costs one clause.
   const unweighed = ct?.weight_missing?.length || 0;
+  // Drives the whole tile's layout, so it is worked out once here rather than three times in
+  // the markup. Without a range there is nothing to spread and the tile stays as it was.
+  const hasSpread = !!(ct && ct.cost_min > 0 && ct.cost_max > ct.cost_min);
 
   return (
     <div className="page">
@@ -116,18 +118,28 @@ export default function Costing({ onOpenPart, tier, setTier }) {
 
       {view === "bom" && !data ? <p className="muted">Loading {root}…</p> : view === "bom" && (
         <>
-          <div className="kpi-grid">
-            <div className="kpi accent">
+          <div className={`kpi-grid${hasSpread ? " with-spread" : ""}`}>
+            <div className={`kpi accent${hasSpread ? " spread" : ""}`}>
               <span className="kpi-label">
                 Unit cost — {data.root_name}{scenario !== "likely" && <> · <strong>{scenario}</strong></>}
               </span>
-              <span className="kpi-val">{shownCost > 0 ? fmtEURcompact(shownCost) : "—"}</span>
-              <span className="kpi-sub">{costRange
-                ? `min–max ${costRange}${ct?.assembly_cost > 0 ? ` · assembly ${fmtEURcompact(ct.assembly_cost)}` : ""}`
-                : (ct?.assembly_cost > 0
-                    ? `parts ${fmtEURcompact(ct.parts_cost)} + assembly ${fmtEURcompact(ct.assembly_cost)}`
-                    : `@ ${volume.toLocaleString()} units`)}</span>
+              {hasSpread ? (
+                <CostSpread min={ct.cost_min} likely={ct.cost} max={ct.cost_max}
+                            at={shownCost} scenario={scenario} fmt={fmtEURcompact} />
+              ) : (
+                <>
+                  <span className="kpi-val">{shownCost > 0 ? fmtEURcompact(shownCost) : "—"}</span>
+                  <CostSpread min={ct?.cost_min} likely={ct?.cost} max={ct?.cost_max}
+                              at={shownCost} scenario={scenario} />
+                </>
+              )}
+              <span className="kpi-sub">{ct?.assembly_cost > 0
+                ? `parts ${fmtEURcompact(ct.parts_cost)} + assembly ${fmtEURcompact(ct.assembly_cost)}`
+                : `@ ${volume.toLocaleString()} units`}</span>
             </div>
+            {/* The other three share the second column, in a grid of their own — see
+                .kpi-rest. That is what lets the unit-cost tile line up with the card below. */}
+            <div className="kpi-rest">
             <div className="kpi">
               <span className="kpi-label">Total weight</span>
               <span className="kpi-val">{fmtWeight(data.totals.weight_grams)}</span>
@@ -154,6 +166,7 @@ export default function Costing({ onOpenPart, tier, setTier }) {
               <span className="kpi-sub">{eurPerKg == null
                 ? "no weight rolled up"
                 : `over ${fmtWeight(data.totals.weight_grams)}${unweighed > 0 ? ` · ${unweighed} parts unweighed, so a ceiling` : ""}`}</span>
+            </div>
             </div>
           </div>
 
@@ -237,6 +250,84 @@ export default function Costing({ onOpenPart, tier, setTier }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// The three-point estimate, drawn.
+//
+// The three figures are placed WHERE THE CURVE PUTS THEM, not spaced evenly: min at the left
+// edge, max at the right, and the most-likely at its true position across the range. On the
+// real BOM that is 41% — so the likely figure sits left of centre and the tile says, without a
+// word, that the downside is tighter than the upside. Evenly spaced figures would have thrown
+// that away, and a figure printed on top of the curve (the first attempt) just collided with it.
+//
+// See src/spread.js for the curve itself and why it is a shape rather than three numbers.
+function CostSpread({ min, likely, max, at, scenario, fmt }) {
+  // Compact form, for the tile that has no range to show: a tick and a caption.
+  if (!fmt) {
+    const W = 132, H = 26;
+    if (!(min > 0)) return null;
+    return (
+      <svg width={W} height={H} style={{ display: "block", marginTop: 2 }} aria-label="single-point estimate">
+        <line x1={W / 2} y1="3" x2={W / 2} y2={H - 1} stroke="var(--accent)" strokeWidth="2" />
+        <line x1="0" y1={H - 1} x2={W} y2={H - 1} stroke="var(--hair)" strokeWidth="1" />
+        <text x={W / 2 + 6} y={H - 5} fontSize="9.5" fill="var(--ink-4)">one estimate</text>
+      </svg>
+    );
+  }
+
+  // A viewBox rather than a pixel width, so the curve stretches to whatever the tile is —
+  // which is now the width of the Cost vs volume card below it. preserveAspectRatio="none"
+  // because the horizontal axis is the range and the vertical is decoration: stretching it
+  // sideways costs nothing, and letting it letterbox would leave the range short of the box.
+  // A viewBox rather than a pixel width, so the curve stretches to whatever the tile is —
+  // which is the width of the Cost vs volume card below it. preserveAspectRatio="none" because
+  // the horizontal axis is the range and the vertical is decoration: stretching it sideways
+  // costs nothing, and letterboxing would leave the range short of the box.
+  const VB = 320, CURVE_H = 32, PAD = 2;
+  // Drawn PAD short of the top and pushed down by it, so the peak's own stroke is not clipped
+  // by the edge of the viewBox — which read as the distribution having its top sliced off.
+  const path = spreadPath(min, likely, max, VB, CURVE_H - PAD);
+  if (path === null) return null;
+  const x = spreadX(at ?? likely, min, max) * VB;
+  // MIN and MAX are set small and in FRONT of their figures rather than under them: the figures
+  // are the content and want one line each, and a word beneath every one turned three numbers
+  // into six things to read.
+  const Tag = ({ children }) => (
+    <span style={{ fontFamily: "var(--font-body)", fontSize: 9, letterSpacing: "0.1em",
+                   color: "var(--ink-3)", marginRight: 5, verticalAlign: "0.55em" }}>{children}</span>
+  );
+  // Evenly spaced, and all three at one size. Positioning the middle figure over the curve's
+  // actual peak was truer — it showed the lean — but at this width it crowded whichever end it
+  // leaned towards. The lean is still on screen: the tick below sits at the real value.
+  return (
+    <div style={{ position: "relative", width: "100%", marginTop: 2 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+        <span style={{ whiteSpace: "nowrap" }}>
+          <Tag>MIN</Tag><span className="kpi-val" style={{ fontSize: 23 }}>{fmt(min)}</span>
+        </span>
+        <span style={{ whiteSpace: "nowrap" }}>
+          <span className="kpi-val" style={{ fontSize: 23 }}>{fmt(at ?? likely)}</span>
+        </span>
+        <span style={{ whiteSpace: "nowrap" }}>
+          <Tag>MAX</Tag><span className="kpi-val" style={{ fontSize: 23 }}>{fmt(max)}</span>
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${VB} ${CURVE_H}`} preserveAspectRatio="none"
+           width="100%" height={CURVE_H} style={{ display: "block", marginTop: 6 }}
+           aria-label={`cost range ${min} to ${max}, most likely ${likely}`}>
+        <path d={path} transform={`translate(0 ${PAD})`} fill="var(--accent-soft)"
+              stroke="var(--accent)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        <line x1="0" y1={CURVE_H - 0.5} x2={VB} y2={CURVE_H - 0.5} stroke="var(--hair-strong)"
+              strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        {/* Where the figure above actually falls in the range — the one place the asymmetry
+            still shows now that the numbers are evenly spaced. */}
+        <line x1={x} y1={PAD} x2={x} y2={CURVE_H} stroke="var(--accent)"
+              strokeWidth={scenario === "likely" ? 1.5 : 2}
+              strokeDasharray={scenario === "likely" ? "" : "2 2"}
+              vectorEffect="non-scaling-stroke" />
+      </svg>
     </div>
   );
 }
