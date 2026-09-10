@@ -9,7 +9,7 @@ import { TIERS, tierLabel } from "../tiers";
 // `tier` is owned by App, not here: the drawer renders beside this tree and has to agree
 // with it. Browse is where the app's tier is SET, which is why the control below is the
 // prominent one.
-export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
+export default function Tree({ onOpenPart, focus, version, tier, setTier, compare, setCompare }) {
   const [roots, setRoots] = useState(null);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
@@ -19,6 +19,12 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
   // "tree" = the nested hierarchy; "flat" = each BOM one level deep with full counts.
   const [view, setView] = useState("tree");
   const [flat, setFlat] = useState(null);
+  // Milestones, and the comparison against the selected one. `compare` is App's, because
+  // the drawer has to know too.
+  const [stones, setStones] = useState([]);
+  const [diff, setDiff] = useState(null);
+  const [taking, setTaking] = useState(null);    // the root a milestone is being taken of
+  const [diffOnly, setDiffOnly] = useState(true); // hide the unchanged rows
   // On by default: leaf rows sum to the BOM's parts cost, so the Total column is safe to
   // read as a sum. Assembly rows carry their own process cost and would double-count.
   const [leafOnly, setLeafOnly] = useState(true);
@@ -41,6 +47,20 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
   const loadFlat = () =>
     api.flat(null, tier).then(setFlat).catch((e) => setError(e.message));
   useEffect(() => { if (view === "flat") loadFlat(); /* eslint-disable-next-line */ }, [view, version, tier]);
+
+  const loadStones = () => api.milestones().then(setStones).catch(() => setStones([]));
+  useEffect(() => { loadStones(); /* eslint-disable-next-line */ }, [version]);
+
+  // Re-fetched on a tier change, not filtered client-side: a diff is per tier all the way
+  // down — the decided cost, the labour minutes and whether an assembly is bought all differ
+  // by tier — so there is nothing here that could correctly convert one tier's diff to
+  // another's.
+  useEffect(() => {
+    if (!compare) { setDiff(null); return; }
+    setDiff(null);
+    api.milestoneDiff(compare.id, tier).then(setDiff).catch((e) => setError(e.message));
+    /* eslint-disable-next-line */
+  }, [compare && compare.id, tier, version]);
 
   const modules = useMemo(() => {
     const set = new Set();
@@ -161,9 +181,17 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
       <div className="page-head">
         <div>
           <div className="page-eyebrow">Browse</div>
-          <h1 className="page-title">{view === "tree" ? "BOM tree" : "Flattened BOM"}</h1>
+          <h1 className="page-title">
+            {view === "tree" ? "BOM tree" : view === "flat" ? "Flattened BOM" : "Changes since the milestone"}
+          </h1>
           <p className="page-sub">
-            {view === "tree" ? (
+            {view === "diff" ? (
+              <>
+                Both sides are costed by the same code from the same kind of rows, so a
+                difference here is a difference in the <strong>BOM</strong> — not in the arithmetic.
+                The history column says who, where the log knows.
+              </>
+            ) : view === "tree" ? (
               <>
                 The microplant hierarchy. Expand assemblies, <strong>drag a part onto another assembly</strong> to
                 move it (same BOM), and click any item to inspect.
@@ -180,7 +208,18 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
           <span className="segmented-mini">
             <button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}>BOM tree</button>
             <button className={view === "flat" ? "on" : ""} onClick={() => setView("flat")}>Flattened</button>
+            {/* Only offered when there is something to compare against. A permanently
+                present tab that always says "pick a milestone first" is a worse
+                explanation than its own absence. */}
+            {compare && (
+              <button className={view === "diff" ? "on" : ""} onClick={() => setView("diff")}>Changes</button>
+            )}
           </span>
+          <MilestonePicker
+            stones={stones} compare={compare}
+            onPick={(m) => { setCompare(m); if (m) setView("diff"); else if (view === "diff") setView("flat"); }}
+            onTake={() => setTaking(roots[0] ? roots[0].item_id : null)}
+          />
           {/* This is now the app's tier, not just this tree's — the drawer and the Costing tab
               read the same value — so it is sized like a control that decides something rather
               than three unlabelled chips behind a whisper of a label. */}
@@ -217,6 +256,15 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
         />
       )}
 
+      {taking !== null && (
+        <TakeMilestonePanel
+          roots={roots} initial={taking}
+          onCancel={() => setTaking(null)}
+          onTaken={(m) => { setTaking(null); loadStones().then(() => { setCompare(m); setView("diff"); }); }}
+          setError={setError}
+        />
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 12, marginBottom: 16, alignItems: "center" }}>
         <div className="search">
           <Icon name="search" className="ico" />
@@ -231,7 +279,13 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
           <option value="covered">Fully costed</option>
           <option value="uncovered">Has uncosted</option>
         </select>
-        {view === "flat" ? (
+        {view === "diff" ? (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-3)", cursor: "pointer", whiteSpace: "nowrap" }}
+                 title="Hide the rows that are the same in both. On a real BOM the unchanged rows are most of them.">
+            <input type="checkbox" checked={diffOnly} onChange={(e) => setDiffOnly(e.target.checked)} />
+            changed only
+          </label>
+        ) : view === "flat" ? (
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-3)", cursor: "pointer", whiteSpace: "nowrap" }}
                  title="Leaf parts only — then the Total column adds up to the BOM's parts cost. Including sub-assemblies double-counts, since their cost is already inside their own parts.">
             <input type="checkbox" checked={leafOnly} onChange={(e) => setLeafOnly(e.target.checked)} />
@@ -377,6 +431,11 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
         ? <p className="muted">Flattening…</p>
         : <FlatView boms={flat} tier={tier} tierLabel={tierLabel} expanded={expanded} toggle={toggle}
             matches={matches} filtering={filtering} leafOnly={leafOnly}
+            focus={focus} onOpenPart={onOpenPart} />)}
+
+      {view === "diff" && (diff === null
+        ? <p className="muted">Comparing…</p>
+        : <DiffView diff={diff} tier={tier} diffOnly={diffOnly} matches={matches} filtering={filtering}
             focus={focus} onOpenPart={onOpenPart} />)}
 
       {(undo || moving) && (
@@ -568,5 +627,243 @@ function FlatView({ boms, tier, tierLabel, expanded, toggle, matches, filtering,
         })}
       </div>
     </div>
+  );
+}
+
+
+// ── milestones ────────────────────────────────────────────────────────────────
+// A milestone is the BOM frozen as INPUTS — see backend/app/milestones.py. Nothing here
+// holds a copy of one: the diff is computed server-side, where both sides go through the
+// same BomGraph, which is the only reason the two are comparable at all.
+
+const stoneWhen = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+};
+
+// Live vs. one milestone, plus the way to make a new one. A select rather than a list of
+// chips: there will be dozens over a year, and "Live" has to stay the obvious default.
+function MilestonePicker({ stones, compare, onPick, onTake }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "3px 4px 3px 10px",
+                   border: `1px solid ${compare ? "var(--accent)" : "var(--hair-strong)"}`, borderRadius: 8 }}>
+      <span style={{ fontFamily: "var(--font-display)", fontSize: 10.5, fontWeight: 700,
+                     letterSpacing: "0.08em", color: "var(--ink-3)", whiteSpace: "nowrap" }}>
+        COMPARE
+      </span>
+      <select
+        className="select"
+        style={{ minWidth: 168, height: 30, fontSize: 12 }}
+        value={compare ? String(compare.id) : ""}
+        onChange={(e) => onPick(e.target.value ? stones.find((m) => String(m.id) === e.target.value) : null)}
+      >
+        <option value="">Live — no comparison</option>
+        {stones.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.root_item_id} · {m.name} ({stoneWhen(m.taken_at)})
+          </option>
+        ))}
+      </select>
+      <button className="btn ghost sm" onClick={onTake} title="Freeze this BOM as it stands, to compare against later"
+              style={{ whiteSpace: "nowrap" }}>
+        <Icon name="box" size={12} /> Milestone
+      </button>
+    </span>
+  );
+}
+
+function TakeMilestonePanel({ roots, initial, onCancel, onTaken, setError }) {
+  const tops = (roots || []).filter((r) => r.is_top_level);
+  const [root, setRoot] = useState(initial || (tops[0] ? tops[0].item_id : ""));
+  const [name, setName] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const take = async () => {
+    if (!root || !name.trim()) return;
+    setBusy(true);
+    try {
+      onTaken(await api.takeMilestone({ root_item_id: root, name: name.trim(), note: note.trim() || null }));
+    } catch (e) {
+      setError(e.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <span className="card-title">Freeze this BOM</span>
+        <span className="card-meta">read-only for ever · inputs only</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 12, alignItems: "start" }}>
+        <select className="select" value={root} onChange={(e) => setRoot(e.target.value)}>
+          {tops.map((r) => <option key={r.item_id} value={r.item_id}>{r.item_id} — {r.item_name}</option>)}
+        </select>
+        <div style={{ display: "grid", gap: 8 }}>
+          <input className="input" placeholder="What this milestone is — 'quote round 2', 'before the stack redesign'"
+                 value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <textarea className="input" rows={2} placeholder="Note (optional)"
+                    value={note} onChange={(e) => setNote(e.target.value)} />
+        </div>
+      </div>
+      <p className="micro" style={{ color: "var(--ink-3)", margin: "10px 0 0" }}>
+        Stores the inputs — items, links, decided costs, assembly times and the rates they use —
+        at all three volume tiers. No totals: they are re-derived by the same code that costs the
+        live BOM, so the two sides of a comparison can be trusted against each other.
+      </p>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+        <button className="btn ghost sm" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="btn sm" onClick={take} disabled={busy || !name.trim() || !root}>
+          {busy ? "Freezing…" : "Take milestone"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const DELTA_COLOR = (d) => (d > 0 ? "var(--danger)" : d < 0 ? "var(--ok)" : "var(--ink-4)");
+const signed = (d) => (d > 0 ? `+${fmtEURcompact(d)}` : d < 0 ? `−${fmtEURcompact(-d)}` : "—");
+
+const STATUS_LABEL = { added: "new", removed: "gone", changed: "changed", unchanged: "same" };
+const STATUS_KIND = { added: "good", removed: "warm", changed: "warm", unchanged: null };
+
+// One row per item that is in either state, sorted by how much money it moved. The header
+// carries the totals, because "what moved the number" is the question and a table of rows
+// makes you add up to answer it.
+function DiffView({ diff, tier, diffOnly, matches, filtering, focus, onOpenPart }) {
+  const t = diff.totals;
+  const rows = (diff.rows || [])
+    .filter((r) => (diffOnly ? r.status !== "unchanged" : true))
+    .filter((r) => !filtering || matches(r));
+  // The identity the backend asserts: contribution deltas sum to the change in the total.
+  // Shown only when it fails, because then one of the two is wrong and silence would be
+  // the worst possible response.
+  const unaccounted = Math.abs((t.cost_delta || 0) - (t.accounted_delta || 0));
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head">
+          <span className="card-title">
+            {diff.milestone ? diff.milestone.name : "Milestone"} → live
+          </span>
+          <span className="card-meta">
+            {diff.root} @ {tierLabel(tier)} · frozen {stoneWhen(diff.milestone && diff.milestone.taken_at)}
+            {diff.milestone && diff.milestone.taken_by ? ` by ${diff.milestone.taken_by}` : ""}
+          </span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+          <Figure label="Rolled up then" value={t.cost_before == null ? "—" : fmtEURcompact(t.cost_before)} />
+          <Figure label="Rolled up now" value={t.cost_after == null ? "—" : fmtEURcompact(t.cost_after)} />
+          <Figure label="Change" value={signed(t.cost_delta)} color={DELTA_COLOR(t.cost_delta)} />
+          <Figure
+            label="Rows"
+            value={`${diff.counts.changed} changed`}
+            sub={`${diff.counts.added} new · ${diff.counts.removed} gone · ${diff.counts.unchanged} same`}
+          />
+        </div>
+        {unaccounted > 0.02 && (
+          <p className="micro" style={{ color: "var(--danger)", margin: "10px 0 0" }}>
+            {fmtEURcompact(unaccounted)} of the change is not attributed to any row — the
+            per-item breakdown and the roll-up disagree, which is a bug in one of them.
+          </p>
+        )}
+        {(t.weight_before != null && Math.abs(t.weight_after - t.weight_before) > 0.05) && (
+          <p className="micro" style={{ color: "var(--ink-3)", margin: "8px 0 0" }}>
+            Weight {(t.weight_before / 1000).toFixed(1)} kg → {(t.weight_after / 1000).toFixed(1)} kg
+            {t.coverage_before != null && ` · coverage ${Math.round(t.coverage_before * 100)}% → ${Math.round(t.coverage_after * 100)}%`}
+          </p>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div className="tree-head">
+          <div>Part / assembly</div>
+          <div className="tree-data diff">
+            <div className="right">Count</div>
+            <div className="right">Unit @ {tierLabel(tier)}</div>
+            <div className="right">Contribution</div>
+            <div className="right">Change</div>
+            <div>What changed</div>
+          </div>
+        </div>
+        <div className="tree">
+          {rows.length === 0 && (
+            <div className="empty" style={{ padding: 24, textAlign: "center", color: "var(--ink-3)" }}>
+              {diffOnly ? "Nothing has changed since this milestone." : "No items match these filters."}
+            </div>
+          )}
+          {rows.map((r) => (
+            <div key={r.item_id} className={`tree-row ${focus === r.item_id ? "on" : ""}`}
+                 style={{ "--indent": "12px", "--tint": r.status === "unchanged" ? "transparent" : "rgba(28,27,26,0.014)" }}>
+              <div className="tree-name opens" title="Open details" onClick={() => onOpenPart(r.item_id)}>
+                <span className="num">{r.item_id}</span>
+                <span className="lbl">{r.item_name}</span>
+                {STATUS_KIND[r.status] && <Pill kind={STATUS_KIND[r.status]}>{STATUS_LABEL[r.status]}</Pill>}
+              </div>
+              <div className="tree-data diff" onClick={() => onOpenPart(r.item_id)} title="Open details">
+                <div className="qty"><Pair before={r.eff_qty_before} after={r.eff_qty_after} fmt={(v) => `× ${v.toLocaleString()}`} /></div>
+                <div className="cost"><Pair before={r.unit_cost_before} after={r.unit_cost_after} fmt={fmtEURcompact} /></div>
+                <div className="cost">{r.contribution_after > 0 ? fmtEURcompact(r.contribution_after) : "—"}</div>
+                <div className="cost" style={{ color: DELTA_COLOR(r.contribution_delta), fontWeight: r.contribution_delta ? 600 : 400 }}>
+                  {signed(r.contribution_delta)}
+                </div>
+                <WhatChanged fields={r.changed} status={r.status} history={diff.history[r.item_id]} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Figure({ label, value, sub, color }) {
+  return (
+    <div>
+      <div className="micro" style={{ color: "var(--ink-3)", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 21, color: color || "var(--ink-1)", marginTop: 2 }}>{value}</div>
+      {sub && <div className="micro" style={{ color: "var(--ink-3)", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// before → after, with the before struck through. Only drawn when the two differ: printing
+// "2 → 2" on every unchanged row is noise that hides the rows that did move.
+function Pair({ before, after, fmt }) {
+  const has = (v) => v != null;
+  if (!has(before) && !has(after)) return <span className="missing">—</span>;
+  const same = has(before) && has(after) && Math.abs(before - after) < 1e-9;
+  if (same) return <span>{fmt(after)}</span>;
+  return (
+    <span>
+      {has(before) && <span style={{ color: "var(--ink-4)", textDecoration: "line-through", marginRight: 5 }}>{fmt(before)}</span>}
+      {has(after) ? fmt(after) : <span className="missing">gone</span>}
+    </span>
+  );
+}
+
+// The fields, and who touched them where the log knows. Annotation only — a hole in
+// change_history costs a name here and never a number above.
+const FIELD_LABEL = {
+  eff_qty: "count", unit_cost: "cost", cost_min: "cost min", cost_max: "cost max",
+  assembly_minutes: "minutes", covers: "cover", rate_eur_h: "rate", weight_grams: "weight",
+  item_name: "name", item_type: "type", module_code: "module", supplier_country: "origin",
+  supplier_part_number: "supplier no.", lead_time_weeks: "lead time",
+};
+
+function WhatChanged({ fields, status, history }) {
+  if (status === "added") return <span className="micro" style={{ color: "var(--ink-3)" }}>not in the milestone</span>;
+  if (status === "removed") return <span className="micro" style={{ color: "var(--ink-3)" }}>no longer in the BOM</span>;
+  if (!fields || fields.length === 0) return <span className="micro" style={{ color: "var(--ink-4)" }}>—</span>;
+  const who = (history || []).map((h) => h.changed_by).filter(Boolean);
+  const byline = who.length ? [...new Set(who)].join(", ") : null;
+  return (
+    <span className="micro" style={{ color: "var(--ink-3)" }} title={fields.map((f) => `${f.field}: ${f.before} → ${f.after}`).join("\n")}>
+      {fields.map((f) => FIELD_LABEL[f.field] || f.field).join(", ")}
+      {byline && <span style={{ color: "var(--ink-4)" }}> · {byline}</span>}
+    </span>
   );
 }

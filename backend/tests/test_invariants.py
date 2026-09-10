@@ -2312,3 +2312,70 @@ def test_an_item_archived_after_the_snapshot_reads_as_removed():
     removed = [r for r in d["rows"] if r["status"] == "removed"]
     assert [r["item_id"] for r in removed] == ["AEC933P"]
     assert d["totals"]["cost_delta"] == round(-(2 * 3 * 2), 2)
+
+
+def test_the_diff_names_who_changed_a_row_when_the_log_knows():
+    """The other half of "history annotates, never produces" — it has to actually annotate.
+
+    This is the test that was missing. The earlier one asserts an EMPTY history is harmless,
+    which passed for the wrong reason: annotations were silently empty always. SQLite compares
+    DATETIME as text, `func.now()` writes whole seconds and a bound Python datetime writes
+    microseconds, so a row logged in the same second as the milestone sorted BEFORE it and
+    failed `>=`. Found on the real BOM, invisible to a green suite.
+    """
+    from app.bomdiff import diff
+    from app.milestones import capture, graph_of
+    from app.models import DecidedCost
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    m = capture(db, "AEC930A", "before", None, "tester")
+    db.commit()
+
+    row = db.execute(
+        select(DecidedCost).where(DecidedCost.item_id == "AEC932P", DecidedCost.volume_tier == 100)
+    ).scalar_one()
+    row.unit_cost_eur = 4
+    record_change(db, entity_type="decided_cost", entity_id="AEC932P", change_type="update",
+                  field_changed="decided_cost@100", old_value="1", new_value="4",
+                  changed_by="buyer@zef", change_reason="supplier reprice")
+    db.commit()
+
+    d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A",
+             db=db, since=m.taken_at)
+    notes = d["history"]["AEC932P"]
+    assert [n["changed_by"] for n in notes] == ["buyer@zef"]
+    assert notes[0]["change_reason"] == "supplier reprice"
+
+
+def test_changes_from_before_the_milestone_are_not_attributed_to_it():
+    """The lower bound has to keep meaning something. Widening it in SQL is only safe
+    because Python tightens it again."""
+    import datetime as _dt
+
+    from app.bomdiff import diff
+    from app.milestones import capture, graph_of
+    from app.models import ChangeHistory, DecidedCost
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    record_change(db, entity_type="decided_cost", entity_id="AEC932P", change_type="update",
+                  field_changed="decided_cost@100", old_value="0.5", new_value="1",
+                  changed_by="ancient@zef", change_reason="last year")
+    db.commit()
+    # Two days on, so the one-second widening cannot reach back to it.
+    old = db.execute(select(ChangeHistory)).scalar_one()
+    old.changed_at = old.changed_at - _dt.timedelta(days=2)
+    db.commit()
+
+    m = capture(db, "AEC930A", "today", None, "tester")
+    db.commit()
+    row = db.execute(
+        select(DecidedCost).where(DecidedCost.item_id == "AEC932P", DecidedCost.volume_tier == 100)
+    ).scalar_one()
+    row.unit_cost_eur = 4
+    db.commit()
+
+    d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A",
+             db=db, since=m.taken_at)
+    assert d["history"] == {}

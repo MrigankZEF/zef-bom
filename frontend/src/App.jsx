@@ -32,6 +32,11 @@ export default function App() {
   // on screen with Browse — but shares this value, so switching tabs keeps the tier you
   // chose. Not persisted: every load starts at DEFAULT_TIER.
   const [tier, setTier] = useState(DEFAULT_TIER);
+  // The milestone Browse is comparing against, or null for live. Lifted here for the same
+  // reason the tier was: the drawer renders beside the tree, and a drawer offering editable
+  // fields while the tree shows a frozen BOM would invite edits to a state nobody is
+  // looking at. { id, name, taken_at, root_item_id }.
+  const [compare, setCompare] = useState(null);
   const [health, setHealth] = useState(null);
   const [version, setVersion] = useState(0);
   const [loginError, setLoginError] = useState(null);
@@ -86,7 +91,7 @@ export default function App() {
       </header>
 
       <main style={{ marginRight: openPart ? "min(680px, 96vw)" : 0, transition: "margin-right 320ms cubic-bezier(.2,.8,.2,1)" }}>
-        {activeRoute === "browse" && <Tree onOpenPart={setOpenPart} focus={openPart} version={version} tier={tier} setTier={setTier} />}
+        {activeRoute === "browse" && <Tree onOpenPart={setOpenPart} focus={openPart} version={version} tier={tier} setTier={setTier} compare={compare} setCompare={setCompare} />}
         {activeRoute === "catalog" && <Catalog onOpenPart={setOpenPart} version={version} />}
         {activeRoute === "costing" && <Costing onOpenPart={setOpenPart} tier={tier} setTier={setTier} />}
         {activeRoute === "facilities" && <Facilities version={version} onChanged={() => setVersion((v) => v + 1)} />}
@@ -96,7 +101,9 @@ export default function App() {
       </main>
 
       {openPart && (
-        <PartDrawer itemId={openPart} tier={tier} onClose={() => setOpenPart(null)} onOpenPart={setOpenPart} onChanged={() => setVersion((v) => v + 1)} />
+        <PartDrawer itemId={openPart} tier={tier} onClose={() => setOpenPart(null)} onOpenPart={setOpenPart}
+                    onChanged={() => setVersion((v) => v + 1)}
+                    frozenBy={activeRoute === "browse" ? compare : null} />
       )}
     </div>
   );

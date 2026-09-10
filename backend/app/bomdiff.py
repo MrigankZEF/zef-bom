@@ -26,6 +26,7 @@ diff can say what accounts for the movement rather than merely that there was on
 """
 from __future__ import annotations
 
+import datetime as _dt
 from datetime import datetime
 
 from sqlalchemy import select
@@ -109,13 +110,23 @@ def _annotations(db: Session, ids: set[str], since: datetime | None) -> dict[str
     """
     if not ids or since is None:
         return {}
+    # The bound is widened by a second in SQL and tightened again in Python, because SQLite
+    # compares DATETIME as TEXT and the two sides are not written the same way: `func.now()`
+    # stores whole seconds ("2026-09-10 13:50:20") while SQLAlchemy binds a Python datetime
+    # with microseconds ("2026-09-10 13:50:20.000000"). The shorter string sorts FIRST, so a
+    # row logged in the same second as the milestone failed `>=` and every annotation
+    # silently vanished — on SQLite only, which is exactly the kind of difference that gets
+    # found in production instead of here. The widened bound still uses the index.
+    floor = since - _dt.timedelta(seconds=1)
     q = (
         select(ChangeHistory)
-        .where(ChangeHistory.changed_at >= since)
+        .where(ChangeHistory.changed_at >= floor)
         .order_by(ChangeHistory.changed_at.desc(), ChangeHistory.id.desc())
     )
     out: dict[str, list[dict]] = {}
     for h in db.execute(q).scalars():
+        if h.changed_at is not None and h.changed_at < since:
+            continue
         # A bom_link's entity_id is "PARENT>CHILD"; attribute it to both ends, since either
         # row is where a reader would look for it.
         subjects = {h.entity_id.split(">")[0], h.entity_id.split(">")[-1]}
