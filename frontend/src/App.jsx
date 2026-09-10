@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { api, session } from "./api";
 import Tree from "./components/Tree.jsx";
 import PartDrawer from "./components/PartDrawer.jsx";
-import Uploads from "./components/Uploads.jsx";
 import Costing from "./components/Costing.jsx";
 import Catalog from "./components/Catalog.jsx";
 import Pending from "./components/Pending.jsx";
@@ -18,7 +17,6 @@ const TABS = [
   { id: "costing", label: "Costing" },
   { id: "facilities", label: "Facilities" },
   { id: "pending", label: "Pending" },
-  { id: "uploads", label: "Uploads" },
   { id: "history", label: "History" },
   { id: "admin", label: "Admin" },
 ];
@@ -93,7 +91,6 @@ export default function App() {
         {activeRoute === "costing" && <Costing onOpenPart={setOpenPart} tier={tier} setTier={setTier} />}
         {activeRoute === "facilities" && <Facilities version={version} onChanged={() => setVersion((v) => v + 1)} />}
         {activeRoute === "pending" && <Pending onOpenPart={setOpenPart} onOpenFacilities={() => setRoute("facilities")} version={version} />}
-        {activeRoute === "uploads" && <Uploads onApplied={() => setVersion((v) => v + 1)} />}
         {activeRoute === "history" && <History onOpenPart={setOpenPart} version={version} />}
         {activeRoute === "admin" && <Admin onOpenPart={setOpenPart} onChanged={() => setVersion((v) => v + 1)} />}
       </main>
