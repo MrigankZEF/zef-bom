@@ -116,7 +116,7 @@ export default function App() {
       <main style={{ marginRight: openPart ? "min(680px, 96vw)" : 0, transition: "margin-right 320ms cubic-bezier(.2,.8,.2,1)" }}>
         {activeRoute === "browse" && <Tree onOpenPart={showPart} readOnly={isViewer} focus={openPart} version={version} tier={tier} setTier={setTier} compare={compare} setCompare={setCompare} />}
         {activeRoute === "catalog" && <Catalog onOpenPart={showPart} version={version} />}
-        {activeRoute === "costing" && <Costing onOpenPart={showPart} tier={tier} setTier={setTier} compare={compare} setCompare={setCompare} />}
+        {activeRoute === "costing" && <Costing onOpenPart={showPart} version={version} tier={tier} setTier={setTier} compare={compare} setCompare={setCompare} />}
         {activeRoute === "facilities" && <Facilities version={version} onChanged={() => setVersion((v) => v + 1)} />}
         {activeRoute === "pending" && <Pending onOpenPart={showPart} onOpenFacilities={() => setRoute("facilities")} version={version} />}
         {activeRoute === "history" && <History onOpenPart={showPart} version={version} />}

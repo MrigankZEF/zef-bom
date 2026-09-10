@@ -9,7 +9,7 @@ import { spreadPath, spreadX } from "../spread";
 // Costing keeps its own tier CONTROL — it is never on screen with Browse, so two controls
 // are not the confusion this fixes; two independent values were. The value lives in App,
 // so switching Browse -> Costing lands on the tier you were already looking at.
-export default function Costing({ onOpenPart, tier, setTier, compare, setCompare }) {
+export default function Costing({ onOpenPart, tier, setTier, compare, setCompare, version }) {
   const [roots, setRoots] = useState(null);
   const [root, setRoot] = useState("");
   const volume = tier, setVolume = setTier;   // local names, shared value
@@ -56,12 +56,24 @@ export default function Costing({ onOpenPart, tier, setTier, compare, setCompare
       setRoots(rs);
       if (rs[0] && !root) setRoot(rs[0].item_id);
     }).catch((e) => setError(e.message));
-  }, []);
+    /* eslint-disable-next-line */
+  }, [version]);
 
+  // Blanking is keyed on the BOM and the tier only, so changing either reads as a load
+  // while a save from the drawer does not. `version` bumps while the drawer sits open
+  // beside these numbers — emptying the page under it would flash every tile and treemap
+  // for a figure that is about to come back nearly the same.
+  useEffect(() => {
+    setData(null); setTree(null);
+    setLadder(null); setLines(null); setDuty(null);
+  }, [root, volume]);
+
+  // `version` is App's edit counter: the drawer bumps it on every save. Costing used to
+  // ignore it, so editing a price, a weight or an HS code left the totals, the treemap and
+  // the duty card showing the figures from before the edit — arithmetic that was right
+  // when it was fetched and wrong on screen — until the tab or the tier was changed.
   useEffect(() => {
     if (!root) return;
-    setData(null); setTree(null);
-    setLadder(null); setLines(null);
     api.costingBreakdown(root, volume).then(setData).catch((e) => setError(e.message));
     api.tree(root, volume).then(setTree).catch((e) => setError(e.message));
     // The ladder is fetched for every view, not just the COGS ones: BOM+ shows the direct
@@ -70,9 +82,8 @@ export default function Costing({ onOpenPart, tier, setTier, compare, setCompare
     api.cogsBreakdown(volume).then((b) => setLines(b.lines)).catch((e) => setError(e.message));
     // Fail-soft: duty is new, and a BOM with no classified parts and no rates is the normal
     // state right now. A missing duty card must never take the Costing tab down with it.
-    setDuty(null);
     api.dutyForBom(root, volume).then(setDuty).catch(() => setDuty(null));
-  }, [root, volume]);
+  }, [root, volume, version]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
   if (!roots) return <div className="page"><p className="muted">Loading…</p></div>;
