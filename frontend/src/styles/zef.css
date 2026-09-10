@@ -1199,6 +1199,18 @@ body { background: var(--bg); }
   font-size: 12px;
 }
 .derived + .derived { border-top: 1px solid var(--hair-faint); }
+
+/* A duty rate is a row of facts, not a row of money: the code, origin and rate are numeric
+   and want tabular figures, while the source is prose and must stay left-aligned. `.derived`
+   right-aligns everything after the first column, which is right for the cost ladder and
+   wrong here, so this is its own row rather than a variant of that one. */
+.duty-row {
+  display: grid;
+  grid-template-columns: 130px 60px 66px 104px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px;
+  padding: 5px 0; font-size: 12px;
+}
+.duty-row + .duty-row { border-top: 1px solid var(--hair-faint); }
 .derived > span:nth-child(n+2) {
   font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px;
   text-align: right; padding-right: 7px;
