@@ -191,6 +191,15 @@ class BomGraph:
             for dc in rows.decided
             if dc.volume_tier == volume_tier
         }
+        # Sourcing per item at this tier: buy | made-to-order | make. On the graph rather
+        # than queried where it is needed, because whether a line crosses a border is part of
+        # the state being costed — so a MILESTONE's sourcing has to travel with its rows, the
+        # same way its prices do. See `duty.py`.
+        self.sourcing: dict[str, str | None] = {
+            dc.item_id: dc.make_or_buy
+            for dc in rows.decided
+            if dc.volume_tier == volume_tier
+        }
         # Assembly labour: minutes (min, likely, max) per item at this tier, + the €/h rates.
         _labor_rows = [al for al in rows.labor if al.volume_tier == volume_tier]
         # A row with no most-likely time carries no labour — that is the normal state of a

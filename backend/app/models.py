@@ -61,6 +61,20 @@ class Item(Base):
     supplier_part_number: Mapped[str | None] = mapped_column(Text)
     lead_time_weeks: Mapped[float | None] = mapped_column(Float)
 
+    # Customs. Real columns rather than `field_definitions` rows: the custom-field mechanism
+    # is right for what only humans read, and these are cost inputs the roll-up reaches — an
+    # EAV lookup inside a rollup is the wrong shape.
+    #
+    # `hs_code` is the Harmonised System classification, 4 to 10 digits, stored without dots
+    # so a prefix match is a string prefix. It belongs to the physical thing, not to a tier.
+    hs_code: Mapped[str | None] = mapped_column(String(16), index=True)
+    # Separate from `supplier_country` ON PURPOSE, and the distinction is not pedantic:
+    # customs charges on where a thing was MADE. A German distributor shipping a Chinese-made
+    # part is a CN origin at a DE supplier, and conflating the two would be wrong on exactly
+    # the parts where duty is largest. Defaults from the supplier in the UI, edited
+    # independently after that.
+    country_of_origin: Mapped[str | None] = mapped_column(String(64))
+
     # Assemblies only: the assembly cost type — a reference_values row (category
     # 'assembly_cost_type') whose meta carries a €/hour rate. Assembly cost = assembly
     # time (assembly_labor table) × that rate, added ON TOP of the rolled-up children.
@@ -426,6 +440,9 @@ class CogsFacility(Base):
     code: Mapped[str] = mapped_column(String(32), nullable=False)   # e.g. FAC-ASM
     kind: Mapped[str] = mapped_column(String(16), nullable=False)   # assembly|logistics|field
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Where the plant physically is. "Landing in Portugal" was an assumption living inside a
+    # duty conversation; as a column it is data the lookup can read. ISO-3166 alpha-2.
+    country: Mapped[str | None] = mapped_column(String(2))
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[str | None] = mapped_column(String(255))
@@ -519,6 +536,59 @@ class CogsLock(Base):
         Integer, ForeignKey("cogs_facility.id"), nullable=False, index=True
     )
     row_key: Mapped[str] = mapped_column(String(24), nullable=False)
+
+
+
+# ── customs: duty rates ───────────────────────────────────────────────────────
+
+
+class DutyRate(Base):
+    """One published duty rate: this HS code, from this origin, into this destination.
+
+    **Longest-prefix match on the HS code.** A 4-digit heading covers everything beneath it
+    until somebody enters the 6- or 8-digit line, which then wins for the codes it covers.
+    That is how tariff schedules are actually written — a chapter-level rate with specific
+    exceptions carved out — and it means the table can be filled in coarsely and refined
+    without ever being wrong in between, only imprecise.
+
+    `origin_country` and `destination_country` are ISO-3166 alpha-2. `''` in `origin_country`
+    is the wildcard: the third-country rate that applies unless a preferential agreement or a
+    trade measure says otherwise. Stored as `''` rather than NULL so the unique constraint
+    still catches a duplicate — NULL is not equal to NULL in SQL, so a nullable column would
+    happily accept the same wildcard row twice.
+
+    `valid_from` and `source` are not decoration. A landed cost that quietly changed under a
+    quote is worse than one that is three months old and dated, so a rate carries the day it
+    was valid on and where it came from ("TARIC export 2026-03-01"). Auditable beats fresh.
+    """
+
+    __tablename__ = "duty_rates"
+    __table_args__ = (
+        UniqueConstraint(
+            "hs_code", "origin_country", "destination_country", "valid_from",
+            name="uq_duty_rate_code_origin_dest_from",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hs_code: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    origin_country: Mapped[str] = mapped_column(String(2), nullable=False, default="")
+    destination_country: Mapped[str] = mapped_column(String(2), nullable=False)
+    # Percent of the customs value, e.g. 2.7 for 2.7%. Percent rather than a fraction because
+    # that is how every tariff schedule and every customs broker states it, and a units
+    # mismatch here is a factor of 100 on a real invoice.
+    rate_pct: Mapped[float] = mapped_column(Numeric(7, 4), nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    source: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(255))
 
 
 # ── milestones: a BOM as it stood, kept ───────────────────────────────────────

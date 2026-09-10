@@ -2379,3 +2379,261 @@ def test_changes_from_before_the_milestone_are_not_attributed_to_it():
     d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A",
              db=db, since=m.taken_at)
     assert d["history"] == {}
+
+
+# ── customs and import duty ───────────────────────────────────────────────────
+# Scope was decided as structure now, data later: acceptance is that an item with an HS code
+# and a matching rate produces a duty figure that rolls up, NOT that the BOM is classified.
+# These tests are that acceptance, plus the four modelling rules that are easy to get wrong.
+
+
+def _duty_fixture(sourcing="buy", covers=None, hs="85444290", origin="CN"):
+    """PLANT x1 -> {CABLE x4 @ EUR 25 (imported), BRACKET x2 @ EUR 10 (made here)}
+
+    Portugal destination, one 4-digit heading at 3.3% and one 8-digit line at 2.7%, so the
+    longest-prefix rule has something to be right about.
+    """
+    import datetime as _dt
+
+    from app.models import CogsFacility, DutyRate, ReferenceValue
+
+    db = _db()
+    db.add(Item(item_id="AEC940A", item_name="Plant", item_type="assembly", module_code="AEC",
+                is_top_level=True, cost_type_id=1))
+    db.add(Item(item_id="AEC941P", item_name="Cable", item_type="part", module_code="AEC",
+                weight_grams=400, hs_code=hs, country_of_origin=origin, supplier_country="DE"))
+    db.add(Item(item_id="AEC942P", item_name="Bracket", item_type="part", module_code="AEC",
+                weight_grams=200, hs_code="73269098", country_of_origin="PT"))
+    db.commit()
+    db.add(ReferenceValue(id=1, category="assembly_cost_type", value="Bench", meta={"rate_eur_h": 60}))
+    db.add(BomLink(parent_item_id="AEC940A", child_item_id="AEC941P", quantity=4))
+    db.add(BomLink(parent_item_id="AEC940A", child_item_id="AEC942P", quantity=2))
+    db.add(DecidedCost(item_id="AEC941P", volume_tier=100, unit_cost_eur=25, make_or_buy=sourcing))
+    db.add(DecidedCost(item_id="AEC942P", volume_tier=100, unit_cost_eur=10, make_or_buy="make"))
+    if covers is not None:
+        db.add(AssemblyLabor(item_id="AEC940A", volume_tier=100, covers=covers))
+    db.add(CogsFacility(id=1, code="FAC-ASM", kind="assembly", name="Hall", country="PT"))
+    # A heading-level rate and a more specific line under it.
+    db.add(DutyRate(hs_code="8544", origin_country="", destination_country="PT", rate_pct=3.3,
+                    valid_from=_dt.date(2026, 1, 1), source="TARIC 2026-01"))
+    db.add(DutyRate(hs_code="85444290", origin_country="", destination_country="PT", rate_pct=2.7,
+                    valid_from=_dt.date(2026, 1, 1), source="TARIC 2026-01"))
+    db.commit()
+    return db
+
+
+def test_a_classified_item_with_a_rate_produces_duty_that_rolls_up():
+    """Phase H's acceptance test, and nothing more than it."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    g = BomGraph(db, volume_tier=100)
+    d = duty_for_bom(db, g, "AEC940A")
+
+    assert d["destination"] == "PT"
+    # 4 x EUR 25 = EUR 100 customs value at the 8-digit rate of 2.7%.
+    assert d["totals"]["customs_value"] == 100.0
+    assert d["totals"]["duty"] == 2.70
+    assert d["totals"]["is_floor"] is False
+
+
+def test_the_longest_hs_prefix_wins():
+    """A 4-digit heading covers its subtree until a more specific line is entered, which is
+    how a tariff schedule is actually written. Getting this backwards would silently price
+    every part at its chapter rate."""
+    from app.duty import load_rates, pick_rate
+
+    db = _duty_fixture()
+    rates = load_rates(db, "PT")
+    assert float(pick_rate(rates, "85444290", "CN").rate_pct) == 2.7   # the specific line
+    assert float(pick_rate(rates, "85446000", "CN").rate_pct) == 3.3   # only the heading matches
+    assert pick_rate(rates, "73269098", "CN") is None           # nothing for this chapter
+
+
+def test_an_item_we_make_here_is_not_a_customs_line():
+    """Duty is charged when goods cross a border. A bracket we make in the hall does not."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    d = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    assert [ln["item_id"] for ln in d["lines"]] == ["AEC941P"]
+    assert d["totals"]["dutiable_lines"] == 1
+
+
+def test_dutiability_is_per_tier_because_sourcing_is():
+    """A part can be make@1 as a prototype and buy@10k once a supplier will tool for it, so
+    the same HS code produces duty at one tier and none at another."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    db.add(DecidedCost(item_id="AEC941P", volume_tier=10000, unit_cost_eur=18, make_or_buy="make"))
+    db.commit()
+    at_100 = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    at_10k = duty_for_bom(db, BomGraph(db, volume_tier=10000), "AEC940A")
+    assert at_100["totals"]["duty"] > 0
+    assert at_10k["totals"]["duty"] == 0.0
+    assert at_10k["totals"]["dutiable_lines"] == 0
+
+
+def test_a_bought_in_assembly_is_one_customs_line():
+    """covers='all' means a supplier price replaced the subtree: it arrives in one box under
+    one HS code. Duty-ing the parts inside would invent lines no declaration ever had."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    db.add(Item(item_id="AEC943A", item_name="Bought module", item_type="assembly",
+                module_code="AEC", hs_code="8544", country_of_origin="CN"))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC940A", child_item_id="AEC943A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC943A", child_item_id="AEC942P", quantity=5))
+    db.add(AssemblyLabor(item_id="AEC943A", volume_tier=100, covers="all"))
+    db.add(DecidedCost(item_id="AEC943A", volume_tier=100, unit_cost_eur=200, make_or_buy="buy"))
+    db.commit()
+
+    d = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    ids = {ln["item_id"] for ln in d["lines"]}
+    assert "AEC943A" in ids
+    # The module's own contents are not separate customs lines. AEC942P is still a line in
+    # its own right — it is used directly by the plant too — but only once, and at the
+    # quantity that is NOT inside the quoted module.
+    module = next(ln for ln in d["lines"] if ln["item_id"] == "AEC943A")
+    assert module["customs_value"] == 200.0          # the quote, not 5 x EUR 10
+    assert module["rate_pct"] == 3.3                 # the 4-digit heading
+
+
+def test_a_missing_hs_code_is_missing_not_zero():
+    """The same rule cost coverage follows. A dutiable line with no classification is a gap
+    to report; a silent EUR 0 would make a partly classified BOM look finished."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture(hs=None)
+    d = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    assert d["totals"]["duty"] == 0.0
+    assert d["totals"]["missing_hs"] == ["AEC941P"]
+    assert d["totals"]["is_floor"] is True
+    assert d["totals"]["coverage"] == 0.0
+
+
+def test_a_classified_code_with_no_rate_is_a_different_gap():
+    """Two gaps with two different fixes: classify the part, or enter the rate."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture(hs="90318038")   # a code no rate in the fixture covers
+    d = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    assert d["totals"]["missing_hs"] == []
+    assert d["totals"]["missing_rate"] == ["AEC941P"]
+    assert d["totals"]["is_floor"] is True
+
+
+def test_origin_is_where_it_was_made_not_where_it_was_bought():
+    """A German distributor shipping a Chinese-made part is a CN origin at a DE supplier.
+    Conflating the two would be wrong on exactly the parts where duty is largest."""
+    import datetime as _dt
+
+    from app.duty import duty_for_bom, load_rates, pick_rate
+    from app.models import DutyRate
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    # A punitive rate that applies only to CN. The part's SUPPLIER is DE.
+    db.add(DutyRate(hs_code="85444290", origin_country="CN", destination_country="PT",
+                    rate_pct=25.0, valid_from=_dt.date(2026, 1, 1), source="trade measure"))
+    db.commit()
+    rates = load_rates(db, "PT")
+    assert float(pick_rate(rates, "85444290", "CN").rate_pct) == 25.0
+    assert float(pick_rate(rates, "85444290", "DE").rate_pct) == 2.7   # falls back to the wildcard
+    d = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    assert d["totals"]["duty"] == 25.0   # EUR 100 x 25%
+
+
+def test_import_vat_is_never_in_the_duty_figure():
+    """Recoverable in Portugal, so it is a cash-flow event and not a cost. Adding 23% would
+    overstate the cost of goods by roughly a quarter. The flag is asserted so that anyone who
+    later adds a vat_pct has to come and read this test."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    d = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    assert d["totals"]["vat_excluded"] is True
+    # 2.7% of EUR 100 and not a cent more.
+    assert d["totals"]["duty"] == 2.70
+
+
+def test_the_customs_value_says_it_is_ex_works():
+    """It is not CIF, and the shortfall is the inbound freight the ladder holds separately.
+    Naming the basis is the difference between an understatement and a lie."""
+    from app.duty import duty_for_bom
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    d = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    assert d["totals"]["basis"] == "ex-works"
+    assert all(ln["basis"] == "ex-works" for ln in d["lines"])
+
+
+def test_the_destination_comes_from_the_facility_not_a_constant():
+    """"Landing in Portugal" was an assumption inside a formula. As a column it is data."""
+    from sqlalchemy import update
+
+    from app.duty import facility_destination
+    from app.models import CogsFacility
+
+    db = _duty_fixture()
+    assert facility_destination(db) == "PT"
+    db.execute(update(CogsFacility).where(CogsFacility.id == 1).values(country="NL"))
+    db.commit()
+    assert facility_destination(db) == "NL"
+
+
+def test_a_future_rate_does_not_price_a_shipment_that_already_landed():
+    import datetime as _dt
+
+    from app.duty import load_rates, pick_rate
+    from app.models import DutyRate
+
+    db = _duty_fixture()
+    db.add(DutyRate(hs_code="85444290", origin_country="", destination_country="PT",
+                    rate_pct=9.9, valid_from=_dt.date(2027, 1, 1), source="TARIC 2027-01"))
+    db.commit()
+    rates = load_rates(db, "PT")
+    assert float(pick_rate(rates, "85444290", "CN", on=_dt.date(2026, 6, 1)).rate_pct) == 2.7
+    assert float(pick_rate(rates, "85444290", "CN", on=_dt.date(2027, 6, 1)).rate_pct) == 9.9
+
+
+def test_duty_rates_are_in_the_backup():
+    """A typed-in fact about the world, derivable from nothing in this database."""
+    import datetime as _dt
+
+    from app.backup import BACKUP_SHEETS, RESTORE_ORDER
+
+    assert "DutyRates" in [s for s, _ in BACKUP_SHEETS]
+    assert "DutyRates" in [s for s, _ in RESTORE_ORDER]
+
+
+def test_a_milestone_can_be_dutied_too():
+    """`duty_for_bom` takes a BomGraph, so a frozen BOM's duty is computed by the same code —
+    which is what lets a duty figure be compared across a snapshot the way a cost is."""
+    from sqlalchemy import update
+
+    from app.duty import duty_for_bom
+    from app.milestones import capture, graph_of
+    from app.rollups import BomGraph
+
+    db = _duty_fixture()
+    live = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    m = capture(db, "AEC940A", "before reclassifying", None, "tester")
+    db.commit()
+    db.execute(update(Item).where(Item.item_id == "AEC941P").values(hs_code="85446000"))
+    db.commit()
+
+    frozen = duty_for_bom(db, graph_of(m, 100), "AEC940A")
+    now = duty_for_bom(db, BomGraph(db, volume_tier=100), "AEC940A")
+    assert frozen["totals"]["duty"] == live["totals"]["duty"] == 2.70
+    assert now["totals"]["duty"] == 3.30   # the heading rate, after the reclassification
