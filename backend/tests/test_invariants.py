@@ -2109,6 +2109,109 @@ def test_undoing_an_added_component_removes_the_link_again():
     assert not BomGraph(db).children.get("AEC001A")
 
 
+def test_undoing_a_link_undo_restores_the_link_rather_than_crashing():
+    """The reported crash: add a component, undo it, then undo that.
+
+    Every link update used to be treated as a numeric quantity change, and the inverse of an
+    add was logged as an untyped "qty=1.0" -> "removed" pair — so the second undo parsed
+    "qty=1.0" as a float, raised ValueError, and took the endpoint down with it. Whether a
+    link exists, whether it is archived, and what its quantity is are three different facts
+    with three different inverses.
+    """
+    from app.models import ChangeHistory
+    from app.rollups import BomGraph
+    from app.routers.edit import add_child, undo_history_entry
+    from app.schemas import AddChildIn
+
+    db = _undo_db()
+    add_child("AEC001A", AddChildIn(child_id="AEC002P", quantity=4), db=db, user="a")
+    added = db.execute(select(ChangeHistory).where(ChangeHistory.entity_type == "bom_link")).scalar_one()
+    undo_history_entry(added.id, db=db, user="b")
+
+    # The inverse addresses the link under whatever codes normalization left it with.
+    inverse = db.execute(
+        select(ChangeHistory).where(ChangeHistory.entity_type == "bom_link")
+        .order_by(ChangeHistory.id.desc()).limit(1)
+    ).scalar_one()
+    undo_history_entry(inverse.id, db=db, user="c")
+
+    link = db.execute(select(BomLink)).scalar_one()
+    assert link.archived is False, "undoing the removal must put the link back"
+    assert link.quantity == 4, "putting a link back must not disturb its quantity"
+    assert BomGraph(db).children.get(link.parent_item_id)
+
+
+def test_a_legacy_untyped_link_inverse_is_still_reversible():
+    """History written by the old implementation has to stay undoable.
+
+    Those rows carry no field name at all — just "qty=..." -> "removed" — and there are
+    real ones in the log. Reading them is a one-line special case; refusing them would be a
+    row in the History tab that offers an undo button that always fails.
+    """
+    from app.models import ChangeHistory
+    from app.routers.edit import undo_history_entry
+
+    db = _undo_db()
+    db.add(BomLink(parent_item_id="AEC001A", child_item_id="AEC002P", quantity=2, archived=True))
+    record_change(db, entity_type="bom_link", entity_id="AEC001A>AEC002P", change_type="update",
+                  field_changed=None, old_value="qty=2.0", new_value="removed", changed_by="a")
+    db.commit()
+
+    h = db.execute(select(ChangeHistory)).scalar_one()
+    undo_history_entry(h.id, db=db, user="b")
+    link = db.execute(select(BomLink)).scalar_one()
+    assert link.archived is False
+
+
+def test_undo_will_not_restore_a_link_that_would_close_a_loop():
+    """Undo restores links, so it needs the cycle check the restore endpoint has.
+
+    An assembly that contains itself is not a BOM the rollups can walk — they recurse until
+    the stack gives out — so the one place that can bring a link back must ask the same
+    question `POST .../restore` asks.
+    """
+    from app.models import ChangeHistory
+    from app.undo import undoable
+
+    db = _undo_db()
+    db.add(BomLink(parent_item_id="AEC001A", child_item_id="AEC002P", quantity=1, archived=True))
+    db.add(BomLink(parent_item_id="AEC002P", child_item_id="AEC001A", quantity=1))
+    record_change(db, entity_type="bom_link", entity_id="AEC001A>AEC002P", change_type="remove",
+                  field_changed="archived", new_value=True, changed_by="a")
+    db.commit()
+
+    h = db.execute(select(ChangeHistory)).scalar_one()
+    ok, why = undoable(db, h)
+    assert not ok
+    assert "loop" in why
+
+
+def test_a_link_quantity_undo_with_no_usable_number_is_refused_not_crashed():
+    """A quantity the log cannot supply is a refusal with a reason, not a 500."""
+    from app.models import ChangeHistory
+    from app.undo import undoable
+
+    db = _undo_db()
+    db.add(BomLink(parent_item_id="AEC001A", child_item_id="AEC002P", quantity=3))
+    record_change(db, entity_type="bom_link", entity_id="AEC001A>AEC002P", change_type="update",
+                  field_changed="quantity", old_value=None, new_value="3", changed_by="a")
+    db.commit()
+    h = db.execute(select(ChangeHistory)).scalar_one()
+    ok, why = undoable(db, h)
+    assert not ok and "valid previous quantity" in why
+
+    # And a recorded quantity that is real but not a legal one — zero and negatives are the
+    # states `Field(gt=0)` keeps out of the table in the first place.
+    db2 = _undo_db()
+    db2.add(BomLink(parent_item_id="AEC001A", child_item_id="AEC002P", quantity=3))
+    record_change(db2, entity_type="bom_link", entity_id="AEC001A>AEC002P", change_type="update",
+                  field_changed="quantity", old_value="-2", new_value="3", changed_by="a")
+    db2.commit()
+    h2 = db2.execute(select(ChangeHistory)).scalar_one()
+    ok2, why2 = undoable(db2, h2)
+    assert not ok2 and "positive and finite" in why2
+
+
 def test_cost_evidence_is_not_offered_because_the_log_cannot_say_which_row():
     from app.models import ChangeHistory
     from app.undo import undoable
