@@ -230,6 +230,61 @@ def test_cycle_prevention():
     assert ops.would_cycle(db, "AEC102A", "AEC100A") is True
 
 
+def test_restoring_a_link_rejects_cycles_without_writing():
+    from fastapi import HTTPException
+    from app.models import ChangeHistory
+    from app.routers.admin import restore_link
+
+    for path in ([], ["AEC101A"], ["AEC101A", "AEC102A"]):
+        db = _db(fk=True)
+        ids = ["AEC100A", *path]
+        for iid in ids:
+            db.add(Item(item_id=iid, item_name=iid, item_type="assembly",
+                        module_code="AEC", is_top_level=True))
+        db.commit()
+        for parent, child in zip(ids, ids[1:]):
+            db.add(BomLink(parent_item_id=parent, child_item_id=child, quantity=1))
+        archived = BomLink(parent_item_id=ids[-1], child_item_id=ids[0],
+                           quantity=1, archived=True)
+        db.add(archived)
+        db.commit()
+        try:
+            restore_link(ids[-1], ids[0], db=db, user="test")
+        except HTTPException as exc:
+            assert exc.status_code == 409
+        else:
+            raise AssertionError("a cyclic restoration was accepted")
+        assert archived.archived is True
+        assert db.scalar(select(func.count()).select_from(ChangeHistory)) == 0
+        db.close()
+
+
+def test_restoring_a_link_normalizes_types_and_modules_and_returns_new_codes():
+    from app.routers.admin import restore_link
+
+    db = _db(fk=True)
+    db.add_all([
+        Item(item_id="AEC100A", item_name="Root", item_type="assembly",
+             module_code="AEC", is_top_level=True),
+        Item(item_id="AEC050P", item_name="Housing", item_type="part", module_code="AEC"),
+        Item(item_id="DAC070P", item_name="Seal", item_type="part", module_code="DAC"),
+    ])
+    db.commit()
+    db.add_all([
+        BomLink(parent_item_id="AEC100A", child_item_id="AEC050P", quantity=1),
+        BomLink(parent_item_id="AEC050P", child_item_id="DAC070P", quantity=2, archived=True),
+    ])
+    db.commit()
+    result = restore_link("AEC050P", "DAC070P", db=db, user="test")
+    parent = db.get(Item, result["parent"])
+    child = db.get(Item, result["child"])
+    assert parent.item_type == "assembly" and parent.item_id == "AEC050A"
+    assert child.module_code == "AEC" and child.item_id != "DAC070P"
+    link = db.scalars(select(BomLink).where(BomLink.parent_item_id == parent.item_id)).one()
+    assert link.child_item_id == child.item_id and not link.archived and link.quantity == 2
+    db.close()
+
+
 def test_allowed_modules():
     import app.operations as ops
     db = _db()

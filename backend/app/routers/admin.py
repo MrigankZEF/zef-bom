@@ -143,12 +143,21 @@ def archive_link(parent_id: str, child_id: str, db: Session = Depends(get_db), u
 
 @router.post("/items/{parent_id}/links/{child_id}/restore")
 def restore_link(parent_id: str, child_id: str, db: Session = Depends(get_db), user: str = Depends(current_user)) -> dict:
+    from ..operations import normalize_structure, resolve_rename, would_cycle
+
     link = _find_link(db, parent_id, child_id)
+    if would_cycle(db, parent_id, child_id):
+        raise HTTPException(409, f"Can't restore {child_id} under {parent_id} — it would create a loop")
+    old = link.archived
     link.archived = False
     record_change(db, entity_type="bom_link", entity_id=f"{parent_id}>{child_id}", change_type="update",
-                  field_changed="archived", new_value=False, changed_by=user, change_reason="restored")
+                  field_changed="archived", old_value=old, new_value=False,
+                  changed_by=user, change_reason="restored")
+    db.flush()
+    changes = normalize_structure(db, user=user)
     db.commit()
-    return {"parent": parent_id, "child": child_id, "archived": False}
+    return {"parent": resolve_rename(changes, parent_id),
+            "child": resolve_rename(changes, child_id), "archived": False}
 
 
 # ── permanent delete (purge) — only allowed on already-archived rows ─────────
