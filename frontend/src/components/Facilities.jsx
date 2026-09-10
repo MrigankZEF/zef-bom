@@ -374,7 +374,9 @@ function FacilityDrawer({ facility, item, kind, own, tier, onClose, onOpenItem, 
 
   return (
     <>
-      <div className="drawer-scrim" onClick={onClose} />
+      {/* No scrim. The page beside this drawer is shifted, not covered — same as the part
+          drawer in Browse — and dimming a page that has already moved out of the way reads
+          as a modal the drawer is not. Closing is the button in the header. */}
       <div className="drawer">
         <div className="drawer-head">
           <div style={{ minWidth: 0 }}>

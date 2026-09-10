@@ -204,7 +204,7 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier, compar
             )}
           </p>
         </div>
-        <div className="page-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="page-actions">
           <span className="segmented-mini">
             <button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}>BOM tree</button>
             <button className={view === "flat" ? "on" : ""} onClick={() => setView("flat")}>Flattened</button>

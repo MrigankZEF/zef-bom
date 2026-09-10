@@ -73,7 +73,12 @@ export default function App() {
         </div>
         <nav className="nav-tabs">
           {visibleTabs.map((t) => (
-            <button key={t.id} className={`nav-tab ${activeRoute === t.id ? "on" : ""}`} onClick={() => setRoute(t.id)}>{t.label}</button>
+            // Changing tab closes the drawer. It used to survive the move, so a part opened
+            // in Browse hung over Facilities — a panel about an item, beside a screen that
+            // has nothing to do with items, still pushing the page 680px sideways. The
+            // drawer belongs to what you were looking at.
+            <button key={t.id} className={`nav-tab ${activeRoute === t.id ? "on" : ""}`}
+                    onClick={() => { setRoute(t.id); setOpenPart(null); }}>{t.label}</button>
           ))}
         </nav>
         <div className="topbar-end">
