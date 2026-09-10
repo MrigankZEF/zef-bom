@@ -285,6 +285,50 @@ def test_restoring_a_link_normalizes_types_and_modules_and_returns_new_codes():
     db.close()
 
 
+def test_every_link_quantity_write_rejects_nonpositive_and_nonfinite_values():
+    from pydantic import ValidationError
+    from app.schemas import AddChildIn, MoveLinkIn, UpdateLinkIn
+
+    for schema, fields in (
+        (AddChildIn, {"child_id": "AEC050P"}),
+        (UpdateLinkIn, {}),
+        (MoveLinkIn, {"from_parent": "AEC100A", "to_parent": "AEC101A"}),
+    ):
+        for quantity in (0, -2, float("inf"), float("-inf"), float("nan")):
+            try:
+                schema(**fields, quantity=quantity)
+            except ValidationError:
+                pass
+            else:
+                raise AssertionError(f"{schema.__name__} accepted {quantity}")
+        assert schema(**fields, quantity=0.25).quantity == 0.25
+    assert AddChildIn(child_id="AEC050P").quantity == 1
+    assert MoveLinkIn(from_parent="AEC100A", to_parent="AEC101A").quantity is None
+
+
+def test_adding_and_reactivating_a_fractional_quantity_preserves_its_cost():
+    from app.routers.edit import add_child
+    from app.schemas import AddChildIn
+    from app.rollups import BomGraph
+
+    db = _db(fk=True)
+    db.add_all([
+        Item(item_id="AEC100A", item_name="Root", item_type="assembly",
+             module_code="AEC", is_top_level=True),
+        Item(item_id="AEC050P", item_name="Material", item_type="part", module_code="AEC"),
+    ])
+    db.commit()
+    db.add(DecidedCost(item_id="AEC050P", volume_tier=100, unit_cost_eur=10))
+    db.commit()
+    for quantity in (0.25, 0.5):
+        add_child("AEC100A", AddChildIn(child_id="AEC050P", quantity=quantity), db=db, user="test")
+        assert BomGraph(db, 100).rollup("AEC100A").cost == quantity * 10
+        link = db.scalars(select(BomLink)).one()
+        link.archived = True
+        db.commit()
+    db.close()
+
+
 def test_allowed_modules():
     import app.operations as ops
     db = _db()

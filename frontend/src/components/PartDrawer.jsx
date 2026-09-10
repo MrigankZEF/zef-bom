@@ -868,17 +868,21 @@ function AddChildPanel({ parentId, onAdded, onCancel, setError }) {
     (a, b) => (a === "UN" ? -1 : b === "UN" ? 1 : a.localeCompare(b)));
 
   const addExisting = async (childId) => {
+    const quantity = toNum(qty);
+    if (!(quantity > 0)) { setError("Quantity must be greater than zero."); return; }
     setBusy(true);
-    try { const r = await api.addChild(parentId, { child_id: childId, quantity: toNum(qty) || 1 }); onAdded(r); }
+    try { const r = await api.addChild(parentId, { child_id: childId, quantity }); onAdded(r); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
 
   const createAndAdd = async (force = false) => {
     if (!nm.trim()) { setError("Give the new item a name."); return; }
+    const quantity = toNum(qty);
+    if (!(quantity > 0)) { setError("Quantity must be greater than zero."); return; }
     setBusy(true); setError(null);
     try {
       const created = await api.createCatalogItem({ item_name: nm.trim(), item_type: ntype, module: nmod, allow_duplicate: force });
-      const r = await api.addChild(parentId, { child_id: created.item_id, quantity: toNum(qty) || 1 });
+      const r = await api.addChild(parentId, { child_id: created.item_id, quantity });
       onAdded(r);
     } catch (e) {
       // Same duplicate-name guard as the catalog: confirm to add a genuinely separate part.
