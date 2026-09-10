@@ -2035,3 +2035,280 @@ def test_undo_is_refused_when_the_item_is_gone():
     h = db.execute(select(ChangeHistory)).scalar_one()
     ok, why = undoable(db, h)
     assert not ok and "no longer exists" in why
+
+
+# ── milestones and the diff ───────────────────────────────────────────────────
+# The claim these defend is narrow and load-bearing: a milestone is INPUTS, and both sides
+# of a comparison are costed by the same code. Everything else about milestones is
+# convenience; if either of those breaks, a diff reports the difference between two
+# implementations and there is no way to tell that from a real change.
+
+
+def _milestone_fixture():
+    """BOAT x1 -> HARNESS x2 -> {TERMINAL x10 @ EUR 1, WIRE x3 @ EUR 2}, no cover.
+
+    Deliberately the boundary fixture's shape with `covers='none'`, so the tests below can
+    flip the cover on and watch the diff say so.
+    """
+    from app.models import ReferenceValue
+
+    db = _db()
+    db.add(Item(item_id="AEC930A", item_name="Boat", item_type="assembly", module_code="AEC", is_top_level=True, cost_type_id=1))
+    db.add(Item(item_id="AEC931A", item_name="Harness", item_type="assembly", module_code="AEC", cost_type_id=1))
+    db.add(Item(item_id="AEC932P", item_name="Terminal", item_type="part", module_code="AEC", weight_grams=5))
+    db.add(Item(item_id="AEC933P", item_name="Wire", item_type="part", module_code="AEC", weight_grams=20))
+    db.commit()
+    db.add(ReferenceValue(id=1, category="assembly_cost_type", value="Bench", meta={"rate_eur_h": 60}))
+    db.add(BomLink(parent_item_id="AEC930A", child_item_id="AEC931A", quantity=2))
+    db.add(BomLink(parent_item_id="AEC931A", child_item_id="AEC932P", quantity=10))
+    db.add(BomLink(parent_item_id="AEC931A", child_item_id="AEC933P", quantity=3))
+    db.add(DecidedCost(item_id="AEC932P", volume_tier=100, unit_cost_eur=1))
+    db.add(DecidedCost(item_id="AEC933P", volume_tier=100, unit_cost_eur=2))
+    db.add(AssemblyLabor(item_id="AEC930A", volume_tier=100, covers="none", time_likely=30))
+    db.commit()
+    return db
+
+
+def test_a_milestone_rolls_up_to_exactly_what_the_live_bom_did():
+    """The whole design in one assertion. Nothing is edited between the snapshot and the
+    comparison, so every number on both sides has to be identical - and it is identical only
+    because `graph_of` re-derives through the same BomGraph rather than reading a stored total."""
+    from app.milestones import capture, graph_of
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    live = BomGraph(db, volume_tier=100).rollup("AEC930A")
+    m = capture(db, "AEC930A", "before touching anything", None, "tester")
+    db.commit()
+
+    frozen = graph_of(m, 100).rollup("AEC930A")
+    assert round(frozen.cost, 6) == round(live.cost, 6)
+    assert round(frozen.cost_min, 6) == round(live.cost_min, 6)
+    assert round(frozen.cost_max, 6) == round(live.cost_max, 6)
+    assert frozen.covered == live.covered and frozen.total == live.total
+    assert round(frozen.weight_grams, 6) == round(live.weight_grams, 6)
+
+
+def test_a_milestone_stores_no_derived_numbers():
+    """`models.py` says derive, don't store. A stored total would disagree with the rollup
+    the first time the rollup was fixed, and the milestone would then contradict itself."""
+    import json
+
+    from app.milestones import capture
+
+    db = _milestone_fixture()
+    m = capture(db, "AEC930A", "inputs only", None, "tester")
+    db.commit()
+    assert set(m.payload) == {"items", "links", "decided", "labor", "rates"}
+    flat = json.dumps(m.payload)
+    for derived in ("rollup", "coverage", "total_cost", "contribution"):
+        assert derived not in flat
+
+
+def test_a_milestone_keeps_all_three_tiers():
+    """Which tier you want is a question asked long after the snapshot was taken."""
+    from app.milestones import capture, graph_of
+
+    db = _milestone_fixture()
+    db.add(DecidedCost(item_id="AEC932P", volume_tier=10000, unit_cost_eur=0.4))
+    db.add(DecidedCost(item_id="AEC933P", volume_tier=10000, unit_cost_eur=0.8))
+    db.commit()
+    m = capture(db, "AEC930A", "both tiers", None, "tester")
+    db.commit()
+
+    at_100 = graph_of(m, 100).rollup("AEC930A").cost
+    at_10k = graph_of(m, 10000).rollup("AEC930A").cost
+    assert at_100 > at_10k > 0
+
+
+def test_a_milestone_is_scoped_to_its_own_subtree():
+    """A snapshot of one BOM that carried another BOM's parts would not be a snapshot of
+    that BOM."""
+    from app.milestones import capture
+
+    db = _milestone_fixture()
+    db.add(Item(item_id="UNP930P", item_name="Elsewhere", item_type="part", module_code="UNP"))
+    db.commit()
+    m = capture(db, "AEC930A", "scoped", None, "tester")
+    db.commit()
+    ids = {row["item_id"] for row in m.payload["items"]}
+    assert "UNP930P" not in ids
+    assert ids == {"AEC930A", "AEC931A", "AEC932P", "AEC933P"}
+
+
+def test_the_diff_of_a_bom_against_itself_is_empty():
+    from app.bomdiff import diff
+    from app.milestones import capture, graph_of
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    m = capture(db, "AEC930A", "now", None, "tester")
+    db.commit()
+    d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A")
+    assert d["counts"]["added"] == 0 and d["counts"]["removed"] == 0
+    assert d["counts"]["changed"] == 0
+    assert d["totals"]["cost_delta"] == 0.0
+
+
+def test_the_contribution_deltas_account_for_the_whole_movement():
+    """The identity that lets the diff say WHAT moved the number rather than only that it
+    moved. Same decomposition `audit_rollups.py` checks against `rollup()`."""
+    from sqlalchemy import update
+
+    from app.bomdiff import diff
+    from app.milestones import capture, graph_of
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    m = capture(db, "AEC930A", "before", None, "tester")
+    db.commit()
+
+    # Three unrelated kinds of change at once: a price, a quantity, and a new part.
+    db.execute(
+        update(DecidedCost).where(DecidedCost.item_id == "AEC932P", DecidedCost.volume_tier == 100)
+        .values(unit_cost_eur=1.75)
+    )
+    db.execute(
+        update(BomLink).where(BomLink.parent_item_id == "AEC930A", BomLink.child_item_id == "AEC931A")
+        .values(quantity=3)
+    )
+    db.add(Item(item_id="AEC934P", item_name="Boot", item_type="part", module_code="AEC", weight_grams=2))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC931A", child_item_id="AEC934P", quantity=1))
+    db.add(DecidedCost(item_id="AEC934P", volume_tier=100, unit_cost_eur=0.5))
+    db.commit()
+
+    d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A")
+    assert d["totals"]["accounted_delta"] == d["totals"]["cost_delta"] != 0.0
+    added = [r for r in d["rows"] if r["status"] == "added"]
+    assert [r["item_id"] for r in added] == ["AEC934P"]
+
+
+def test_flipping_a_cover_does_not_report_the_subtree_as_removed():
+    """The reason structure is taken through boundaries. Buying an assembly instead of
+    building it changes one flag; reporting it as 'two parts removed' would send somebody
+    looking for a BOM change that never happened."""
+    from app.bomdiff import diff
+    from app.milestones import capture, graph_of
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    m = capture(db, "AEC930A", "built here", None, "tester")
+    db.commit()
+
+    db.add(AssemblyLabor(item_id="AEC931A", volume_tier=100, covers="all"))
+    db.add(DecidedCost(item_id="AEC931A", volume_tier=100, unit_cost_eur=40))
+    db.commit()
+
+    d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A")
+    assert d["counts"]["removed"] == 0, [r for r in d["rows"] if r["status"] == "removed"]
+    harness = next(r for r in d["rows"] if r["item_id"] == "AEC931A")
+    assert {c["field"] for c in harness["changed"]} >= {"covers", "unit_cost"}
+    # The parts are still rows, and they now contribute nothing because the quote covers them.
+    terminal = next(r for r in d["rows"] if r["item_id"] == "AEC932P")
+    assert terminal["contribution_after"] == 0.0 and terminal["contribution_before"] > 0
+
+
+def test_the_diff_needs_no_history_to_produce_its_numbers():
+    """History annotates a diff; it never produces one. A hole in the log - and there were
+    three write paths making holes until 71045fd - must cost provenance, never a figure."""
+    from sqlalchemy import update
+
+    from app.bomdiff import diff
+    from app.milestones import capture, graph_of
+    from app.models import ChangeHistory
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    m = capture(db, "AEC930A", "before", None, "tester")
+    db.commit()
+    db.execute(
+        update(DecidedCost).where(DecidedCost.item_id == "AEC933P", DecidedCost.volume_tier == 100)
+        .values(unit_cost_eur=5)
+    )
+    db.commit()
+    assert db.execute(select(ChangeHistory)).first() is None  # nothing logged that change
+
+    d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A",
+             db=db, since=m.taken_at)
+    wire = next(r for r in d["rows"] if r["item_id"] == "AEC933P")
+    assert wire["status"] == "changed"
+    assert d["totals"]["cost_delta"] == round(2 * 3 * (5 - 2), 2)
+    assert d["history"] == {}  # no provenance, and the numbers are still right
+
+
+def test_a_milestone_survives_a_backup_round_trip():
+    """A payload is derivable from nothing. Left out of the backup, a restore silently
+    destroys every frozen BOM."""
+    import io
+    import json
+
+    from app.backup import BACKUP_SHEETS, RESTORE_ORDER, build_backup_workbook
+    from app.milestones import capture
+
+    assert "BomMilestones" in [s for s, _ in BACKUP_SHEETS]
+    order = [s for s, _ in RESTORE_ORDER]
+    assert "BomMilestones" in order
+    # After Items, or the root_item_id foreign key fails on insert.
+    assert order.index("BomMilestones") > order.index("Items")
+
+    db = _milestone_fixture()
+    capture(db, "AEC930A", "keep me", None, "tester")
+    db.commit()
+    wb = build_backup_workbook(db)
+    import pandas as pd
+    sheet = pd.read_excel(io.BytesIO(wb), sheet_name="BomMilestones")
+    assert len(sheet) == 1
+    assert sheet.iloc[0]["name"] == "keep me"
+    # The payload survives as JSON text, which is what _coerce reads back into a JSON column.
+    assert json.loads(sheet.iloc[0]["payload"])["items"]
+
+
+def test_an_archived_link_is_not_in_the_snapshot():
+    """Found on the real BOM, not in a fixture: ten archived links survive inside the AEC
+    subtree, and a payload that kept them rolled up to EUR 3,058 against the live EUR 2,872.
+    A snapshot that disagrees with the screen it was taken from is worse than no snapshot.
+
+    The scope walk follows live links, so an archived one is never REACHED — but the payload
+    query selected every link whose ends were both in scope, which quietly put it back.
+    """
+    from app.milestones import capture, graph_of
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    # A part that was once in the harness and has since been taken out.
+    db.add(Item(item_id="AEC935P", item_name="Old lug", item_type="part", module_code="AEC", weight_grams=9))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC931A", child_item_id="AEC935P", quantity=4, archived=True))
+    db.add(DecidedCost(item_id="AEC935P", volume_tier=100, unit_cost_eur=3))
+    db.commit()
+
+    live = BomGraph(db, volume_tier=100).rollup("AEC930A")
+    m = capture(db, "AEC930A", "with an archived link in reach", None, "tester")
+    db.commit()
+
+    assert "AEC935P" not in {r["item_id"] for r in m.payload["items"]}
+    assert round(graph_of(m, 100).rollup("AEC930A").cost, 6) == round(live.cost, 6)
+
+
+def test_an_item_archived_after_the_snapshot_reads_as_removed():
+    """The other half of the same rule. Filtering at capture is right; filtering on the way
+    back out would rewrite the snapshot every time somebody archived something."""
+    from app.bomdiff import diff
+    from app.milestones import capture, graph_of
+    from app.rollups import BomGraph
+
+    db = _milestone_fixture()
+    m = capture(db, "AEC930A", "before the deletion", None, "tester")
+    db.commit()
+
+    link = db.execute(
+        select(BomLink).where(BomLink.parent_item_id == "AEC931A", BomLink.child_item_id == "AEC933P")
+    ).scalar_one()
+    link.archived = True
+    db.commit()
+
+    d = diff(before=graph_of(m, 100), after=BomGraph(db, volume_tier=100), root="AEC930A")
+    removed = [r for r in d["rows"] if r["status"] == "removed"]
+    assert [r["item_id"] for r in removed] == ["AEC933P"]
+    assert d["totals"]["cost_delta"] == round(-(2 * 3 * 2), 2)

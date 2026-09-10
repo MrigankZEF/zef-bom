@@ -12,7 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from .auth import enforce_access
 from .config import settings
 from .routers import (
-    admin, attachments, auth, catalog, cogs, edit, export, items, meta, tree, uploads,
+    admin, attachments, auth, catalog, cogs, edit, export, items, meta, milestones, tree,
+    uploads,
 )
 
 app = FastAPI(
@@ -32,7 +33,8 @@ app.add_middleware(
 
 # All API routes live under /api so the guard protects exactly the API and the
 # frontend is served from everything else.
-for _r in (meta, items, tree, edit, uploads, admin, attachments, auth, export, catalog, cogs):
+for _r in (meta, items, tree, edit, uploads, admin, attachments, auth, export, catalog, cogs,
+          milestones):
     app.include_router(_r.router, prefix="/api")
 
 
