@@ -93,18 +93,19 @@ def pick_rate(rates: list[DutyRate], hs: str, origin: str, on: date | None = Non
 
     `rates` must be pre-sorted by `load_rates`, so the first match is the best one. A rate
     whose `valid_from` is in the future of `on` is skipped: a schedule published today for
-    January does not price a shipment that already landed.
+    January does not price a shipment that already landed. Omitted dates mean today.
     """
     code = normalize_hs(hs)
     if not code:
         return None
+    effective_date = on if on is not None else date.today()
     for r in rates:
         rc = normalize_hs(r.hs_code)
         if not code.startswith(rc):
             continue
         if r.origin_country and r.origin_country != origin:
             continue
-        if on is not None and r.valid_from is not None and r.valid_from > on:
+        if r.valid_from is not None and r.valid_from > effective_date:
             continue
         return r
     return None
@@ -139,6 +140,7 @@ def duty_for_bom(db: Session, g, root: str, destination: str | None = None,
     `g` is a `BomGraph` — which also means a MILESTONE's graph works here unchanged, so a
     duty figure can be compared across a snapshot the same way a cost can.
     """
+    on = on if on is not None else date.today()
     dest = destination or facility_destination(db)
     rates = load_rates(db, dest)
 

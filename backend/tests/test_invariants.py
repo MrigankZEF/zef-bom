@@ -2706,6 +2706,56 @@ def test_a_future_rate_does_not_price_a_shipment_that_already_landed():
     assert float(pick_rate(rates, "85444290", "CN", on=_dt.date(2027, 6, 1)).rate_pct) == 9.9
 
 
+def test_default_duty_api_uses_today_and_rates_start_on_their_effective_date():
+    from datetime import date
+    from unittest.mock import patch
+    from app.duty import load_rates, pick_rate
+    from app.models import DutyRate
+    from app.routers.duty import duty_bom
+
+    class Today(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 6, 1)
+
+    db = _duty_fixture()
+    db.add(DutyRate(hs_code="85444290", origin_country="", destination_country="PT",
+                    rate_pct=9.9, valid_from=date(2026, 6, 2)))
+    db.commit()
+    with patch("app.duty.date", Today):
+        rates = load_rates(db, "PT")
+        assert float(pick_rate(rates, "85444290", "CN").rate_pct) == 2.7
+        result = duty_bom(db=db, root="AEC940A", volume=100, destination=None)
+        assert result["totals"]["duty"] == 2.7
+        assert float(pick_rate(rates, "85444290", "CN", on=date(2026, 6, 2)).rate_pct) == 9.9
+    db.close()
+
+
+def test_future_only_duty_rates_leave_a_gap_and_undated_rates_can_fill_it():
+    from datetime import date
+    from unittest.mock import patch
+    from app.models import DutyRate
+    from app.routers.duty import duty_bom
+
+    class Today(date):
+        @classmethod
+        def today(cls):
+            return cls(2025, 12, 31)
+
+    db = _duty_fixture()  # both published rates start on 2026-01-01
+    with patch("app.duty.date", Today):
+        result = duty_bom(db=db, root="AEC940A", volume=100, destination=None)
+        assert result["totals"]["duty"] == 0
+        assert result["totals"]["is_floor"] is True
+        assert result["totals"]["missing_rate"] == ["AEC941P"]
+        db.add(DutyRate(hs_code="8544", origin_country="", destination_country="PT", rate_pct=1))
+        db.commit()
+        result = duty_bom(db=db, root="AEC940A", volume=100, destination=None)
+        assert result["totals"]["duty"] == 1
+        assert result["totals"]["is_floor"] is False
+    db.close()
+
+
 def test_duty_rates_are_in_the_backup():
     """A typed-in fact about the world, derivable from nothing in this database."""
     import datetime as _dt
