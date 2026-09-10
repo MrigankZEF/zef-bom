@@ -130,12 +130,12 @@ class AssemblyLaborOut(BaseModel):
 
 class AddChildIn(BaseModel):
     child_id: str
-    quantity: float = 1
+    quantity: float = Field(default=1, gt=0, allow_inf_nan=False)
 
 
 class UpdateLinkIn(BaseModel):
     # A zero-quantity link is a data bug, not a valid state — remove the child instead.
-    quantity: float = Field(gt=0)
+    quantity: float = Field(gt=0, allow_inf_nan=False)
 
 
 class SetCodeIn(BaseModel):
@@ -158,7 +158,8 @@ class CreateBomIn(BaseModel):
 class MoveLinkIn(BaseModel):
     from_parent: str          # the assembly the part is currently under
     to_parent: str            # the assembly to move it to (must be in the same BOM)
-    quantity: float | None = None  # keep the existing quantity unless overridden
+    # Omitted keeps the existing quantity; an override follows the same rule as adding.
+    quantity: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class NewItemIn(BaseModel):
