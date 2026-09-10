@@ -86,9 +86,16 @@ def require_admin(authorization: str | None = Header(default=None)) -> str:
     """Dependency for admin-only endpoints (user management, reference lists, purge)."""
     if not settings.google_oauth_client_id:
         return "dev"  # dev mode
-    from fastapi import HTTPException
+    from .db import SessionLocal
+    from .models import User
 
     claims = current_claims(authorization)
-    if not claims or claims.get("role") != "admin":
+    if not claims or not claims.get("sub"):
         raise HTTPException(403, "Admin only")
-    return claims.get("sub")
+    # Tokens identify the user; the current allowlist decides their permissions.
+    # A role change or removal must take effect before a seven-day token expires.
+    with SessionLocal() as db:
+        user = db.get(User, claims["sub"])
+        if user is None or user.role != "admin":
+            raise HTTPException(403, "Admin only")
+        return user.email
