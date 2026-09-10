@@ -9,10 +9,17 @@ import { spreadPath, spreadX } from "../spread";
 // Costing keeps its own tier CONTROL — it is never on screen with Browse, so two controls
 // are not the confusion this fixes; two independent values were. The value lives in App,
 // so switching Browse -> Costing lands on the tier you were already looking at.
-export default function Costing({ onOpenPart, tier, setTier }) {
+export default function Costing({ onOpenPart, tier, setTier, compare, setCompare }) {
   const [roots, setRoots] = useState(null);
   const [root, setRoot] = useState("");
   const volume = tier, setVolume = setTier;   // local names, shared value
+  // The milestone comparison is App's, for the same reason the tier is: this tab has its own
+  // control but the two tabs share the value, so switching from Browse to Costing keeps the
+  // comparison you set up.
+  const [stones, setStones] = useState([]);
+  const [mtree, setMtree] = useState(null);   // the milestone's tree, costed at `volume`
+  // One drill path for both treemaps. Two maps drilled to different depths compare nothing.
+  const [tpath, setTpath] = useState([]);
   const [metric, setMetric] = useState("cost"); // cost | weight
   // Branch by default: the treemap's AREA already says what a thing costs, so colour is
   // better spent on which subsystem a block belongs to than on saying the price twice.
@@ -30,6 +37,18 @@ export default function Costing({ onOpenPart, tier, setTier }) {
   const [lines, setLines] = useState(null);        // the breakdown, per layer
   const [error, setError] = useState(null);
   const svgRef = useRef(null);
+
+  useEffect(() => { api.milestones().then(setStones).catch(() => setStones([])); }, []);
+
+  // Refetched per tier, never converted: a milestone stores all three tiers and the frozen
+  // tree is costed on the way out, so asking for the other tier is the only correct way to
+  // see it.
+  useEffect(() => {
+    if (!compare) { setMtree(null); return; }
+    setMtree(null);
+    api.milestoneTree(compare.id, volume).then(setMtree).catch((e) => setError(e.message));
+    /* eslint-disable-next-line */
+  }, [compare && compare.id, volume]);
 
   useEffect(() => {
     api.listItems({ top_level_only: true }).then((rs) => {
@@ -76,6 +95,9 @@ export default function Costing({ onOpenPart, tier, setTier }) {
   // Drives the whole tile's layout, so it is worked out once here rather than three times in
   // the markup. Without a range there is nothing to spread and the tile stays as it was.
   const hasSpread = !!(ct && ct.cost_min > 0 && ct.cost_max > ct.cost_min);
+  // A milestone of a DIFFERENT BOM is not a comparison, it is two unrelated pictures. The
+  // selector already filters, but `compare` is shared with Browse, which does not.
+  const comparing = !!(compare && compare.root_item_id === root);
 
   return (
     <div className="page">
@@ -98,6 +120,21 @@ export default function Costing({ onOpenPart, tier, setTier }) {
             </button>
           ))}
         </div>
+        {/* Only where there is a milestone of THIS BOM. A comparison against a snapshot of a
+            different top-level BOM would draw two treemaps that share nothing. */}
+        {stones.some((m) => m.root_item_id === root) && (
+          <select
+            className="select" style={{ minWidth: 210 }}
+            value={compare && compare.root_item_id === root ? String(compare.id) : ""}
+            onChange={(e) => { setCompare(e.target.value ? stones.find((m) => String(m.id) === e.target.value) : null); setTpath([]); }}
+            title="Draw the frozen BOM beside the live one"
+          >
+            <option value="">No comparison</option>
+            {stones.filter((m) => m.root_item_id === root).map((m) => (
+              <option key={m.id} value={m.id}>vs. {m.name}</option>
+            ))}
+          </select>
+        )}
         <span style={{ flex: 1 }} />
         {/* Cumulative: COGM is COGS minus the post-manufacturing rung, and BOM+ is the BOM
             plus the direct rung. Each view shows every rung up to its own. */}
@@ -221,7 +258,38 @@ export default function Costing({ onOpenPart, tier, setTier }) {
                   <button className="btn ghost sm" onClick={exportPng} title="Save the treemap as a PNG image">Save PNG</button>
                 </div>
               </div>
-              {tree
+              {/* Two treemaps rather than one coloured by delta. A treemap's whole claim is
+                  that area IS the number; a delta has no area, so colouring one map by change
+                  would keep the claim in the legend and break it on screen. Side by side,
+                  both maps still mean exactly what a treemap means, and the comparison is
+                  the one the eye is actually good at: which block got bigger.
+                  One drill path drives both — see CostTreemap's `onPath`. */}
+              {comparing ? (
+                <div className="treemap-pair">
+                  <PairSide
+                    label={compare.name} sub={`frozen ${new Date(compare.taken_at).toLocaleDateString()}`}
+                    total={mtree && (scenario === "min" ? mtree.rollup_cost_min : scenario === "max" ? mtree.rollup_cost_max : mtree.rollup_cost)}
+                    metric={metric} weight={mtree && mtree.rollup_weight_grams}
+                  >
+                    {mtree
+                      ? <CostTreemap node={mtree} metric={metric} colorMode={colorMode} scenario={scenario}
+                          depth={depth} split={split} format={fmt} onOpenPart={onOpenPart}
+                          path={tpath} onPath={setTpath} />
+                      : <p className="muted" style={{ padding: 20 }}>Loading the milestone…</p>}
+                  </PairSide>
+                  <PairSide
+                    label="Live" sub="as it stands now"
+                    total={tree && (scenario === "min" ? tree.rollup_cost_min : scenario === "max" ? tree.rollup_cost_max : tree.rollup_cost)}
+                    metric={metric} weight={tree && tree.rollup_weight_grams}
+                  >
+                    {tree
+                      ? <CostTreemap node={tree} metric={metric} colorMode={colorMode} scenario={scenario}
+                          depth={depth} split={split} svgRef={svgRef} format={fmt} onOpenPart={onOpenPart}
+                          path={tpath} onPath={setTpath} />
+                      : <p className="muted" style={{ padding: 20 }}>Loading structure…</p>}
+                  </PairSide>
+                </div>
+              ) : tree
                 ? <CostTreemap node={tree} metric={metric} colorMode={colorMode} scenario={scenario}
                     depth={depth} split={split} svgRef={svgRef} format={fmt} onOpenPart={onOpenPart} />
                 : <p className="muted" style={{ padding: 20 }}>Loading structure…</p>}
@@ -263,6 +331,32 @@ export default function Costing({ onOpenPart, tier, setTier }) {
 // that away, and a figure printed on top of the curve (the first attempt) just collided with it.
 //
 // See src/spread.js for the curve itself and why it is a shape rather than three numbers.
+// One half of the comparison: a label, the figure that half rolls up to, and the treemap.
+// The two figures sit at the same height above their maps so the pair reads as one sentence
+// — "this was €X, it is now €Y" — without a third element in the middle claiming to be the
+// difference. The Changes view in Browse is where the difference is stated as a number.
+function PairSide({ label, sub, total, metric, weight, children }) {
+  const shown = metric === "cost"
+    ? (total == null ? "—" : fmtEURcompact(total))
+    : (weight == null ? "—" : fmtWeight(weight));
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between",
+                    gap: 10, padding: "0 2px 6px", borderBottom: "1px solid var(--hair-faint)", marginBottom: 8 }}>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ fontFamily: "var(--font-display)", fontSize: 11, fontWeight: 700,
+                         letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-2)" }}>
+            {label}
+          </span>
+          <span className="micro" style={{ color: "var(--ink-3)", marginLeft: 8 }}>{sub}</span>
+        </span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 15, whiteSpace: "nowrap" }}>{shown}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 function CostSpread({ min, likely, max, at, scenario, fmt }) {
   // Compact form, for the tile that has no range to show: a tick and a caption.
   if (!fmt) {
