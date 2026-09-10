@@ -22,8 +22,8 @@ below run — so nothing renumbers if a phase slips.
 | E · thumbnails pin themselves | done — `c11a9fb` |
 | F1 · close the change_history holes | done — `71045fd` |
 | I1 · undo from the History tab | done — `2a386e9` |
-| B2 · cost as a distribution | **next** |
-| G · milestones and diff | not started — claims migration `0017` |
+| B2 · cost as a distribution | done — `0ee6165`; Uploads moved to Admin in `8f74398` |
+| G · milestones and diff | **next** — claims migration `0017` |
 | H · import duty structure | not started — claims migration `0018` |
 
 Phase A grew past its plan while being reviewed on the real BOM: colour by branch, the
