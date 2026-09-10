@@ -455,6 +455,18 @@ body { background: var(--bg); }
   font-variant-numeric: tabular-nums;
 }
 .nav-tab.on .ct { color: var(--ink); border-color: var(--ink); }
+/* A tab a viewer cannot open. Still on the bar, so the shape of the tool is the same for
+   everyone, but visibly out of reach: no pointer, no hover lift, --ink-4 like every other
+   disabled thing here. */
+.nav-tab:disabled { color: var(--ink-4); cursor: not-allowed; }
+.nav-tab:disabled:hover { color: var(--ink-4); }
+
+/* Read-only session: nothing opens the part drawer, so nothing should promise it will.
+   The click handlers are already no-ops in App — this removes the affordance that says
+   otherwise. */
+.app.read-only .tree-name.opens,
+.app.read-only .tree-row .tree-data,
+.app.read-only .tbl tr:hover td { cursor: default; }
 
 .topbar-end {
   display: flex; align-items: center; gap: 14px;
