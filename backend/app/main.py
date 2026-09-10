@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -108,7 +108,13 @@ if (_WEBAPP / "index.html").exists():
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa(full_path: str):
         # API routes are matched before this catch-all; everything else is the SPA.
-        candidate = _WEBAPP / full_path
+        # Resolve before checking containment so encoded traversal and symlinks cannot
+        # expose files outside the public webapp directory.
+        try:
+            candidate = (_WEBAPP / full_path).resolve()
+            candidate.relative_to(_WEBAPP.resolve())
+        except (OSError, RuntimeError, ValueError):
+            raise HTTPException(404, "Not found") from None
         if full_path and candidate.is_file():
             return FileResponse(str(candidate))
         return FileResponse(str(_WEBAPP / "index.html"))
