@@ -23,6 +23,8 @@ a second time.
 """
 from __future__ import annotations
 
+import math
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -46,6 +48,38 @@ def _tier_of(field: str) -> int | None:
     return int(tail) if tail.isdigit() else None
 
 
+def _link_target(h: ChangeHistory) -> tuple[str, bool | float]:
+    """Interpret old link logs; new inverses always record a typed scalar field."""
+    field = h.field_changed
+    if field not in (None, "archived", "quantity"):
+        raise ValueError("this link operation cannot be undone")
+    if h.change_type == "create":
+        return "archived", True
+    if h.change_type == "remove":
+        return "archived", False
+    if field == "quantity":
+        try:
+            quantity = float(h.old_value)
+        except (TypeError, ValueError):
+            raise ValueError("the history does not record a valid previous quantity") from None
+        if not math.isfinite(quantity) or quantity <= 0:
+            raise ValueError("the previous quantity must be positive and finite")
+        return "quantity", quantity
+    if field == "archived":
+        booleans = {"true": True, "false": False}
+        old = (h.old_value or "").lower()
+        if old in booleans:
+            return "archived", booleans[old]
+        # Early restore entries recorded only new_value=False.
+        if h.old_value is None and (h.new_value or "").lower() == "false":
+            return "archived", True
+    # The old undo implementation logged an added link's inverse as an untyped
+    # update from "qty=..." to "removed". Redo it without parsing that as a float.
+    if field is None and h.new_value == "removed" and (h.old_value or "").startswith("qty="):
+        return "archived", False
+    raise ValueError("the history does not record a reversible link field")
+
+
 def undoable(db: Session, h: ChangeHistory) -> tuple[bool, str]:
     """Can this row be undone, and if not, why not — in words a person can act on."""
     if h.entity_type == "item" and h.change_type == "update" and h.field_changed in ITEM_COLS:
@@ -53,6 +87,22 @@ def undoable(db: Session, h: ChangeHistory) -> tuple[bool, str]:
     elif h.entity_type == "bom_link" and h.change_type in ("create", "remove", "update"):
         if ">" not in h.entity_id:
             return False, "this row does not say which link it changed"
+        try:
+            field, target = _link_target(h)
+        except ValueError as exc:
+            return False, str(exc)
+        parent, child = h.entity_id.split(">", 1)
+        if db.get(Item, child) is None:
+            return False, f"{child} no longer exists"
+        link = db.execute(select(BomLink).where(
+            BomLink.parent_item_id == parent, BomLink.child_item_id == child,
+        )).scalar_one_or_none()
+        if link is None:
+            return False, "this link no longer exists"
+        if field == "archived" and target is False:
+            from .operations import would_cycle
+            if would_cycle(db, parent, child):
+                return False, "restoring this link would create a loop"
     elif h.entity_type == "decided_cost" and _tier_of(h.field_changed or "") is not None:
         pass
     elif h.entity_type == "assembly_labor" and (h.field_changed or "").startswith("assembly_time@"):
@@ -71,16 +121,16 @@ def undoable(db: Session, h: ChangeHistory) -> tuple[bool, str]:
     if db.get(Item, subject) is None:
         return False, f"{subject} no longer exists"
 
-    later = db.execute(
-        select(ChangeHistory.id)
-        .where(
-            ChangeHistory.entity_type == h.entity_type,
-            ChangeHistory.entity_id == h.entity_id,
-            ChangeHistory.field_changed == h.field_changed,
-            ChangeHistory.id > h.id,
-        )
-        .limit(1)
-    ).first()
+    later_query = select(ChangeHistory.id).where(
+        ChangeHistory.entity_type == h.entity_type,
+        ChangeHistory.entity_id == h.entity_id,
+        ChangeHistory.id > h.id,
+    )
+    # Link creation/removal affects whether its quantity is used at all. Treat the
+    # link as one unit so an old lifecycle entry cannot bypass a later field edit.
+    if h.entity_type != "bom_link":
+        later_query = later_query.where(ChangeHistory.field_changed == h.field_changed)
+    later = db.execute(later_query.limit(1)).first()
     if later:
         return False, "superseded by a later change"
     return True, ""
@@ -114,6 +164,8 @@ def apply_undo(db: Session, h: ChangeHistory, user: str) -> dict:
     """Restore the previous value. The caller has already checked `undoable`. Does not commit."""
     et, field = h.entity_type, (h.field_changed or "")
     restored: object = None
+    entity_id = h.entity_id
+    old_value = h.new_value
 
     if et == "item":
         item = db.get(Item, h.entity_id)
@@ -126,26 +178,16 @@ def apply_undo(db: Session, h: ChangeHistory, user: str) -> dict:
         link = db.execute(
             select(BomLink).where(BomLink.parent_item_id == parent, BomLink.child_item_id == child)
         ).scalar_one_or_none()
-        if h.change_type == "create":
-            # Archived, not deleted — the same soft delete the rest of the app uses, so the
-            # link's own history stays attached to a row that still exists.
-            if link is not None:
-                link.archived = True
-            restored = "removed"
-        elif h.change_type == "remove":
-            if link is None:
-                link = BomLink(parent_item_id=parent, child_item_id=child, quantity=1)
-                db.add(link)
-            link.archived = False
-            if h.old_value:
-                try:
-                    link.quantity = float(h.old_value)
-                except ValueError:
-                    pass
-            restored = link.quantity
-        else:
-            link.quantity = float(h.old_value)
-            restored = link.quantity
+        field, restored = _link_target(h)
+        old_value = getattr(link, field)
+        setattr(link, field, restored)
+        if field == "archived":
+            from .operations import normalize_structure, resolve_rename
+            db.flush()
+            changes = normalize_structure(db, user=user)
+            # Normalization can rename either endpoint. The inverse must address the
+            # surviving link so its own undo still works under the new codes.
+            entity_id = f"{resolve_rename(changes, parent)}>{resolve_rename(changes, child)}"
 
     elif et == "decided_cost":
         tier = _tier_of(field)
@@ -191,9 +233,9 @@ def apply_undo(db: Session, h: ChangeHistory, user: str) -> dict:
     # The undo IS the new change, recorded the way any edit would be — so the next reader sees a
     # history that explains itself rather than a value that appears to have moved on its own.
     record_change(
-        db, entity_type=et, entity_id=h.entity_id,
-        change_type="update", field_changed=h.field_changed,
-        old_value=h.new_value, new_value=None if restored is None else str(restored),
+        db, entity_type=et, entity_id=entity_id,
+        change_type="update", field_changed=field or None,
+        old_value=old_value, new_value=None if restored is None else str(restored),
         changed_by=user, change_reason=f"undo of change #{h.id}",
     )
     return {"undone": h.id, "restored": None if restored is None else str(restored)}
