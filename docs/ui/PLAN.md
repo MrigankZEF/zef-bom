@@ -23,8 +23,8 @@ below run — so nothing renumbers if a phase slips.
 | F1 · close the change_history holes | done — `71045fd` |
 | I1 · undo from the History tab | done — `2a386e9` |
 | B2 · cost as a distribution | done — `0ee6165`; Uploads moved to Admin in `8f74398` |
-| G · milestones and diff | **next** — claims migration `0017` |
-| H · import duty structure | not started — claims migration `0018` |
+| G · milestones and diff | done — `5237567` `11ff98b` `57a7774` `1af27cb` `0b4a97a`, migration `0017` |
+| H · import duty structure | **next** — claims migration `0018` |
 
 Phase A grew past its plan while being reviewed on the real BOM: colour by branch, the
 hover ring, the title-collision handling and the flyout's item count all came out of looking
