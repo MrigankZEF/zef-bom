@@ -21,7 +21,7 @@ from ..backup import (
 from ..db import get_db
 from ..history import record_change
 from ..models import (
-    AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item,
+    AssemblyLabor, BomLink, BomMilestone, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item,
     ItemLink, ReferenceValue, UploadBatch, User,
 )
 from ..schemas import ReferenceIn, UserIn, UserRoleIn
@@ -170,6 +170,9 @@ def purge_item(item_id: str, db: Session = Depends(get_db), user: str = Depends(
     db.execute(delete(FieldValue).where(FieldValue.item_id == item_id))
     db.execute(delete(AssemblyLabor).where(AssemblyLabor.item_id == item_id))
     db.execute(delete(ItemLink).where(ItemLink.item_id == item_id))
+    # A milestone rooted on an item being permanently deleted has nothing left to be a
+    # milestone OF, and its root_item_id foreign key would block the purge anyway.
+    db.execute(delete(BomMilestone).where(BomMilestone.root_item_id == item_id))
     db.delete(item)
     db.flush()
     from ..operations import normalize_structure
@@ -442,7 +445,11 @@ async def import_catalog(
     # Counted before it is gone, so the log can say what was removed.
     wiped_items = db.execute(select(func.count()).select_from(Item)).scalar() or 0
     # wipe BOM data — keep users and reference values
-    for model in (ChangeHistory, BomLink, DecidedCost, CostEvidence, AssemblyLabor, FieldValue, UploadBatch):
+    # BomMilestone is in this list for two reasons: its root_item_id foreign key would
+    # block `delete(Item)` below, and a milestone of a BOM that no longer exists is not a
+    # snapshot of anything. The pre-wipe workbook above still has every payload.
+    for model in (ChangeHistory, BomMilestone, BomLink, DecidedCost, CostEvidence, AssemblyLabor,
+                  FieldValue, UploadBatch):
         db.execute(delete(model))
     db.execute(delete(Item))
     db.flush()

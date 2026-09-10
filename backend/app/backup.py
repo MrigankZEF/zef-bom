@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from . import drive
 from .models import (
-    AssemblyLabor, BomLink, ChangeHistory, CodeRegistry, CogsFacility, CogsFacilityItem,
+    AssemblyLabor, BomLink, BomMilestone, ChangeHistory, CodeRegistry, CogsFacility, CogsFacilityItem,
     CogsLock, CogsValue, CostEvidence, DecidedCost, FieldDefinition, FieldValue, Item,
     ItemLink, ReferenceValue, UploadBatch, User,
 )
@@ -50,6 +50,9 @@ BACKUP_SHEETS = [
     ("CogsFacilityItems", CogsFacilityItem),
     ("CogsValues", CogsValue),
     ("CogsLocks", CogsLock),
+    # Milestones are read-only for ever and derivable from nothing — a lost payload is a
+    # frozen BOM that cannot be reconstructed, which is the whole point of keeping it.
+    ("BomMilestones", BomMilestone),
 ]
 
 # Scheduled snapshots carry this marker so retention only ever trims THEM — never the
@@ -171,6 +174,8 @@ RESTORE_ORDER = [
     ("CogsFacilityItems", CogsFacilityItem),
     ("CogsValues", CogsValue),
     ("CogsLocks", CogsLock),
+    # After Items: the root_item_id foreign key needs its item to exist on insert.
+    ("BomMilestones", BomMilestone),
 ]
 RESTORE_MODELS = dict(RESTORE_ORDER)
 
