@@ -435,18 +435,34 @@ function FloorNote({ ladder }) {
   if (c.missing.length) bits.push(`${c.missing.length} part${c.missing.length === 1 ? "" : "s"} with no decided cost`);
   if (c.missing_assembly.length) bits.push(`${c.missing_assembly.length} assembl${c.missing_assembly.length === 1 ? "y" : "ies"} with no time or rate`);
   if (c.missing_quote.length) bits.push(`${c.missing_quote.length} bought-in assembl${c.missing_quote.length === 1 ? "y" : "ies"} with no quote`);
+  // The other half of "floor": the rungs above the BOM. An empty Facilities tab is not a BOM
+  // gap, so nothing above would otherwise mention it -- and the reader would see EUR 0.00
+  // overhead presented as a fact rather than as an absence.
+  const rungs = c.empty_rungs || [];
+  const RUNG_TEXT = {
+    facilities: "nothing entered on Facilities",
+    overhead: "no overhead pool",
+    post: "no freight or installation",
+    warranty: "no warranty accrual",
+  };
+  const above = rungs.map((r) => RUNG_TEXT[r]).filter(Boolean);
   return (
     <div className="banner warn" style={{ marginBottom: 16 }}>
       <Icon name="alert" size={15} className="ico" />
       <div>
         <h4>This is a floor, not a price</h4>
         <p>
-          {bits.join(", ")} — so every rung above the BOM is understated.{" "}
+          {bits.length > 0 && <>{bits.join(", ")} — so every rung above the BOM is understated.{" "}</>}
+          {above.length > 0 && (
+            <>{above.join(", ")} — so this figure is the BOM cost, not a cost of goods sold.{" "}</>
+          )}
           {/* Named explicitly, because the KPI on BOM+ reads 100%: that one counts leaf
               parts, this one counts assemblies too, and two bare percentages a click apart
               would look like a contradiction rather than two different questions. */}
-          Coverage across parts <em>and</em> assemblies is {fmtPct(c.coverage)}; fill the
-          gaps in <strong>Pending</strong>.
+          {bits.length > 0 && (
+            <>Coverage across parts <em>and</em> assemblies is {fmtPct(c.coverage)}; fill the
+            gaps in <strong>Pending</strong>.</>
+          )}
           {c.below_boundary.length > 0 && ` ${c.below_boundary.length} more items sit under a bought-in assembly and are deliberately not costed.`}
         </p>
       </div>

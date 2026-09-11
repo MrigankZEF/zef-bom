@@ -647,13 +647,32 @@ def unlock_row(
 
 
 # ── the ladder ────────────────────────────────────────────────────────────────────────────
-def _coverage_note(r) -> dict:
+def _coverage_note(r, rungs: dict | None = None, facilities: list | None = None) -> dict:
     """What the screen has to say out loud about how solid the number is.
 
     Coverage propagates all the way up, so a COGS figure on a half-priced BOM is a floor and
     must say so — in the same voice the BOM tool already uses on the treemap.
     """
     gaps = len(set(r.missing)) + len(set(r.missing_assembly)) + len(set(r.missing_quote))
+    # A COGS figure is a floor for a second reason the BOM knows nothing about: when nothing
+    # has been entered ABOVE the BOM. An empty Facilities tab makes overhead, freight and the
+    # warranty accrual read EUR 0.00 -- numbers this screen would otherwise present as fact.
+    #
+    # Counting only BOM gaps meant the warning switched itself OFF at exactly the wrong
+    # moment: the day the last assembly time is filled in, coverage reaches 100%, the banner
+    # disappears, and the screen starts calling the bare BOM cost a COGS. The two halves get
+    # completed weeks apart, so they cannot stand in for one another.
+    empty_rungs: list[str] = []
+    if rungs is not None:
+        if not facilities:
+            empty_rungs.append("facilities")
+        else:
+            if not rungs.get("pool_total"):
+                empty_rungs.append("overhead")
+            if not rungs.get("post"):
+                empty_rungs.append("post")
+            if not rungs.get("warranty_pct"):
+                empty_rungs.append("warranty")
     return {
         "coverage": round(r.coverage, 4),
         "gaps": gaps,
@@ -661,7 +680,8 @@ def _coverage_note(r) -> dict:
         "missing_assembly": sorted(set(r.missing_assembly)),
         "missing_quote": sorted(set(r.missing_quote)),
         "below_boundary": sorted(set(r.below_boundary)),
-        "is_floor": gaps > 0,
+        "empty_rungs": empty_rungs,
+        "is_floor": gaps > 0 or bool(empty_rungs),
     }
 
 
@@ -682,7 +702,7 @@ def _ladder_at(db: Session, root: str, tier: int) -> dict:
         **L.as_dict(),
         "root": root,
         "volume_tier": tier,
-        "coverage": _coverage_note(r),
+        "coverage": _coverage_note(r, L.as_dict(), facs),
         # The assumptions the reader cannot infer and the numbers depend on. Served rather
         # than written into the JSX so they cannot drift from the arithmetic that needs them.
         "notes": [

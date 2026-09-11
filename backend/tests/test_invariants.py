@@ -2237,3 +2237,46 @@ def test_undo_is_refused_when_the_item_is_gone():
     h = db.execute(select(ChangeHistory)).scalar_one()
     ok, why = undoable(db, h)
     assert not ok and "no longer exists" in why
+
+
+def test_cogs_a_fully_costed_bom_with_no_facilities_is_still_a_floor():
+    """The warning must not switch itself off the day the BOM gets good.
+
+    Observed in production: coverage reached 100%, the "this is a floor" banner disappeared,
+    and the COGS tab began presenting EUR 2.3k -- the bare BOM cost -- as a cost of goods
+    sold, with overhead, freight and warranty all reading EUR 0.00 and nothing saying why.
+
+    The two halves of a COGS figure are filled in weeks apart by different people, so BOM
+    coverage cannot stand in for "somebody has entered the overheads". A rung that is empty
+    because nothing was entered is an absence, not a zero.
+    """
+    from app.routers import cogs as R
+
+    db = _cogs_api_fixture()          # a BOM with no gaps at all
+    L = R._ladder_at(db, "AEC700A", 100)
+    c = L["coverage"]
+
+    # The precondition: on the BOM's own terms there is nothing left to fill in, so the old
+    # `is_floor = gaps > 0` rule would have said "not a floor" here.
+    assert c["gaps"] == 0, c
+    assert c["coverage"] == 1.0, c
+
+    # ...yet every rung above the BOM is empty, so the figure is not a COGS.
+    assert L["overhead"] == 0 and L["post"] == 0 and L["warranty"] == 0, L
+    assert L["cogs_unit"] == L["bom_raw"], L
+    assert c["is_floor"] is True, c
+    assert "facilities" in c["empty_rungs"], c
+
+    # Once the overheads are actually entered, that reason goes away.
+    f = _mk_facility(db)
+    it = _mk_item(db, f["id"], "A-ONE")
+    _save(db, f["id"], [
+        {"item_id": str(it["id"]), "row_key": "area", "volume_tier": 100, "value": 1000},
+        {"item_id": str(it["id"]), "row_key": "rent", "volume_tier": 100, "value": 120},
+    ])
+    c2 = R._ladder_at(db, "AEC700A", 100)["coverage"]
+    assert "facilities" not in c2["empty_rungs"], c2
+    assert "overhead" not in c2["empty_rungs"], c2
+    # Freight and warranty are still genuinely unentered, so it stays a floor and says so.
+    assert c2["is_floor"] is True, c2
+    assert set(c2["empty_rungs"]) == {"post", "warranty"}, c2
