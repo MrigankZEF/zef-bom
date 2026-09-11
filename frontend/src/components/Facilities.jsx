@@ -13,9 +13,7 @@ import { Icon, LayerTag, LockToggle, NumInput, Pill, fmtEURcompact, toNum } from
 //     roll-ups, totals — is served by /cogs/facilities. Anything summed on this side would
 //     be a second implementation of the ladder, in a language the tests cannot reach.
 
-const TIERS = [1, 100, 10000];
-const DEFAULT_TIER = 10000;          // see DEFAULT_TIER in Tree.jsx
-const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
+import { TIERS, DEFAULT_TIER, tierLabel } from "../tiers";
 
 const cellKey = (itemId, rowKey, tier) => `${itemId}|${rowKey}|${tier}`;
 

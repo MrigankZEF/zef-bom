@@ -19,11 +19,12 @@ from pathlib import Path
 # Make `app` importable when run as a plain script from backend/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import create_engine, event, func, select  # noqa: E402
+from sqlalchemy import create_engine, delete, event, func, select  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.db import Base  # noqa: E402
 from app import models  # noqa: F401,E402  (registers tables on Base.metadata)
+from app.history import record_change  # noqa: E402
 from app.models import AssemblyLabor, BomLink, DecidedCost, Item, ItemLink  # noqa: E402
 
 
@@ -1495,12 +1496,17 @@ def test_history_filter_takes_several_entity_types():
     ])
     R.lock_row(f["id"], "maint", db=db, user="t")
 
+    # Rows come back as dicts now, annotated with whether each one can be undone.
     facilities = "cogs_facility,cogs_facility_item,cogs_value,cogs_lock"
-    types = {h.entity_type for h in global_history(db=db, entity_type=facilities)}
+    types = {h["entity_type"] for h in global_history(db=db, entity_type=facilities)}
     assert types == {"cogs_facility", "cogs_facility_item", "cogs_value", "cogs_lock"}, types
     # A single type still works exactly as before.
-    only = {h.entity_type for h in global_history(db=db, entity_type="cogs_lock")}
+    only = {h["entity_type"] for h in global_history(db=db, entity_type="cogs_lock")}
     assert only == {"cogs_lock"}
+    # None of the ladder kinds is undoable — nothing has audited how to reverse them yet, so
+    # they say why rather than offering a button that guesses.
+    assert all(not h["undoable"] and h["undo_blocked"]
+               for h in global_history(db=db, entity_type=facilities))
     # And every one of these rows is genuinely in the log, not just filterable.
     assert len(global_history(db=db, entity_type=facilities)) >= 4
 
@@ -1548,3 +1554,583 @@ def test_backup_carries_the_part_number_ledger():
 
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)
+
+
+# ── weight coverage: the figure that qualifies € / kg ────────────────────────
+def test_weight_coverage_counts_the_same_parts_the_weight_is_summed_over():
+    """A rolled-up weight over half-weighed parts is as wrong as an unpriced BOM, and it is
+    what the Cost per kg tile divides by — so coverage has to be measured over exactly the
+    set `weight_grams` was summed over, or the tile contradicts the caveat beside it."""
+    from app.routers.tree import costing_breakdown
+
+    db = _boundary_fixture(covers="none", quote=None)
+    # Wire has a weight, Terminal's is cleared: one of the two priced leaves is unweighed.
+    db.get(Item, "AEC923P").weight_grams = None
+    db.commit()
+
+    t = costing_breakdown(db=db, root="AEC920A", volume=100)["totals"]
+    assert t["weight_total"] == 2, t["weight_total"]          # Terminal + Wire
+    assert t["weight_covered"] == 1, t["weight_covered"]
+    assert t["weight_missing"] == ["AEC923P"], t["weight_missing"]
+    assert t["weight_coverage"] == 0.5, t["weight_coverage"]
+    # 2 harnesses x 1 branch x 3 wire x 20 g
+    assert t["weight_grams"] == 120.0, t["weight_grams"]
+
+
+def test_weight_coverage_is_whole_when_everything_is_weighed():
+    from app.routers.tree import costing_breakdown
+
+    db = _boundary_fixture(covers="none", quote=None)
+    t = costing_breakdown(db=db, root="AEC920A", volume=100)["totals"]
+    assert t["weight_missing"] == []
+    assert t["weight_covered"] == t["weight_total"] == 2
+    assert t["weight_coverage"] == 1.0
+
+
+def test_a_bom_with_no_weights_at_all_reports_zero_coverage_not_a_crash():
+    """The Cost per kg tile shows an em dash here rather than dividing by zero. The API's job
+    is to say the weight is absent, without inventing one."""
+    from app.routers.tree import costing_breakdown
+
+    db = _boundary_fixture(covers="none", quote=None)
+    for iid in ("AEC923P", "AEC924P"):
+        db.get(Item, iid).weight_grams = None
+    db.commit()
+
+    t = costing_breakdown(db=db, root="AEC920A", volume=100)["totals"]
+    assert t["weight_grams"] == 0.0
+    assert t["weight_covered"] == 0
+    assert t["weight_coverage"] == 0.0
+    assert set(t["weight_missing"]) == {"AEC923P", "AEC924P"}
+
+
+# ── cover_reach: is there still an uncovered way down to this item? ──────────
+def _cover_fixture():
+    """Two roots over one shared harness, so "covered on one path, open on another" exists.
+
+        BOAT   ×1 → HARNESS ×2 → {TERMINAL ×10, BRANCH ×1 → WIRE ×3}
+        BENCH  ×1 → HARNESS ×1
+
+    BOAT's harness covers the work below it at @100 only. BENCH's does not cover anything, so
+    everything under the harness is still open at @100 by way of BENCH — which is the case the
+    rule exists for: filling the numbers in is real work, because the second usage needs them.
+    """
+    db = _db()
+    db.add(Item(item_id="AEC920A", item_name="Boat", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC930A", item_name="Bench", item_type="assembly", module_code="AEC", is_top_level=True))
+    db.add(Item(item_id="AEC921A", item_name="Harness", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC922A", item_name="Branch", item_type="assembly", module_code="AEC"))
+    db.add(Item(item_id="AEC923P", item_name="Terminal", item_type="part", module_code="AEC", weight_grams=5))
+    db.add(Item(item_id="AEC924P", item_name="Wire", item_type="part", module_code="AEC", weight_grams=20))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC920A", child_item_id="AEC921A", quantity=2))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC923P", quantity=10))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC922A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC922A", child_item_id="AEC924P", quantity=3))
+    db.add(DecidedCost(item_id="AEC923P", volume_tier=100, unit_cost_eur=1))
+    db.add(DecidedCost(item_id="AEC924P", volume_tier=100, unit_cost_eur=2))
+    db.commit()
+    return db
+
+
+def test_a_labor_cover_reaches_every_depth_below_it():
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor"))
+    db.commit()
+    r = cover_reach(db)
+    # Not the covering assembly itself — a cover pays for what is BELOW it.
+    assert r["AEC921A"][100][0] == "open"
+    # ...but every depth under it, not just the direct children.
+    assert r["AEC922A"][100] == ("labor", "AEC921A")
+    assert r["AEC924P"][100] == ("labor", "AEC921A")
+
+
+def test_a_cover_at_one_tier_leaves_the_others_open():
+    """`covers` is per tier because sourcing is: hand-built at @1, outsourced at @10k."""
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=10000, covers="labor"))
+    db.commit()
+    r = cover_reach(db)
+    assert r["AEC922A"][10000][0] == "labor"
+    assert r["AEC922A"][100][0] == "open"
+    assert r["AEC922A"][1][0] == "open"
+
+
+def test_one_uncovered_usage_is_enough_to_keep_it_open():
+    """The whole reason the rule is "every path": a sub-assembly lifted into a parent that does
+    not cover it needs its own numbers, so the queue must still ask for them."""
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor"))
+    db.commit()
+    # Reached only through the harness, so the harness's cover pays for it.
+    assert cover_reach(db)["AEC924P"][100][0] == "labor"
+    # Now BENCH uses the BRANCH directly, going around the harness entirely. That second usage
+    # is nobody's covered work, so the branch and the wire under it need their own numbers.
+    db.add(BomLink(parent_item_id="AEC930A", child_item_id="AEC922A", quantity=1))
+    db.commit()
+    r = cover_reach(db)
+    assert r["AEC922A"][100][0] == "open"
+    assert r["AEC924P"][100][0] == "open"
+
+
+def test_a_quoted_assembly_puts_its_whole_subtree_below_a_boundary():
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="all"))
+    db.commit()
+    r = cover_reach(db)
+    assert r["AEC923P"][100] == ("boundary", "AEC921A")
+    assert r["AEC924P"][100] == ("boundary", "AEC921A")
+
+
+def test_a_boundary_outranks_a_labor_cover_on_another_path():
+    """Weakest claim wins, and `labor` is weaker than `boundary` — a cost entered under a
+    labour cover is still ADDED by the rollup, so it is not the same as one that is discarded."""
+    from app.rollups import cover_reach
+
+    db = _cover_fixture()
+    db.add(BomLink(parent_item_id="AEC930A", child_item_id="AEC921A", quantity=1))
+    db.add(AssemblyLabor(item_id="AEC920A", volume_tier=100, covers="all"))
+    db.add(AssemblyLabor(item_id="AEC930A", volume_tier=100, covers="labor"))
+    db.commit()
+    assert cover_reach(db)["AEC921A"][100][0] == "labor"
+
+
+def test_pending_stops_asking_for_times_that_are_paid_for_above():
+    from app.routers.tree import pending
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor"))
+    db.commit()
+    rows = {r["item_id"]: r for r in pending(db=db, module=None)}
+    branch = rows["AEC922A"]
+    assert "asm_time@100" not in branch["missing"], branch["missing"]
+    # The other two tiers are untouched, and the row is still in the queue for them.
+    assert "asm_time@1" in branch["missing"] and "asm_time@10k" in branch["missing"]
+    # ...and it says which assembly is paying for @100, so the row can explain itself.
+    assert branch["covered"]["100"] == {"state": "labor", "by": "AEC921A"}
+
+
+def test_pending_stops_pricing_leaves_under_a_quoted_assembly():
+    from app.routers.tree import pending
+
+    db = _cover_fixture()
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="all"))
+    db.commit()
+    rows = {r["item_id"]: r for r in pending(db=db, module=None)}
+    wire = rows["AEC924P"]
+    assert "cost@100" not in wire["missing"], wire["missing"]
+    assert wire["covered"]["100"]["state"] == "boundary"
+    # Weight and material are physical facts and stay wanted whoever is paying.
+    assert "material" in wire["missing"]
+
+
+def test_pending_only_wants_a_cost_type_where_a_time_is_wanted():
+    """The cost type is the EUR/hour behind an assembly time. With every tier covered from
+    above there is no time to price, so asking for the rate is asking for nothing."""
+    from app.routers.tree import pending
+
+    db = _cover_fixture()
+    for tier in (1, 100, 10000):
+        db.add(AssemblyLabor(item_id="AEC921A", volume_tier=tier, covers="labor"))
+    db.commit()
+    rows = {r["item_id"]: r for r in pending(db=db, module=None)}
+    assert "cost_type" not in rows["AEC922A"]["missing"], rows["AEC922A"]["missing"]
+    # The covering harness itself is not covered by anything, so it still needs its rate.
+    assert "cost_type" in rows["AEC921A"]["missing"]
+
+
+# ── accepting a double count, and what un-accepts it ────────────────────────
+def _double_count_fixture():
+    """HARNESS covers the labour below it at @100, and BRANCH under it charges for its own
+    time anyway. The rollup adds both, on purpose — so the drawer asks rather than accuses."""
+    from app.models import ReferenceValue
+
+    db = _db()
+    db.add(ReferenceValue(id=1, category="assembly_cost_type", value="Bench", meta={"rate_eur_h": 60}))
+    db.add(Item(item_id="AEC920A", item_name="Boat", item_type="assembly", module_code="AEC",
+                is_top_level=True, cost_type_id=1))
+    db.add(Item(item_id="AEC921A", item_name="Harness", item_type="assembly", module_code="AEC", cost_type_id=1))
+    db.add(Item(item_id="AEC922A", item_name="Branch", item_type="assembly", module_code="AEC", cost_type_id=1))
+    db.add(Item(item_id="AEC924P", item_name="Wire", item_type="part", module_code="AEC", weight_grams=20))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC920A", child_item_id="AEC921A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC922A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC922A", child_item_id="AEC924P", quantity=3))
+    db.add(DecidedCost(item_id="AEC924P", volume_tier=100, unit_cost_eur=2))
+    db.add(AssemblyLabor(item_id="AEC921A", volume_tier=100, covers="labor", time_likely=30))
+    db.add(AssemblyLabor(item_id="AEC922A", volume_tier=100, covers="none", time_likely=10))
+    db.commit()
+    return db
+
+
+def test_the_rollup_still_counts_both_and_says_so():
+    """The arithmetic is deliberately unchanged: a covered descendant's own assembly cost is
+    added on top, and the contradiction is reported rather than silently resolved."""
+    from app.rollups import BomGraph
+
+    db = _double_count_fixture()
+    g = BomGraph(db, volume_tier=100)
+    r = g.rollup("AEC920A")
+    assert r.covered_conflict == ["AEC922A"], r.covered_conflict
+    # 3 x EUR 2 wire + 10 min branch + 30 min harness + 0 for the boat = 6 + 10 + 30
+    assert round(r.cost, 2) == 46.0, r.cost
+
+
+def test_accepting_a_double_count_persists_and_is_logged():
+    from app.routers.edit import set_assembly_labor
+    from app.schemas import AssemblyLaborIn
+
+    db = _double_count_fixture()
+    set_assembly_labor(
+        "AEC921A",
+        AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor", double_count_ack=["AEC922A"]),
+        db=db, user="leonard@theflipflopi.com",
+    )
+    row = db.execute(
+        select(AssemblyLabor).where(AssemblyLabor.item_id == "AEC921A", AssemblyLabor.volume_tier == 100)
+    ).scalar_one()
+    assert row.double_count_ack == ["AEC922A"]
+    from app.models import ChangeHistory
+
+    logged = [h for h in db.execute(select(ChangeHistory)).scalars()
+              if h.field_changed == "double_count_ack@100"]
+    assert len(logged) == 1 and logged[0].new_value == "AEC922A"
+    assert logged[0].changed_by == "leonard@theflipflopi.com"
+
+
+def test_editing_a_time_does_not_clear_an_acceptance():
+    """The same endpoint edits times. A time edit says nothing about the double count, so an
+    omitted field has to leave the stored answer alone rather than wiping it."""
+    from app.routers.edit import set_assembly_labor
+    from app.schemas import AssemblyLaborIn
+
+    db = _double_count_fixture()
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor",
+                                                  double_count_ack=["AEC922A"]), db=db, user="u")
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=45, covers="labor"),
+                       db=db, user="u")
+    row = db.execute(
+        select(AssemblyLabor).where(AssemblyLabor.item_id == "AEC921A", AssemblyLabor.volume_tier == 100)
+    ).scalar_one()
+    assert row.time_likely == 45
+    assert row.double_count_ack == ["AEC922A"], "a time edit must not un-accept anything"
+
+
+def test_a_new_descendant_below_the_cover_is_not_covered_by_an_old_acceptance():
+    """Why the accepted SET is stored and not a flag: a boolean would keep the note suppressed
+    over a double count nobody had ever looked at."""
+    from app.rollups import BomGraph
+    from app.routers.edit import set_assembly_labor
+    from app.schemas import AssemblyLaborIn
+
+    db = _double_count_fixture()
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor",
+                                                  double_count_ack=["AEC922A"]), db=db, user="u")
+    # A second assembly, added under the cover later, charging for its own time too. It needs
+    # a child of its own: an "assembly" with nothing in it is costed as a leaf, so it would
+    # never be an assembly-cost conflict in the first place.
+    db.add(Item(item_id="AEC925A", item_name="Splice", item_type="assembly", module_code="AEC", cost_type_id=1))
+    db.add(Item(item_id="AEC926P", item_name="Ferrule", item_type="part", module_code="AEC", weight_grams=1))
+    db.commit()
+    db.add(BomLink(parent_item_id="AEC921A", child_item_id="AEC925A", quantity=1))
+    db.add(BomLink(parent_item_id="AEC925A", child_item_id="AEC926P", quantity=2))
+    db.add(DecidedCost(item_id="AEC926P", volume_tier=100, unit_cost_eur=1))
+    db.add(AssemblyLabor(item_id="AEC925A", volume_tier=100, covers="none", time_likely=5))
+    db.commit()
+
+    conflicts = set(BomGraph(db, volume_tier=100).rollup("AEC920A").covered_conflict)
+    row = db.execute(
+        select(AssemblyLabor).where(AssemblyLabor.item_id == "AEC921A", AssemblyLabor.volume_tier == 100)
+    ).scalar_one()
+    unacked = conflicts - set(row.double_count_ack or [])
+    assert unacked == {"AEC925A"}, unacked
+
+
+def test_copying_an_item_does_not_copy_the_acceptance():
+    """A copy is a fresh subtree and a fresh decision; inheriting the answer would hide the
+    question on the new item for ever."""
+    from app.routers.edit import duplicate_item, set_assembly_labor
+    from app.schemas import AssemblyLaborIn, DuplicateItemIn
+
+    db = _double_count_fixture()
+    set_assembly_labor("AEC921A", AssemblyLaborIn(volume_tier=100, time_likely=30, covers="labor",
+                                                  double_count_ack=["AEC922A"]), db=db, user="u")
+    new_id = duplicate_item("AEC921A", DuplicateItemIn(item_name="Harness copy"), db=db, user="u")["item_id"]
+    rows = list(db.execute(select(AssemblyLabor).where(AssemblyLabor.item_id == new_id)).scalars())
+    assert rows, "the copy should still carry the labour rows"
+    assert all(r.double_count_ack is None for r in rows)
+    assert all(r.covers == "labor" for r in rows), "the cover itself is part of how it is costed"
+
+
+# ── a file named after the item becomes its picture ─────────────────────────
+def _thumb_db():
+    db = _db()
+    db.add(Item(item_id="AEC001A", item_name="Cell", item_type="assembly", module_code="AEC"))
+    db.commit()
+    return db
+
+
+def _files(*names):
+    return [{"id": f"drive-{i}", "name": n, "has_thumbnail": True} for i, n in enumerate(names)]
+
+
+def test_a_file_named_after_the_item_is_pinned():
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("quote.pdf", "AEC001A.png")) == "drive-1"
+    assert it.thumbnail_file_id == "drive-1"
+
+
+def test_the_match_is_case_insensitive():
+    """A photo off a phone or from a colleague arrives however it arrives."""
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("aec001a.JPG")) == "drive-0"
+
+
+def test_a_pdf_named_after_the_item_is_not_a_picture():
+    """Drive renders a thumbnail for a PDF, so `has_thumbnail` cannot be the test — AEC001A.pdf
+    is a drawing or a datasheet, and pinning it would put a page of A4 in the Key figures card."""
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("AEC001A.pdf", "AEC001A.dxf")) is None
+    assert it.thumbnail_file_id is None
+
+
+def test_only_an_exact_stem_counts():
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    assert _auto_pin_thumbnail(db, it, _files("AEC001A_front.png", "AEC001A rev B.png")) is None
+
+
+def test_auto_pin_never_replaces_a_picture_somebody_chose():
+    """The whole convention is "pinned, never newest" — this must not become a back door to
+    swapping a picture that was chosen by hand."""
+    from app.routers.attachments import _auto_pin_thumbnail
+
+    db = _thumb_db()
+    it = db.get(Item, "AEC001A")
+    it.thumbnail_file_id = "chosen-by-hand"
+    db.commit()
+    assert _auto_pin_thumbnail(db, it, _files("AEC001A.png")) is None
+    assert it.thumbnail_file_id == "chosen-by-hand"
+
+
+def test_an_automatic_pin_says_so_in_the_history():
+    """The history log is read by people. An automatic decision must not carry somebody's name."""
+    from app.models import ChangeHistory
+    from app.routers.attachments import AUTO_PIN_BY, _auto_pin_thumbnail
+
+    db = _thumb_db()
+    _auto_pin_thumbnail(db, db.get(Item, "AEC001A"), _files("AEC001A.png"))
+    row = next(h for h in db.execute(select(ChangeHistory)).scalars()
+               if h.field_changed == "thumbnail_file_id")
+    assert row.changed_by == AUTO_PIN_BY
+    assert "AEC001A.png" in (row.change_reason or "")
+
+
+# ── the three write paths that used to change data with no trace ────────────
+def test_setting_a_reference_value_is_logged_with_its_rate():
+    """For category 'assembly_cost_type' this row carries the EUR/hour behind every assembly
+    cost in the system, and nothing recorded who set it."""
+    from app.models import ChangeHistory, ReferenceValue
+    from app.routers.admin import add_reference
+    from app.schemas import ReferenceIn
+
+    db = _db()
+    add_reference(ReferenceIn(category="assembly_cost_type", value="Bench", label=None,
+                              meta={"rate_eur_h": 60}), db=db, user="leonard@theflipflopi.com")
+    row = next(h for h in db.execute(select(ChangeHistory)).scalars()
+               if h.entity_type == "reference_value")
+    assert row.change_type == "create"
+    assert row.field_changed == "assembly_cost_type:Bench"
+    assert "60" in (row.new_value or ""), row.new_value
+    assert row.changed_by == "leonard@theflipflopi.com"
+    ref = db.execute(select(ReferenceValue)).scalar_one()
+    assert ref.meta == {"rate_eur_h": 60}
+
+
+def test_archiving_a_reference_value_is_logged():
+    from app.models import ChangeHistory, ReferenceValue
+    from app.routers.admin import archive_reference
+
+    db = _db()
+    db.add(ReferenceValue(id=7, category="supplier", value="Schultz"))
+    db.commit()
+    archive_reference(7, db=db, admin="admin@x")
+    row = next(h for h in db.execute(select(ChangeHistory)).scalars()
+               if h.entity_type == "reference_value")
+    assert (row.change_type, row.new_value, row.changed_by) == ("remove", "archived", "admin@x")
+
+
+def test_the_row_recording_a_wipe_survives_the_wipe():
+    """ChangeHistory is one of the tables a catalog import deletes, so the row has to be
+    written AFTER the wipe. Written first, it would be destroyed by the event it records."""
+    from app.models import ChangeHistory
+
+    db = _db()
+    db.add(Item(item_id="AEC001A", item_name="Old", item_type="part", module_code="AEC"))
+    db.commit()
+    # What the endpoint does, in order: count, wipe (history included), insert, then log.
+    before = db.execute(select(func.count()).select_from(Item)).scalar()
+    db.execute(delete(ChangeHistory))
+    db.execute(delete(Item))
+    db.flush()
+    db.add(Item(item_id="AEC002A", item_name="New", item_type="part", module_code="AEC"))
+    record_change(db, entity_type="database", entity_id="catalog-import", change_type="remove",
+                  field_changed="wiped_and_reimported", old_value=f"{before} items",
+                  new_value="1 items from inventory.xlsx", changed_by="admin@x",
+                  change_reason="pre-wipe backup: zef-bom-backup-prewipe.xlsx")
+    db.commit()
+    rows = list(db.execute(select(ChangeHistory)).scalars())
+    assert len(rows) == 1, "the wipe's own record must be the one thing that survives it"
+    assert rows[0].old_value == "1 items"
+    assert "prewipe" in rows[0].change_reason
+
+
+# ── undo: a new forward change, never a rewrite of the log ──────────────────
+def _undo_db():
+    db = _db()
+    db.add(Item(item_id="AEC001A", item_name="Cell", item_type="assembly", module_code="AEC",
+                weight_grams=120))
+    db.add(Item(item_id="AEC002P", item_name="Plate", item_type="part", module_code="AEC"))
+    db.commit()
+    return db
+
+
+def test_undo_restores_the_value_and_appends_rather_than_deletes():
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=999), db=db, user="someone")
+    h = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    before = db.execute(select(func.count()).select_from(ChangeHistory)).scalar()
+
+    undo_history_entry(h.id, db=db, user="leonard@theflipflopi.com")
+
+    assert db.get(Item, "AEC001A").weight_grams == 120.0
+    after = db.execute(select(func.count()).select_from(ChangeHistory)).scalar()
+    assert after == before + 1, "an undo appends; the log is append-only"
+    assert db.get(ChangeHistory, h.id) is not None, "the original row must still be there"
+    undo_row = db.execute(select(ChangeHistory).order_by(ChangeHistory.id.desc()).limit(1)).scalar_one()
+    assert undo_row.change_reason == f"undo of change #{h.id}"
+    assert undo_row.changed_by == "leonard@theflipflopi.com"
+
+
+def test_an_undo_can_itself_be_undone():
+    """Falls out of the append-only rule for free, and is the proof that it holds."""
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=999), db=db, user="s")
+    first = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    undo_history_entry(first.id, db=db, user="u")
+    assert db.get(Item, "AEC001A").weight_grams == 120.0
+
+    latest = db.execute(select(ChangeHistory).order_by(ChangeHistory.id.desc()).limit(1)).scalar_one()
+    undo_history_entry(latest.id, db=db, user="u")
+    assert db.get(Item, "AEC001A").weight_grams == 999.0
+
+
+def test_a_superseded_change_is_refused_rather_than_silently_discarding_the_later_one():
+    from fastapi import HTTPException
+
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=200), db=db, user="a")
+    old = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    patch_item("AEC001A", ItemPatch(weight_grams=300), db=db, user="b")
+
+    try:
+        undo_history_entry(old.id, db=db, user="c")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "superseded" in exc.detail
+    else:
+        raise AssertionError("undoing a superseded change must be refused")
+    assert db.get(Item, "AEC001A").weight_grams == 300.0, "b's edit must survive"
+
+
+def test_the_latest_change_to_a_DIFFERENT_field_does_not_supersede_this_one():
+    """Supersession is per field. Editing the name must not lock the weight."""
+    from app.models import ChangeHistory
+    from app.routers.edit import patch_item, undo_history_entry
+    from app.schemas import ItemPatch
+
+    db = _undo_db()
+    patch_item("AEC001A", ItemPatch(weight_grams=200), db=db, user="a")
+    w = db.execute(select(ChangeHistory).where(ChangeHistory.field_changed == "weight_grams")).scalar_one()
+    patch_item("AEC001A", ItemPatch(item_name="Cell mk2"), db=db, user="b")
+
+    undo_history_entry(w.id, db=db, user="c")
+    assert db.get(Item, "AEC001A").weight_grams == 120.0
+    assert db.get(Item, "AEC001A").item_name == "Cell mk2"
+
+
+def test_undoing_an_added_component_removes_the_link_again():
+    from app.models import ChangeHistory
+    from app.rollups import BomGraph
+    from app.routers.edit import add_child, undo_history_entry
+    from app.schemas import AddChildIn
+
+    db = _undo_db()
+    add_child("AEC001A", AddChildIn(child_id="AEC002P", quantity=4), db=db, user="a")
+    g = BomGraph(db)
+    assert g.children.get("AEC001A")
+
+    h = db.execute(select(ChangeHistory).where(ChangeHistory.entity_type == "bom_link")).scalar_one()
+    undo_history_entry(h.id, db=db, user="b")
+    # Archived rather than deleted, so the link's own history still points at a row.
+    link = db.execute(select(BomLink)).scalar_one()
+    assert link.archived is True
+    assert not BomGraph(db).children.get("AEC001A")
+
+
+def test_cost_evidence_is_not_offered_because_the_log_cannot_say_which_row():
+    from app.models import ChangeHistory
+    from app.undo import undoable
+
+    db = _undo_db()
+    record_change(db, entity_type="cost_evidence", entity_id="AEC001A", change_type="create",
+                  field_changed="unit_cost", new_value="12", changed_by="a")
+    db.commit()
+    h = db.execute(select(ChangeHistory)).scalar_one()
+    ok, why = undoable(db, h)
+    assert not ok
+    assert "which evidence row" in why
+
+
+def test_undo_is_refused_when_the_item_is_gone():
+    from app.models import ChangeHistory
+    from app.undo import undoable
+
+    db = _undo_db()
+    record_change(db, entity_type="item", entity_id="AEC999A", change_type="update",
+                  field_changed="item_name", old_value="Old", new_value="New", changed_by="a")
+    db.commit()
+    h = db.execute(select(ChangeHistory)).scalar_one()
+    ok, why = undoable(db, h)
+    assert not ok and "no longer exists" in why

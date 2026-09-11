@@ -59,8 +59,24 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
 - `POST /uploads/{id}/reject`
 
 ## M6 — history / attachments / auth
-- `GET /history?entity=&since=&as_of=` — change feed + "BOM as of date X"
-- `GET /pending` — items missing required fields
+- `GET /history?entity=&since=&as_of=` — change feed + "BOM as of date X". `entity` takes a
+  comma-separated list. Beyond the per-item kinds, `reference_value` covers the admin lists
+  (including the EUR/hour on an assembly cost type) and `database` covers whole-database
+  events — a catalog wipe or a restore — one row each, naming the safety backup that holds
+  the previous state. Those rows are written AFTER the event, because `change_history` is
+  itself one of the tables a wipe or a restore replaces.
+- `GET /pending` — items missing required fields. `missing[]` holds the gaps; `covered{tier:
+  {state, by}}` holds the tiers where there is nothing to fill because the work is paid for
+  above — `labor` (an ancestor's cover, whose cost the rollup still adds on top) or `boundary`
+  (a quoted assembly, whose one price replaced the subtree). A row can carry only `covered`,
+  which means it is in the list to explain itself, not to be worked through.
+- `POST /history/{id}/undo` — put one change back. Rows from `/history` carry `undoable`,
+  `undo_blocked` (why not, in words) and `undo_summary` (what would change). An undo is a
+  **new forward change**, never a deletion: the log stays append-only, the original row
+  stays, and an undo can itself be undone. Only the LATEST change to a field is offered —
+  undoing an older one would silently discard everything since, so it is refused with 409.
+  `cost_evidence` is never offered: its `entity_id` is the item and nothing records which
+  evidence row changed. See `app/undo.py`.
 - `POST /items/{id}/attachments` — create/locate Drive folder, return URL
 - `PUT /items/{id}/thumbnail` — `{file_id}`; pin a Drive file as the item's picture
   (`null` clears it)

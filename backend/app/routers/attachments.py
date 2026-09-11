@@ -25,6 +25,47 @@ def _require_drive() -> None:
         )
 
 
+# A file named after the item IS the item's picture — somebody saying so as plainly as a
+# filename can. `AEC001A.png` in AEC001A's folder gets pinned without anybody opening the
+# drawer to do it by hand.
+#
+# This does not break the rule the convention doc states — "pinned rather than 'newest image in
+# the folder', so a new upload never silently swaps the picture". An exact `<item_id>` filename
+# is an explicit naming decision, not the newest-file guess that rule exists to prevent. Two
+# guards keep it honest: it only ever fires when NOTHING is pinned, and only on an exact
+# stem match.
+#
+# An extension allowlist rather than Drive's own `has_thumbnail`: Drive will happily render a
+# thumbnail for `AEC001A.pdf`, which is a drawing or a datasheet, not a photograph of the part.
+_THUMB_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+# Not a real user. The history log is read by people, so an automatic pin says so rather than
+# putting somebody's name against a decision they did not make.
+AUTO_PIN_BY = "auto (filename)"
+
+
+def _auto_pin_thumbnail(db: Session, item: Item, files: list[dict]) -> str | None:
+    """Pin `<item_id>.<img>` from this item's folder if nothing is pinned yet. Returns the id
+    pinned, or None. Commits only when it changed something."""
+    if item.thumbnail_file_id:
+        return None
+    want = item.item_id.lower()
+    for f in files:
+        name = (f.get("name") or "").lower()
+        stem, _, ext = name.rpartition(".")
+        # Case-insensitive: a file may well arrive as `aec001a.png` from a phone or a colleague.
+        if stem == want and f".{ext}" in _THUMB_EXTS:
+            item.thumbnail_file_id = f["id"]
+            record_change(
+                db, entity_type="item", entity_id=item.item_id, change_type="update",
+                field_changed="thumbnail_file_id", old_value=None, new_value=f["id"],
+                changed_by=AUTO_PIN_BY,
+                change_reason=f"named after the item ({f.get('name')})",
+            )
+            db.commit()
+            return f["id"]
+    return None
+
+
 def _get_item(db: Session, item_id: str) -> Item:
     item = db.get(Item, item_id)
     if item is None:
@@ -39,7 +80,12 @@ def list_attachments(item_id: str, db: Session = Depends(get_db)) -> dict:
         return {"configured": False, "folder_url": None, "files": []}
     # Locate by the stored folder (stable id) so a re-coded item still finds its attachments.
     data = drive.list_files(item_id, item.drive_folder_url)
-    return {"configured": True, **data}
+    # A GET that can write, deliberately. The convention doc says the team drops files straight
+    # into Drive through the Drive UI, which never touches the upload endpoint below — so
+    # listing is the only moment the backend ever learns those files exist. Guarded by "nothing
+    # pinned yet", it fires at most once per item, ever.
+    pinned = _auto_pin_thumbnail(db, item, data.get("files") or [])
+    return {"configured": True, **data, "auto_pinned": pinned}
 
 
 @router.post("/items/{item_id}/attachments/folder")
@@ -85,7 +131,11 @@ async def upload_attachment(
                   field_changed="attachment", new_value=result["name"], changed_by=user,
                   change_reason="uploaded to Drive")
     db.commit()
-    return {"configured": True, **result}
+    # The live path: upload AEC001A.png and it is the picture by the time the drawer reloads.
+    # Only the file just uploaded is considered, so an upload cannot pin something else that
+    # happened to be sitting in the folder.
+    pinned = _auto_pin_thumbnail(db, item, [result])
+    return {"configured": True, **result, "auto_pinned": pinned}
 
 
 # ── thumbnail (one pinned image per item) ────────────────────────────────────

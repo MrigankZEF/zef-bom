@@ -16,6 +16,7 @@ from ..operations import allowed_modules, set_module
 from ..auth import current_user
 from ..db import get_db
 from ..history import record_change
+from ..undo import apply_undo, describe, undoable
 from ..models import (
     AssemblyLabor, BomLink, ChangeHistory, CostEvidence, DecidedCost, FieldDefinition, FieldValue, Item,
     ItemLink,
@@ -318,6 +319,10 @@ def duplicate_item(
             item_id=new_id, volume_tier=al.volume_tier, time_min=al.time_min,
             time_likely=al.time_likely, time_max=al.time_max,
             covers=al.covers, updated_by=user,
+            # `double_count_ack` is deliberately NOT copied. It records that somebody looked at
+            # a specific set of descendants and decided the double count was intended; a copy
+            # is a fresh decision about a fresh subtree, and inheriting the answer would hide
+            # the question on the new item for ever.
         ))
     for fv in db.execute(select(FieldValue).where(FieldValue.item_id == item_id)).scalars():
         db.add(FieldValue(item_id=new_id, field_key=fv.field_key, value=fv.value))
@@ -825,6 +830,20 @@ def set_assembly_labor(
     existing.time_min = body.time_min
     existing.time_max = body.time_max
     existing.covers = body.covers
+    # Only when the caller actually says something about it. A time edit arriving with the
+    # field omitted must not silently clear an acceptance somebody made deliberately.
+    if body.double_count_ack is not None:
+        old_ack = list(existing.double_count_ack or [])
+        new_ack = sorted(set(body.double_count_ack))
+        existing.double_count_ack = new_ack or None
+        if new_ack != sorted(old_ack):
+            record_change(
+                db, entity_type="assembly_labor", entity_id=item_id, change_type="update",
+                field_changed=f"double_count_ack@{body.volume_tier}",
+                old_value=",".join(sorted(old_ack)) or None, new_value=",".join(new_ack) or None,
+                changed_by=user,
+                change_reason="accepted that the assembly costs below this cover are also counted",
+            )
     existing.updated_by = user
     record_change(
         db, entity_type="assembly_labor", entity_id=item_id,
@@ -874,7 +893,7 @@ def set_field_value(
 @router.get("/items/{item_id}/history", response_model=list[ChangeHistoryOut])
 def item_history(item_id: str, db: Session = Depends(get_db), limit: int = 50):
     _get_item(db, item_id)
-    return list(
+    rows = list(
         db.execute(
             select(ChangeHistory)
             .where(ChangeHistory.entity_id == item_id)
@@ -882,9 +901,31 @@ def item_history(item_id: str, db: Session = Depends(get_db), limit: int = 50):
             .limit(limit)
         ).scalars()
     )
+    return [_with_undo(db, h) for h in rows]
 
 
 # ── global change feed (History tab) ─────────────────────────────────────────
+@router.post("/history/{entry_id}/undo")
+def undo_history_entry(
+    entry_id: int, db: Session = Depends(get_db), user: str = Depends(current_user)
+) -> dict:
+    """Put one change back, by making a new one. See `app/undo.py` for what is offered and why.
+
+    Re-checks `undoable` here rather than trusting the flag the list handed the client: the
+    row may have been superseded in the seconds since that list was fetched, and undoing an
+    older change silently discards everything since.
+    """
+    h = db.get(ChangeHistory, entry_id)
+    if h is None:
+        raise HTTPException(404, "No such change")
+    ok, why = undoable(db, h)
+    if not ok:
+        raise HTTPException(409, f"That change cannot be undone: {why}.")
+    result = apply_undo(db, h, user)
+    db.commit()
+    return result
+
+
 @router.get("/history", response_model=list[ChangeHistoryOut])
 def global_history(
     db: Session = Depends(get_db),
@@ -901,4 +942,18 @@ def global_history(
         # — would quietly break the `limit`, returning a short page of mostly-hidden rows.
         wanted = [x.strip() for x in entity_type.split(",") if x.strip()]
         stmt = stmt.where(ChangeHistory.entity_type.in_(wanted))
-    return list(db.execute(stmt).scalars())
+    rows = list(db.execute(stmt).scalars())
+    # Annotated here rather than worked out in the client: whether a row is the latest change
+    # to its field is a question about the table, and the client only ever has a page of it.
+    return [_with_undo(db, h) for h in rows]
+
+
+def _with_undo(db: Session, h: ChangeHistory) -> dict:
+    ok, why = undoable(db, h)
+    return {
+        "id": h.id, "changed_at": h.changed_at, "changed_by": h.changed_by,
+        "entity_type": h.entity_type, "entity_id": h.entity_id,
+        "field_changed": h.field_changed, "old_value": h.old_value, "new_value": h.new_value,
+        "change_type": h.change_type, "change_reason": h.change_reason,
+        "undoable": ok, "undo_blocked": why or None, "undo_summary": describe(h) if ok else None,
+    }

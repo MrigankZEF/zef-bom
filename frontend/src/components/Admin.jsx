@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { Icon, ModulePill, NumInput, toNum } from "./ui";
+// Uploads lived on the top bar as its own tab. It is an occasional bulk operation in the
+// same family as the catalog import and the restore — something you do a few times a
+// month, not while working through a BOM — so it belongs here rather than taking one of
+// eight places in the main navigation.
+import Uploads from "./Uploads.jsx";
 
 const CATEGORIES = [
   { key: "supplier", label: "Suppliers" },
@@ -20,7 +25,7 @@ export default function Admin({ onOpenPart, onChanged }) {
         <div>
           <div className="page-eyebrow">Admin</div>
           <h1 className="page-title">Admin</h1>
-          <p className="page-sub">Manage the dropdown lists used across the tool, and restore archived items.</p>
+          <p className="page-sub">Manage the dropdown lists used across the tool, restore archived items, and run the bulk operations — OPML uploads, catalog import, backup and restore.</p>
         </div>
         <div className="page-actions">
           <div className="segmented-mini">
@@ -28,6 +33,7 @@ export default function Admin({ onOpenPart, onChanged }) {
             <button className={sub === "reference" ? "on" : ""} onClick={() => setSub("reference")}>Reference data</button>
             <button className={sub === "archive" ? "on" : ""} onClick={() => setSub("archive")}>Archive</button>
             <button className={sub === "backup" ? "on" : ""} onClick={() => setSub("backup")}>Backup</button>
+            <button className={sub === "uploads" ? "on" : ""} onClick={() => setSub("uploads")}>OPML uploads</button>
             <button className={sub === "import" ? "on" : ""} onClick={() => setSub("import")}>Catalog import</button>
           </div>
         </div>
@@ -36,6 +42,7 @@ export default function Admin({ onOpenPart, onChanged }) {
       {sub === "reference" && <Reference />}
       {sub === "archive" && <Archive onOpenPart={onOpenPart} onChanged={onChanged} />}
       {sub === "backup" && <><Backup /><Restore onChanged={onChanged} /></>}
+      {sub === "uploads" && <Uploads onApplied={onChanged} />}
       {sub === "import" && <CatalogImport onChanged={onChanged} />}
     </div>
   );

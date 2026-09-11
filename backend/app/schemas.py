@@ -115,6 +115,9 @@ class AssemblyLaborIn(BaseModel):
     time_max: float | None = None
     # How far this row's cost reaches down — see AssemblyLabor.covers.
     covers: COVERS = "none"
+    # Omitted leaves the stored acceptance alone: this endpoint is also how a TIME is edited,
+    # and editing a time is not a statement about the double count either way.
+    double_count_ack: list[str] | None = None
 
 
 class AssemblyLaborOut(BaseModel):
@@ -126,6 +129,7 @@ class AssemblyLaborOut(BaseModel):
     time_likely: float | None = None
     time_max: float | None = None
     covers: COVERS = "none"
+    double_count_ack: list[str] | None = None
 
 
 class AddChildIn(BaseModel):
@@ -204,6 +208,12 @@ class ChangeHistoryOut(BaseModel):
     new_value: str | None = None
     change_type: str
     change_reason: str | None = None
+    # Whether this row is the latest change to its field, and undoable at all — worked out
+    # server-side because it is a question about the whole table, not about the page the
+    # client happens to be holding.
+    undoable: bool = False
+    undo_blocked: str | None = None
+    undo_summary: str | None = None
 
 
 class CostEvidenceOut(BaseModel):

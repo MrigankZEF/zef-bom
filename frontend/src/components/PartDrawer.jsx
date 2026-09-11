@@ -3,11 +3,8 @@ import { api } from "../api";
 import { Icon, ModulePill, NumInput, Pill, fmtEURcompact, fmtPct, fmtWeight, toNum } from "./ui";
 import { RefSelect, MultiRef } from "./RefInputs.jsx";
 
-const COST_TIERS = [1, 100, 10000];
-// The tier the drawer opens on — see DEFAULT_TIER in Tree.jsx. The API default stays 100.
-const DEFAULT_TIER = 10000;
+import { TIERS as COST_TIERS, DEFAULT_TIER, tierLabel } from "../tiers";
 const SOURCES = ["quote", "invoice", "estimate_math", "estimate_web", "estimate_ai", "other"];
-const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
 function Accordion({ title, meta, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -65,9 +62,10 @@ const SOURCING_OPTS = [
   { value: "make", label: "Make", title: "Built in house." },
 ];
 
-export default function PartDrawer({ itemId, onClose, onOpenPart, onChanged }) {
+// `tier` comes from App. The drawer used to own its own copy, so a tree read at @10k could
+// sit next to a drawer reading @100 with nothing saying why. The tier is set in Browse.
+export default function PartDrawer({ itemId, tier, onClose, onOpenPart, onChanged }) {
   const [tab, setTab] = useState("overview");
-  const [tier, setTier] = useState(DEFAULT_TIER);
   const [addingChild, setAddingChild] = useState(false);
   // Quantities are read-only until you explicitly enter edit mode, matching the
   // "Add / edit" + "Save changes" pattern the details section already uses. Nothing is
@@ -402,7 +400,7 @@ Create this copy anyway? It gets its own new code.`)) {
 
         {tab === "overview" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} setTier={setTier} item={item} parents={parents} links={links} />
+            <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} item={item} parents={parents} links={links} />
             <WhereUsed itemId={itemId} parents={parents} onOpenPart={onOpenPart}
               onMoved={(r) => { onChanged?.(); onOpenPart(r.child_id); }} setError={setError} />
             {node.children.length > 0 && (
@@ -434,7 +432,8 @@ Create this copy anyway? It gets its own new code.`)) {
             <CostOverviewCard isLeaf={isLeaf} rollups={rollups} decided={decided} labor={labor} usage={usage} />
 
             {!isLeaf && <AssemblyCostWarnings itemId={itemId} rollups={rollups} decided={decided}
-              labor={labor} reload={() => { load(); onChanged?.(); }} setError={setError} />}
+              labor={labor} onOpenPart={onOpenPart}
+              reload={() => { load(); onChanged?.(); }} setError={setError} />}
 
             {!isLeaf && (
               <AssemblyCostCard itemId={itemId} item={item} labor={labor} decided={decided}
@@ -606,22 +605,6 @@ function Shell({ children }) {
   return <aside className="drawer">{children}</aside>;
 }
 
-function TierToggle({ tier, setTier }) {
-  return (
-    <span style={{ display: "inline-flex", border: "1px solid var(--hair)", borderRadius: 7, overflow: "hidden" }}>
-      {COST_TIERS.map((t) => (
-        <button key={t} onClick={() => setTier(t)} title={`${t.toLocaleString()} pieces`}
-          style={{
-            border: 0, cursor: "pointer", padding: "3px 10px", fontFamily: "var(--font-mono)", fontSize: 11,
-            background: tier === t ? "var(--accent)" : "transparent",
-            color: tier === t ? "#fff" : "var(--ink-3)",
-          }}>
-          {tierLabel(t)}
-        </button>
-      ))}
-    </span>
-  );
-}
 
 // Make a user-entered URL absolute, so a value like "drive.google.com/x" or "www.foo.com"
 // opens externally instead of being treated as a localhost-relative path.
@@ -720,7 +703,7 @@ function LinksEditor({ itemId, links, reload, setError }) {
   );
 }
 
-function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) {
+function Readouts({ isAssembly, rollups, tier, item, parents, links }) {
   const rollup = rollups[tier] || {};
   const hasRange = rollup.cost_min != null && (rollup.cost_min < rollup.cost || rollup.cost_max > rollup.cost);
   const rng = hasRange ? `${fmtEURcompact(rollup.cost_min)}–${fmtEURcompact(rollup.cost_max)}` : null;
@@ -729,11 +712,9 @@ function Readouts({ isAssembly, rollups, tier, setTier, item, parents, links }) 
     <div className="card">
       <div className="card-head">
         <span className="card-title">Key figures</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-          <span className="card-meta">cost @</span>
-          <TierToggle tier={tier} setTier={setTier} />
-          <span className="card-meta">pcs</span>
-        </span>
+        {/* No tier switch here any more — the second one on screen. It reads the app tier,
+            which Browse sets. */}
+        <span className="card-meta">cost @ {tierLabel(tier)} pcs</span>
       </div>
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
         <Thumbnail itemId={item.item_id} fileId={item.thumbnail_file_id} />
@@ -1135,7 +1116,7 @@ function CostOverviewCard({ isLeaf, rollups, decided, labor, usage }) {
 // Everything that prices an assembly: the warnings, the cost type and the time per tier.
 // Two contradictions worth interrupting for. Deliberately NOT collapsible: a warning nobody
 // can see is not a warning.
-function AssemblyCostWarnings({ itemId, rollups, decided, labor, reload, setError }) {
+function AssemblyCostWarnings({ itemId, rollups, decided, labor, onOpenPart, reload, setError }) {
   const [busy, setBusy] = useState(false);
   const dropDecided = async (vt) => {
     if (!window.confirm(`Remove the decided cost at @${tierLabel(vt)} from ${itemId}? The rollup already ignores it.`)) return;
@@ -1143,24 +1124,68 @@ function AssemblyCostWarnings({ itemId, rollups, decided, labor, reload, setErro
     try { await api.deleteDecidedCost(itemId, vt); reload(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
-  // A descendant carrying its own assembly cost under an ancestor marked as covering it.
+  // Descendants carrying their own assembly cost under an ancestor marked as covering the work.
+  // Both are counted, on purpose — see AssemblyLabor.double_count_ack — so this is a question
+  // about double counting, not a contradiction to resolve.
   const conflicts = [...new Set(COST_TIERS.flatMap((t) => rollups[t]?.covered_conflict || []))];
+  // Accepted once, stays accepted — until the set of items below the cover CHANGES, which is
+  // the case worth surfacing again. Stored per tier because `covers` is per tier; a cover
+  // ticked at @10k must not quietly accept @1 as well.
+  const ackByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l.double_count_ack || []]));
+  const coveringTiers = COST_TIERS.filter((tv) => (rollups[tv]?.covered_conflict || []).length > 0);
+  const unacked = [...new Set(coveringTiers.flatMap((tv) =>
+    (rollups[tv]?.covered_conflict || []).filter((id) => !(ackByTier[tv] || []).includes(id))))];
+  const anyAck = coveringTiers.some((tv) => (ackByTier[tv] || []).length > 0);
+  const accept = async () => {
+    setBusy(true);
+    try {
+      for (const tv of coveringTiers) {
+        const l = (labor || []).find((x) => x.volume_tier === tv) || {};
+        await api.setAssemblyLabor(itemId, {
+          volume_tier: tv,
+          time_likely: l.time_likely ?? null, time_min: l.time_min ?? null, time_max: l.time_max ?? null,
+          covers: l.covers || "none",
+          double_count_ack: rollups[tv]?.covered_conflict || [],
+        });
+      }
+      reload();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
   // On a quoted tier the decided cost IS the cost, so it is the opposite of unused. Without
   // this filter the card would flag the quote the user had just entered and offer to delete it.
   const coversByTier = Object.fromEntries((labor || []).map((l) => [l.volume_tier, l.covers]));
   const stray = decided.filter((dc) => coversByTier[dc.volume_tier] !== "all");
-  if (!conflicts.length && !stray.length) return null;
+  // Nothing to say once every item below the cover has been looked at.
+  if (!unacked.length && !stray.length) return null;
   return (
     <>
-      {conflicts.length > 0 && (
-        <div className="card" style={{ borderColor: "var(--accent)" }}>
-          <div className="card-head"><span className="card-title">Conflicting assembly costs</span></div>
-          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: 0 }}>
-            {conflicts.join(", ")} {conflicts.length === 1 ? "carries" : "carry"} an assembly
-            cost, but an assembly above {conflicts.length === 1 ? "it is" : "them are"} marked
-            as already covering the work below. One of the two is wrong — either untick the
-            cover, or clear the assembly cost below it.
+      {/* A note, not an error — no accent border. Neither entry is wrong: the rollup adds both
+          on purpose, so that a sub-assembly keeps a labour figure that works the day it is
+          built under a parent that does not cover it. What is worth checking is whether the
+          reader meant to pay for the work twice. */}
+      {unacked.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <span className="card-title">Assembly costs below this cover</span>
+            {anyAck && <span className="card-meta">{unacked.length} new since this was accepted</span>}
+          </div>
+          <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "0 0 10px" }}>
+            {unacked.length === 1 ? "This item" : "These items"} below this assembly
+            {unacked.length === 1 ? " carries" : " carry"} an assembly cost of
+            {unacked.length === 1 ? " its" : " their"} own, and this assembly is marked as
+            covering the work beneath it. <strong>Both are being counted.</strong> That is
+            deliberate — it keeps those sub-assemblies usable somewhere the work is
+            <em> not</em> covered — but check it is what you meant here.
           </p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {unacked.map((id) => (
+              <button key={id} className="btn ghost sm" onClick={() => onOpenPart(id)}
+                      style={{ fontFamily: "var(--font-mono)", fontSize: 11.5 }}>{id}</button>
+            ))}
+          </div>
+          <button className="btn ghost sm" disabled={busy} onClick={accept}>
+            {anyAck ? "accept these too" : "yes, that is intended"}
+          </button>
         </div>
       )}
       {stray.length > 0 && (
@@ -1406,7 +1431,9 @@ function EvidenceBlock({ itemId, evidence, tier = null, reload, setError }) {
             </span>
             <button className="btn ghost sm danger" onClick={async () => { try { await api.deleteCostEvidence(itemId, q.id); reload(); } catch (e) { setError(e.message); } }}><Icon name="close" size={11} /></button>
           </div>
-          {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere" }}>{q.note}</div>}
+          {/* pre-wrap, or a note typed over three lines reads back as one run and the textarea
+              above is decoration. Still wraps on long URLs. */}
+          {q.note && <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 3, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{q.note}</div>}
           {q.attachment_url && (
             <a href={extUrl(q.attachment_url)} target="_blank" rel="noreferrer" className="mono" title={q.attachment_url}
               style={{ display: "block", marginTop: 3, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--accent)", fontSize: 11.5 }}>
@@ -1421,7 +1448,11 @@ function EvidenceBlock({ itemId, evidence, tier = null, reload, setError }) {
         <Field label="€/unit"><NumInput value={ev.unit_cost} onChange={(v) => setEv({ ...ev, unit_cost: v })} /></Field>
         {tier == null && <Field label="Volume"><NumInput value={ev.volume_tier} onChange={(v) => setEv({ ...ev, volume_tier: v })} /></Field>}
       </div>
-      <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><input className="input" value={ev.note} placeholder="e.g. derived from 1.2 kg × €4.5/kg + machining" onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
+      {/* A textarea, like the item's own Notes field. This is where the working behind a price
+          goes — a couple of lines of arithmetic, a link, why the last quote was rejected — and
+          a single-line input made all of that look like it did not belong. The column is Text;
+          only the box was small. */}
+      <div style={{ marginTop: 8 }}><Field label="Note (reasoning / math)"><textarea className="input" style={{ height: 64, padding: 8 }} value={ev.note} placeholder={"e.g. derived from 1.2 kg × €4.5/kg + machining\nsupplier quote 2026-04-12 was €6.10, rejected on lead time"} onChange={(e) => setEv({ ...ev, note: e.target.value })} /></Field></div>
       <div style={{ marginTop: 8 }}><Field label="Link (quote, product page…)"><input className="input mono" value={ev.attachment_url} placeholder="https://…" onChange={(e) => setEv({ ...ev, attachment_url: e.target.value })} /></Field></div>
       <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 10 }}>
         <span style={{ fontSize: 11, color: "var(--ink-3)" }}>a price, a note or a link — any one is enough</span>

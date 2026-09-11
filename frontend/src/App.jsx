@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { api, session } from "./api";
 import Tree from "./components/Tree.jsx";
 import PartDrawer from "./components/PartDrawer.jsx";
-import Uploads from "./components/Uploads.jsx";
 import Costing from "./components/Costing.jsx";
 import Catalog from "./components/Catalog.jsx";
 import Pending from "./components/Pending.jsx";
@@ -10,6 +9,7 @@ import Facilities from "./components/Facilities.jsx";
 import History from "./components/History.jsx";
 import Admin from "./components/Admin.jsx";
 import Login from "./components/Login.jsx";
+import { DEFAULT_TIER } from "./tiers.js";
 
 const TABS = [
   { id: "browse", label: "Browse" },
@@ -17,7 +17,6 @@ const TABS = [
   { id: "costing", label: "Costing" },
   { id: "facilities", label: "Facilities" },
   { id: "pending", label: "Pending" },
-  { id: "uploads", label: "Uploads" },
   { id: "history", label: "History" },
   { id: "admin", label: "Admin" },
 ];
@@ -27,6 +26,12 @@ export default function App() {
   const [user, setUser] = useState(session.user());
   const [route, setRoute] = useState("browse");
   const [openPart, setOpenPart] = useState(null);
+  // ONE volume tier for the whole app. Browse and the drawer used to hold separate copies of
+  // this, so opening the drawer over a tree read at @10k could show @100 beside it with
+  // nothing on screen explaining the difference. Costing keeps its own control — it is never
+  // on screen with Browse — but shares this value, so switching tabs keeps the tier you
+  // chose. Not persisted: every load starts at DEFAULT_TIER.
+  const [tier, setTier] = useState(DEFAULT_TIER);
   const [health, setHealth] = useState(null);
   const [version, setVersion] = useState(0);
   const [loginError, setLoginError] = useState(null);
@@ -81,18 +86,17 @@ export default function App() {
       </header>
 
       <main style={{ marginRight: openPart ? "min(680px, 96vw)" : 0, transition: "margin-right 320ms cubic-bezier(.2,.8,.2,1)" }}>
-        {activeRoute === "browse" && <Tree onOpenPart={setOpenPart} focus={openPart} version={version} />}
+        {activeRoute === "browse" && <Tree onOpenPart={setOpenPart} focus={openPart} version={version} tier={tier} setTier={setTier} />}
         {activeRoute === "catalog" && <Catalog onOpenPart={setOpenPart} version={version} />}
-        {activeRoute === "costing" && <Costing onOpenPart={setOpenPart} />}
+        {activeRoute === "costing" && <Costing onOpenPart={setOpenPart} tier={tier} setTier={setTier} />}
         {activeRoute === "facilities" && <Facilities version={version} onChanged={() => setVersion((v) => v + 1)} />}
         {activeRoute === "pending" && <Pending onOpenPart={setOpenPart} onOpenFacilities={() => setRoute("facilities")} version={version} />}
-        {activeRoute === "uploads" && <Uploads onApplied={() => setVersion((v) => v + 1)} />}
         {activeRoute === "history" && <History onOpenPart={setOpenPart} version={version} />}
         {activeRoute === "admin" && <Admin onOpenPart={setOpenPart} onChanged={() => setVersion((v) => v + 1)} />}
       </main>
 
       {openPart && (
-        <PartDrawer itemId={openPart} onClose={() => setOpenPart(null)} onOpenPart={setOpenPart} onChanged={() => setVersion((v) => v + 1)} />
+        <PartDrawer itemId={openPart} tier={tier} onClose={() => setOpenPart(null)} onOpenPart={setOpenPart} onChanged={() => setVersion((v) => v + 1)} />
       )}
     </div>
   );

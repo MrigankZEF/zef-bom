@@ -2,22 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { Icon, ModulePill, Pill, fmtEURcompact } from "./ui";
 
-const TIERS = [1, 100, 10000];
-// The tier the UI opens on. 10k is the volume the business case is actually written at, so
-// it is the number people came to look at; the API keeps its own default of 100 so that a
-// direct caller's prices never move under it.
-const DEFAULT_TIER = 10000;
+import { TIERS, tierLabel } from "../tiers";
 
 // Browse / BOM tree — ported from the prototype, wired to GET /tree (nested nodes
 // with embedded rollups). Expand state + filtering live client-side.
-export default function Tree({ onOpenPart, focus, version }) {
+// `tier` is owned by App, not here: the drawer renders beside this tree and has to agree
+// with it. Browse is where the app's tier is SET, which is why the control below is the
+// prominent one.
+export default function Tree({ onOpenPart, focus, version, tier, setTier }) {
   const [roots, setRoots] = useState(null);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [moduleF, setModuleF] = useState("all");
   const [coverageF, setCoverageF] = useState("all");
-  const [tier, setTier] = useState(DEFAULT_TIER);
   // "tree" = the nested hierarchy; "flat" = each BOM one level deep with full counts.
   const [view, setView] = useState("tree");
   const [flat, setFlat] = useState(null);
@@ -29,7 +27,6 @@ export default function Tree({ onOpenPart, focus, version }) {
   const [dropKey, setDropKey] = useState(null);
   const [undo, setUndo] = useState(null);      // { child, from, to, name }
   const [moving, setMoving] = useState(false);
-  const tierLabel = (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`);
 
   const loadTree = () =>
     api
@@ -184,15 +181,26 @@ export default function Tree({ onOpenPart, focus, version }) {
             <button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}>BOM tree</button>
             <button className={view === "flat" ? "on" : ""} onClick={() => setView("flat")}>Flattened</button>
           </span>
-          <span className="card-meta" style={{ marginRight: 2 }}>cost @</span>
-          <span style={{ display: "inline-flex", border: "1px solid var(--hair)", borderRadius: 7, overflow: "hidden" }}>
-            {TIERS.map((t) => (
-              <button key={t} onClick={() => setTier(t)} title={`${t.toLocaleString()} pcs`}
-                style={{ border: 0, cursor: "pointer", padding: "5px 11px", fontFamily: "var(--font-mono)", fontSize: 11,
-                  background: tier === t ? "var(--accent)" : "transparent", color: tier === t ? "#fff" : "var(--ink-3)" }}>
-                {tierLabel(t)}
-              </button>
-            ))}
+          {/* This is now the app's tier, not just this tree's — the drawer and the Costing tab
+              read the same value — so it is sized like a control that decides something rather
+              than three unlabelled chips behind a whisper of a label. */}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "3px 4px 3px 10px",
+                         border: "1px solid var(--hair-strong)", borderRadius: 8 }}>
+            <span style={{ fontFamily: "var(--font-display)", fontSize: 10.5, fontWeight: 700,
+                           letterSpacing: "0.08em", color: "var(--ink-3)", whiteSpace: "nowrap" }}>
+              COSTED AT
+            </span>
+            <span style={{ display: "inline-flex", border: "1px solid var(--hair)", borderRadius: 6, overflow: "hidden" }}>
+              {TIERS.map((t) => (
+                <button key={t} onClick={() => setTier(t)} title={`${t.toLocaleString()} pcs — applies to the drawer and the Costing tab too`}
+                  style={{ border: 0, cursor: "pointer", padding: "6px 13px", fontFamily: "var(--font-mono)",
+                    fontSize: 12.5, fontWeight: tier === t ? 700 : 400,
+                    background: tier === t ? "var(--accent)" : "transparent", color: tier === t ? "#fff" : "var(--ink-3)" }}>
+                  {tierLabel(t)}
+                </button>
+              ))}
+            </span>
+            <span style={{ fontSize: 11, color: "var(--ink-3)", paddingRight: 6, whiteSpace: "nowrap" }}>pcs</span>
           </span>
           {view === "tree" && <button className="btn ghost sm" onClick={expandAll}><Icon name="chevD" size={12} /> Expand all</button>}
           <button className="btn ghost sm" onClick={collapseAll}><Icon name="chevR" size={12} /> Collapse all</button>
