@@ -383,3 +383,126 @@ class ReferenceValue(Base):
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ── the COGS ladder: facilities and their cost matrix ─────────────────────────
+# Four tables, appended to this one registry rather than given their own. A second
+# declarative Base would split `Base.metadata` and leave the test harness's
+# `create_all` depending on an import that is easy to forget.
+#
+# Nothing here is per-root. Facilities are global and fully allocated to whichever
+# BOM is on screen, and the volume tier IS plants per year — so there is no
+# `units_per_year` column and no scenario table. See docs/cogs/PLAN.md section 2.4.
+
+
+class CogsFacility(Base):
+    """A plant, hall, warehouse or field crew that carries cost.
+
+    `kind` decides which rows the facility's matrix has, and nothing else. It is chosen at
+    creation and immutable thereafter — a PATCH carrying a different kind is rejected
+    server-side, not merely hidden in the UI, because changing it would strand every value
+    under a row key the new kind does not have.
+    """
+
+    __tablename__ = "cogs_facility"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_cogs_facility_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(32), nullable=False)   # e.g. FAC-ASM
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)   # assembly|logistics|field
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(255))
+
+
+class CogsFacilityItem(Base):
+    """A sub-item of a facility — an assembly cell, a warehouse, an install crew.
+
+    The unit the matrix is actually entered on. A facility with sub-items has no editable
+    figures of its own beyond its locked rows: two places to type the same number is a
+    reconciliation bug waiting to happen.
+    """
+
+    __tablename__ = "cogs_facility_item"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "code", name="uq_cogs_item_facility_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    facility_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("cogs_facility.id"), nullable=False, index=True
+    )
+    code: Mapped[str] = mapped_column(String(32), nullable=False)   # e.g. A-LINE
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class CogsValue(Base):
+    """One cell of the matrix: a facility (or sub-item) x row key x volume tier.
+
+    An ABSENT row is "not entered": it displays as an em dash and contributes 0. A STORED
+    zero is "known to be zero" and displays as 0. That distinction is why nothing here is
+    ever pre-seeded with zeros — a table full of zeros would claim knowledge nobody entered.
+    """
+
+    __tablename__ = "cogs_value"
+    __table_args__ = (
+        UniqueConstraint(
+            "facility_id", "item_id", "row_key", "volume_tier", name="uq_cogs_value_cell"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    facility_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("cogs_facility.id"), nullable=False, index=True
+    )
+    # The sub-item this cell belongs to, or '' for the facility's own value on a locked row.
+    #
+    # NOT NULL with an empty-string sentinel, deliberately: NULLs compare distinct in a
+    # unique constraint on both SQLite and Postgres, so a nullable column would silently
+    # permit unlimited duplicate facility-own cells. Worse, `backup._natural_key_cols` drives
+    # restore's dedup off exactly this first unique constraint, so a restore would multiply
+    # them. See `cogs.OWN`.
+    #
+    # It holds `str(CogsFacilityItem.id)`, NOT the sub-item's code. The code would read far
+    # better in an Excel backup, but renaming one would then orphan every value under it —
+    # which is BUG #1 in `test_invariants.py` (assembly_labor orphaned by a re-code) invited
+    # back in for legibility. The FacilityItems sheet is there to join on. No FK, because a
+    # column that also holds '' cannot carry one; that is the cost of the sentinel.
+    item_id: Mapped[str] = mapped_column(String(32), nullable=False, default="", server_default="")
+    row_key: Mapped[str] = mapped_column(String(24), nullable=False)
+    volume_tier: Mapped[int] = mapped_column(Integer, nullable=False)   # 1 | 100 | 10000
+    # Numeric, matching DecidedCost — not Float. The overhead pool reaches EUR 218,170,000 at
+    # @10k on the fixtures, and every value round-trips through an Excel backup.
+    value: Mapped[float] = mapped_column(Numeric(16, 4), nullable=False)
+
+
+class CogsLock(Base):
+    """A locked row on a facility: entered once at facility level, read-only on every
+    sub-item.
+
+    Presence IS locked — there is no boolean. A `locked=false` row would be state you then
+    have to keep consistent with deletion, for no gain.
+
+    What "inherited" means downward depends on the row's basis: a rate row (salary,
+    toolUnits) flows its value down into every sub-item's arithmetic, while a quantity row
+    is counted once here and the sub-items contribute nothing for it. See `cogs.inherits`.
+    """
+
+    __tablename__ = "cogs_lock"
+    __table_args__ = (
+        UniqueConstraint("facility_id", "row_key", name="uq_cogs_lock_facility_row"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    facility_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("cogs_facility.id"), nullable=False, index=True
+    )
+    row_key: Mapped[str] = mapped_column(String(24), nullable=False)

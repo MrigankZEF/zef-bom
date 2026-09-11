@@ -6,6 +6,7 @@ import Uploads from "./components/Uploads.jsx";
 import Costing from "./components/Costing.jsx";
 import Catalog from "./components/Catalog.jsx";
 import Pending from "./components/Pending.jsx";
+import Facilities from "./components/Facilities.jsx";
 import History from "./components/History.jsx";
 import Admin from "./components/Admin.jsx";
 import Login from "./components/Login.jsx";
@@ -14,6 +15,7 @@ const TABS = [
   { id: "browse", label: "Browse" },
   { id: "catalog", label: "Catalog" },
   { id: "costing", label: "Costing" },
+  { id: "facilities", label: "Facilities" },
   { id: "pending", label: "Pending" },
   { id: "uploads", label: "Uploads" },
   { id: "history", label: "History" },
@@ -82,7 +84,8 @@ export default function App() {
         {activeRoute === "browse" && <Tree onOpenPart={setOpenPart} focus={openPart} version={version} />}
         {activeRoute === "catalog" && <Catalog onOpenPart={setOpenPart} version={version} />}
         {activeRoute === "costing" && <Costing onOpenPart={setOpenPart} />}
-        {activeRoute === "pending" && <Pending onOpenPart={setOpenPart} version={version} />}
+        {activeRoute === "facilities" && <Facilities version={version} onChanged={() => setVersion((v) => v + 1)} />}
+        {activeRoute === "pending" && <Pending onOpenPart={setOpenPart} onOpenFacilities={() => setRoute("facilities")} version={version} />}
         {activeRoute === "uploads" && <Uploads onApplied={() => setVersion((v) => v + 1)} />}
         {activeRoute === "history" && <History onOpenPart={setOpenPart} version={version} />}
         {activeRoute === "admin" && <Admin onOpenPart={setOpenPart} onChanged={() => setVersion((v) => v + 1)} />}

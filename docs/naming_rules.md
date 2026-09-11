@@ -218,3 +218,15 @@ Collapses extra spaces, applies smart Title Case, and fixes known tokens — e.g
 - **Archived items** are ignored for "has children", usage, and the tree.
 - **Full audit trail** — every create / rename / type-change / re-code is written to change
   history with who, when, and why.
+
+## Facility codes are a separate namespace
+
+Facility codes (`FAC-ASM`, `FAC-SCM`) and facility sub-item codes (`A-LINE`, `S-IN`) have
+**no relation to part numbers** and none of the rules above apply to them. They are not
+allocated from `code_registry`, they are never reused-guarded, they carry no module prefix
+and no `P`/`A` type suffix, and a hyphen — disallowed in part names — is part of their
+shape. They name places and teams, not things in a BOM.
+
+Saying so here because this is the document that otherwise governs every code in the
+system, and a reader who found `FAC-ASM` and applied the part-number rules to it would
+conclude the data was malformed.
