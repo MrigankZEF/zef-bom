@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import AssemblyLabor, BomLink, DecidedCost, Item, ReferenceValue
+from .models import AssemblyLabor, BomLink, Item
+from .rows import BomRows, load_rows
 
 
 def top_level_reachable(db: Session) -> set[str]:
@@ -152,16 +153,24 @@ class Rollup:
 
 
 class BomGraph:
-    def __init__(self, db: Session, volume_tier: int = 100):
+    """The BOM as dicts, plus every number derived from it.
+
+    Built from a `Session` in the request path, or from `rows` — which is how a stored
+    milestone gets costed by exactly this code rather than by a second implementation of it.
+    See `rows.py` for why that seam is where it is.
+    """
+
+    def __init__(self, db: Session | None = None, volume_tier: int = 100, *, rows: BomRows | None = None):
+        if rows is None:
+            if db is None:
+                raise ValueError("BomGraph needs a Session or a BomRows")
+            rows = load_rows(db, volume_tier)
         self.volume = volume_tier
-        # Archived items/links are excluded from all views (soft-delete).
-        self.items: dict[str, Item] = {
-            it.item_id: it
-            for it in db.execute(select(Item).where(Item.archived.is_(False))).scalars()
-        }
+        # Archived items/links are excluded by the loader (soft-delete).
+        self.items: dict[str, Item] = {it.item_id: it for it in rows.items}
         self.children: dict[str, list[tuple[str, float]]] = {}
         self.parents: dict[str, list[tuple[str, float]]] = {}
-        for link in db.execute(select(BomLink).where(BomLink.archived.is_(False))).scalars():
+        for link in rows.links:
             if link.parent_item_id not in self.items or link.child_item_id not in self.items:
                 continue
             self.children.setdefault(link.parent_item_id, []).append(
@@ -171,20 +180,19 @@ class BomGraph:
                 (link.parent_item_id, link.quantity)
             )
         # (cost_min, most_likely, cost_max) — min/max default to the likely value when blank.
+        # Filtered by tier here as well as in the query: `rows` may legitimately carry all
+        # three tiers, because a snapshot stores all of them.
         self.decided: dict[tuple[str, int], tuple[float, float, float]] = {
             (dc.item_id, dc.volume_tier): (
                 float(dc.cost_min) if dc.cost_min is not None else float(dc.unit_cost_eur),
                 float(dc.unit_cost_eur),
                 float(dc.cost_max) if dc.cost_max is not None else float(dc.unit_cost_eur),
             )
-            for dc in db.execute(
-                select(DecidedCost).where(DecidedCost.volume_tier == volume_tier)
-            ).scalars()
+            for dc in rows.decided
+            if dc.volume_tier == volume_tier
         }
         # Assembly labour: minutes (min, likely, max) per item at this tier, + the €/h rates.
-        _labor_rows = list(db.execute(
-            select(AssemblyLabor).where(AssemblyLabor.volume_tier == volume_tier)
-        ).scalars())
+        _labor_rows = [al for al in rows.labor if al.volume_tier == volume_tier]
         # A row with no most-likely time carries no labour — that is the normal state of a
         # covers='all' assembly, which is bought as a finished unit — so it is left out
         # entirely rather than stored as a None that every caller has to re-check.
@@ -203,9 +211,7 @@ class BomGraph:
         # €/hour rate in meta; keyed by the reference value's id (= item.cost_type_id).
         self.rates: dict[int, float] = {
             rv.id: float((rv.meta or {}).get("rate_eur_h") or 0.0)
-            for rv in db.execute(
-                select(ReferenceValue).where(ReferenceValue.category == "assembly_cost_type")
-            ).scalars()
+            for rv in rows.rates
         }
         self._rollup_cache: dict[tuple[str, bool], Rollup] = {}
 

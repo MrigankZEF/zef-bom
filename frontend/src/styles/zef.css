@@ -804,6 +804,17 @@ body { background: var(--bg); }
 /* Flattened view: one extra column (share of the BOM), so its own track list. Header and
    rows both take .flat, which is what keeps them aligned. */
 .tree-data.flat { grid-template-columns: 70px 90px 100px 62px 90px 90px 28px; }
+/* Changes view: the last column is prose — which fields moved, and who moved them — so it
+   takes the remaining width instead of a fixed track. The four before it are wider than
+   their flat-view equivalents because each holds a before AND an after. */
+.tree-data.diff { grid-template-columns: 104px 128px 96px 84px minmax(140px, 1fr); }
+
+/* Milestone left, live right. Two equal columns and `minmax(0, 1fr)` rather than `1fr`, so
+   each treemap's ResizeObserver measures the column it is actually in instead of pushing the
+   grid wider than the card. Stacks below the width where a half-width treemap stops being
+   readable — one above the other still compares, a pair of unreadable maps does not. */
+.treemap-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 1200px) { .treemap-pair { grid-template-columns: minmax(0, 1fr); } }
 
 /* Each zone tints on its own hover, so you can see which half you are about to hit.
    Without this the details half looked inert. */

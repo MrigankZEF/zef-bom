@@ -64,7 +64,7 @@ const SOURCING_OPTS = [
 
 // `tier` comes from App. The drawer used to own its own copy, so a tree read at @10k could
 // sit next to a drawer reading @100 with nothing saying why. The tier is set in Browse.
-export default function PartDrawer({ itemId, tier, onClose, onOpenPart, onChanged }) {
+export default function PartDrawer({ itemId, tier, onClose, onOpenPart, onChanged, frozenBy }) {
   const [tab, setTab] = useState("overview");
   const [addingChild, setAddingChild] = useState(false);
   // Quantities are read-only until you explicitly enter edit mode, matching the
@@ -341,11 +341,17 @@ Create this copy anyway? It gets its own new code.`)) {
   };
 
   // Two working tabs: Overview reads, Edit writes. History is the audit trail.
+  //
+  // Browse comparing against a milestone takes Edit away. The drawer still shows LIVE data —
+  // it is the live item you would be editing — but offering the fields beside a frozen tree
+  // invites a change to a state nobody is looking at, and the numbers on screen would not
+  // move when you saved. Read-only is more useful than refusing to open.
   const tabs = [
     { id: "overview", label: "Overview" },
-    { id: "edit", label: "Edit" },
+    ...(frozenBy ? [] : [{ id: "edit", label: "Edit" }]),
     { id: "history", label: "History", count: history.length || undefined },
   ];
+  const shownTab = frozenBy && tab === "edit" ? "overview" : tab;
 
   return (
     <Shell>
@@ -378,6 +384,16 @@ Create this copy anyway? It gets its own new code.`)) {
       )}
 
       <div className="drawer-body">
+        <ReadOnlyGuard on={!!frozenBy}>
+        {frozenBy && (
+          <div className="card" style={{ marginBottom: 12, borderColor: "var(--hair-strong)" }}>
+            <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
+              <Icon name="alert" size={13} /> Browse is comparing against <strong>{frozenBy.name}</strong> —
+              editing is off. What you see here is the item as it is <em>today</em>; the milestone
+              itself is read-only for ever. Switch the comparison back to Live to edit.
+            </span>
+          </div>
+        )}
         {item.archived && (
           <div className="card" style={{ marginBottom: 12, borderColor: "var(--accent)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 13, color: "var(--accent)" }}><Icon name="alert" size={13} /> Archived — not in the active BOM. Its saved data is shown below.</span>
@@ -392,13 +408,13 @@ Create this copy anyway? It gets its own new code.`)) {
         )}
         <div className="tabs">
           {tabs.map((t) => (
-            <button key={t.id} className={`tab ${tab === t.id ? "on" : ""}`} onClick={() => setTab(t.id)}>
+            <button key={t.id} className={`tab ${shownTab === t.id ? "on" : ""}`} onClick={() => setTab(t.id)}>
               {t.label}{t.count ? <span style={{ marginLeft: 6, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--ink-3)" }}>{t.count}</span> : null}
             </button>
           ))}
         </div>
 
-        {tab === "overview" && (
+        {shownTab === "overview" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <Readouts isAssembly={isAssembly} rollups={rollups} tier={tier} item={item} parents={parents} links={links} />
             <WhereUsed itemId={itemId} parents={parents} onOpenPart={onOpenPart}
@@ -424,7 +440,7 @@ Create this copy anyway? It gets its own new code.`)) {
           </div>
         )}
 
-        {tab === "edit" && (
+        {shownTab === "edit" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {/* The three tier figures are a header, not a fold-out: they are what you check
                 while editing everything below them. Every card under here collapses, and
@@ -584,7 +600,7 @@ Create this copy anyway? It gets its own new code.`)) {
           </div>
         )}
 
-        {tab === "history" && (
+        {shownTab === "history" && (
           <div className="card" style={{ padding: 0, overflow: "hidden" }}>
             <div className="card-head" style={{ padding: "14px 18px 10px" }}><span className="card-title">Change history · {history.length}</span></div>
             {history.length === 0 && <div style={{ padding: 18, color: "var(--ink-3)" }}>No changes yet.</div>}
@@ -596,6 +612,7 @@ Create this copy anyway? It gets its own new code.`)) {
             ))}
           </div>
         )}
+        </ReadOnlyGuard>
       </div>
     </Shell>
   );
@@ -603,6 +620,20 @@ Create this copy anyway? It gets its own new code.`)) {
 
 function Shell({ children }) {
   return <aside className="drawer">{children}</aside>;
+}
+
+// One `disabled` fieldset rather than a `readOnly` prop threaded through forty controls.
+// The browser disables every input, select, textarea and button inside it, including the
+// ones in sub-components this file does not own — so a control added later is read-only by
+// default instead of being a hole somebody has to remember to plug. The close button lives
+// in the header, outside this, and stays live.
+function ReadOnlyGuard({ on, children }) {
+  if (!on) return children;
+  return (
+    <fieldset disabled style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      {children}
+    </fieldset>
+  );
 }
 
 

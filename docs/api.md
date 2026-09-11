@@ -131,6 +131,49 @@ server runs. Frontend reaches these under `VITE_API_BASE` (default `/api`, proxi
   merges the two lists. A locked row is not a gap on a sub-item — it is not entered there by
   design.
 
+## G — milestones and the diff
+
+- `GET /api/milestones?root=` — newest first. **Payloads are never sent**: one is a few
+  hundred kilobytes and nothing on screen reads it directly. Each row carries `counts`
+  (`items`/`links`/`decided`/`labor`/`rates`) so the UI can say how big a snapshot is.
+- `POST /api/milestones` — `{root_item_id, name, note?}`. **Top-level only** (409 otherwise):
+  a sub-assembly's effective quantities depend on which parent you came through, so a
+  comparison would not be of numbers anybody saw. A client cannot supply a payload — one it
+  composed would be a snapshot of what the client believed.
+- `DELETE /api/milestones/{id}` — **admin only**, and it really is gone. A payload is
+  derivable from nothing.
+- `GET /api/milestones/{id}/tree?volume=` — the frozen BOM as a tree, the same shape `/tree`
+  returns, costed **now** at the requested tier. Refetch per tier rather than convert: a
+  snapshot stores all three.
+- `GET /api/milestones/{id}/diff?volume=` — `{counts, totals, rows[], history{}}`.
+  `totals.accounted_delta` is the sum of the per-row contribution deltas and must equal
+  `totals.cost_delta`; the UI shows a warning when it does not, because then the roll-up and
+  the per-item breakdown disagree and one of them is wrong.
+
+### A milestone stores inputs, and the diff needs no history
+
+`bom_milestones.payload` holds only what a `BomGraph` is built from — items, links, decided
+costs, assembly labour, and the assembly cost-type rates — scoped to the subtree, at all
+three tiers, in `backup.py`'s cell format. No rolled-up cost, no coverage, no totals.
+
+Both sides of a comparison are therefore costed by the same `BomGraph` from the same kind of
+rows (see `app/rows.py`), which is what makes them comparable at all: give the frozen side its
+own arithmetic and a difference in the output is a difference between two implementations as
+much as between two states, with no way to tell which.
+
+The diff itself is arithmetic over two complete states and uses `change_history` for **one**
+thing: naming who touched a row. A hole in the log costs a sentence of provenance, never a
+figure. This is deliberate and load-bearing — three write paths were logging nothing until
+`71045fd`, so numbers reconstructed from the log would have been silently wrong.
+
+### Archived rows are excluded at capture, not on read
+
+A soft delete is a delete as far as the BOM is concerned, so an archived link was not in the
+BOM when the snapshot was taken. Ten archived links survive inside the real AEC subtree, and
+keeping them made a fresh milestone roll up to € 3,058 against the live € 2,872. Filtering on
+the way back out instead would be wrong in the other direction: an item archived *after* a
+snapshot must stay in the payload, or the diff loses the deletion it exists to show.
+
 ### There is no grand-total COGS endpoint, and there never will be
 
 Facilities are global and fully allocated to whichever root is on screen. That is correct

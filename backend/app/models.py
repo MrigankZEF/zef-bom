@@ -519,3 +519,48 @@ class CogsLock(Base):
         Integer, ForeignKey("cogs_facility.id"), nullable=False, index=True
     )
     row_key: Mapped[str] = mapped_column(String(24), nullable=False)
+
+
+# ── milestones: a BOM as it stood, kept ───────────────────────────────────────
+
+
+class BomMilestone(Base):
+    """A top-level BOM frozen at a moment, so today's version can be compared against it.
+
+    **Inputs only.** `payload` holds the rows a `BomGraph` is built from — items, links,
+    decided costs, assembly labour and the assembly cost-type rates — and no rolled-up cost,
+    no coverage percentage, no totals. Line 5 of this file says derive, don't store, and that
+    rule does not bend for a snapshot: re-deriving through the same `BomGraph` is also the
+    only thing that makes the two sides of a diff comparable. Store the totals and a later
+    fix to the rollup makes the milestone disagree with itself.
+
+    **Read-only for ever.** Nothing edits a payload. That is what makes it evidence of what
+    was on screen, rather than a second copy of the data to keep in sync.
+
+    Why a payload rather than just a timestamp: `change_history` is append-only and
+    aspirational, not foundational — three write paths were logging nothing until `71045fd`,
+    and reconstructing a past state from an incomplete log yields a BOM that never existed.
+    A payload is what was there. Once `as_of` reconstruction exists it can be *checked*
+    against these payloads, which is the right direction for that dependency to run.
+
+    Cells use `backup._backup_cell` / `_coerce`, the same conversion the .xlsx backup uses,
+    rather than a second serialisation format that could drift from it.
+    """
+
+    __tablename__ = "bom_milestones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    root_item_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("items.item_id"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    taken_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    taken_by: Mapped[str | None] = mapped_column(String(255))
+    # {"items": [...], "links": [...], "decided": [...], "labor": [...], "rates": [...]}
+    # Readers must tolerate missing keys: a snapshot taken today is read back after
+    # tomorrow's migration, and an absent key means "that table had no rows in scope" or
+    # "this snapshot predates that table" — both of which are a shorter list, not an error.
+    payload: Mapped[dict | None] = mapped_column(JSONB_OR_JSON)

@@ -47,6 +47,18 @@ export const api = {
     const qs = new URLSearchParams({ ...(root ? { root } : {}), volume }).toString();
     return request(`/flat?${qs}`);
   },
+  // ── milestones (G) ──
+  // A payload is never fetched: it is a few hundred kilobytes and nothing on screen reads
+  // it directly. The diff is computed server-side, where both sides go through the same
+  // BomGraph — which is the only reason the two are comparable.
+  milestones: (root) =>
+    request(`/milestones${root ? `?${new URLSearchParams({ root })}` : ""}`),
+  takeMilestone: (body) => request("/milestones", { method: "POST", body: JSON.stringify(body) }),
+  deleteMilestone: (id) => request(`/milestones/${id}`, { method: "DELETE" }),
+  milestoneTree: (id, volume = 100) =>
+    request(`/milestones/${id}/tree?${new URLSearchParams({ volume })}`),
+  milestoneDiff: (id, volume = 100) =>
+    request(`/milestones/${id}/diff?${new URLSearchParams({ volume })}`),
   itemUsage: (id, volume = 100) =>
     request(`/items/${encodeURIComponent(id)}/usage?${new URLSearchParams({ volume })}`),
   whereUsed: (id) => request(`/items/${encodeURIComponent(id)}/where-used`),

@@ -143,15 +143,25 @@ const branchColor = (i) => colorAt(BRANCH_HUES[((i % BRANCH_HUES.length) + BRANC
 const SPLIT_MAX = 48;
 
 export default function CostTreemap({ node, metric = "cost", colorMode = "cost", scenario = "likely",
-  depth = 1, split = true, svgRef, format, onOpenPart }) {
+  depth = 1, split = true, svgRef, format, onOpenPart, path: pathProp, onPath }) {
   // Each step is {id, single, inst}: `single` marks a drill into ONE instance of a ×N part,
   // so the view that opens sums to the tile you actually clicked, not the whole ×N group.
-  const [path, setPath] = useState([]);
+  //
+  // The drill path is internal by default and CONTROLLED when `onPath` is supplied. That is
+  // for the side-by-side comparison: two treemaps drilled to different depths compare
+  // nothing, so one path drives both. A step that does not exist on one side simply stops
+  // resolving there, which is already how `steps` handles a stale path.
+  const [pathLocal, setPathLocal] = useState([]);
+  const controlled = typeof onPath === "function";
+  const path = controlled ? (pathProp || []) : pathLocal;
+  const setPath = controlled ? onPath : setPathLocal;
   const [hover, setHover] = useState(null);
   const [boxW, setBoxW] = useState(760);
   const rootRef = useRef(null);
   const wrapRef = useRef(null);
-  useEffect(() => { setPath([]); }, [node?.item_id]);
+  // Only the uncontrolled copy resets itself — when the path is owned outside, resetting it
+  // here would fight the owner on every re-render.
+  useEffect(() => { if (!controlled) setPathLocal([]); /* eslint-disable-next-line */ }, [node?.item_id]);
   useEffect(() => {
     const el = rootRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;

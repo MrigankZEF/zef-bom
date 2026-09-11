@@ -259,3 +259,12 @@ class RollupOut(BaseModel):
     total: int
     coverage: float
     missing: list[str]
+
+
+class MilestoneIn(BaseModel):
+    """Taking a milestone. The payload is built server-side — a client cannot supply one,
+    because a snapshot the client composed would be a snapshot of what the client believed."""
+
+    root_item_id: str
+    name: str = Field(min_length=1, max_length=255)
+    note: str | None = None

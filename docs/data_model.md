@@ -209,3 +209,59 @@ and contribute nothing, its values sitting under the `item_id = ''` sentinel unr
   second sum, so the BOM view and the COGS view cannot drift.
 - `cogs.breakdown(facilities, layer)` — each rung as named lines, computed through the same
   `contrib` and lock getters as the total.
+
+## Milestones — a BOM kept as it stood (G)
+
+### `bom_milestones`
+
+`id`, `root_item_id` → `items`, `name`, `note`, `taken_at`, `taken_by`, `payload` (JSONB on
+Postgres, JSON on SQLite).
+
+`payload` is `{items, links, decided, labor, rates}` — the rows a `BomGraph` is built from —
+scoped to the root's subtree, at **all three tiers**, using `backup._backup_cell` /
+`_coerce` so there is one serialisation format in the codebase rather than two that can
+drift. `Numeric` becomes its decimal *string*, because `json.dumps` refuses a `Decimal` and
+a payload is evidence, which should not round.
+
+### Inputs only — the "derive, don't store" rule does not bend for a snapshot
+
+No rolled-up cost, no coverage, no totals. Two reasons, both load-bearing:
+
+1. A stored total would disagree with the roll-up the first time the roll-up was fixed, and
+   the milestone would then contradict itself.
+2. Both sides of a diff have to be derived by the same code. Give the frozen side its own
+   arithmetic and a difference in the output is a difference between two implementations as
+   much as between two states.
+
+`app/rows.py` exists for the second reason: `BomRows` names what `BomGraph` actually depends
+on — five lists of rows, not a `Session` — so `BomGraph(rows=...)` costs a snapshot through
+exactly the live code path. The rows are ordinary ORM instances belonging to no session, so
+nothing downstream can tell the difference.
+
+### Read-only for ever, and archived is excluded at capture
+
+Nothing edits a payload; that is what makes it evidence of what was on screen rather than a
+second copy to keep in sync.
+
+Archived items and links are filtered when the snapshot is taken, exactly as `load_rows`
+filters them, because a soft delete is a delete as far as the BOM is concerned. Filtering on
+read instead would be wrong in the other direction: an item archived *after* a snapshot must
+stay in the payload, or the diff loses the deletion it exists to show.
+
+### Why a payload and not a timestamp
+
+The first design was "a milestone is just a date, reconstruct the rest from
+`change_history`". `change_history` is append-only and aspirational rather than
+foundational — three write paths logged nothing until `71045fd` — and a state reconstructed
+from an incomplete log is a BOM that never existed. When `as_of` replay is built it gets
+*checked* against these payloads, which is the right direction for that dependency to run.
+
+### It is in the backup, and destructive paths clear it first
+
+`BomMilestones` is in `BACKUP_SHEETS` and in `RESTORE_ORDER` after `Items` (the
+`root_item_id` foreign key needs its item to exist on insert). Leaving it out would make a
+restore silently destroy every frozen BOM.
+
+That same foreign key blocks the two paths that delete items, so `purge_item` and the
+catalog wipe delete milestones first. A milestone of a BOM that no longer exists is not a
+snapshot of anything, and the pre-wipe workbook still holds every payload.
