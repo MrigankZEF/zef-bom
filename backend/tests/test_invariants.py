@@ -19,7 +19,7 @@ from pathlib import Path
 # Make `app` importable when run as a plain script from backend/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import create_engine, event, select  # noqa: E402
+from sqlalchemy import create_engine, event, func, select  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.db import Base  # noqa: E402
