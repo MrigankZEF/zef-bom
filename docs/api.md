@@ -186,3 +186,52 @@ is and COGS never joins it. Recorded here so the absence does not read as an ove
 
 `/export/csv` emits per-tier costs per row. COGS is a per-plant figure with no per-row
 meaning, so there is nothing coherent to put in a column.
+
+## H — customs and import duty
+
+- `GET /api/duty/rates?destination=&include_archived=` — the rate table, plus
+  `destination_default` (from `cogs_facility.country`, falling back to `PT`).
+- `POST /api/duty/rates` — **admin only**. `{hs_code, destination_country, origin_country?,
+  rate_pct, valid_from?, source?, note?}`. `rate_pct` is a percentage of the customs value
+  (2.7 for 2.7%), because that is how every schedule and every broker states it and a units
+  mix-up is a factor of 100 on a real invoice. `origin_country` empty = the third-country
+  wildcard.
+- `DELETE /api/duty/rates/{id}` — **admin only**, and it *archives*: a landed cost computed
+  last quarter used that row, and why it was that number should stay findable.
+- `GET /api/duty/bom?root=&volume=&destination=` — duty per line plus totals, gaps, and the
+  `cross_check` against the ladder's typed `duty` rung.
+
+### The four rules, and where they are enforced
+
+`app/duty.py`'s docstring is the authority; each has a test in `test_invariants.py`.
+
+1. **Import VAT is never in the figure.** Recoverable in Portugal — a cash-flow event, not a
+   cost. Adding 23% would overstate cost of goods by roughly a quarter. `vat_excluded: true`
+   is asserted so anyone adding a `vat_pct` has to come and read the rule.
+2. **Only bought lines are dutiable**, from `DecidedCost.make_or_buy`. Something we make in
+   the hall is not a customs line; the material under it is. That makes dutiability
+   **per tier** even though an HS code belongs to the physical thing.
+3. **A bought-in assembly is one customs line.** `flatten_leaves` already stops at
+   `covers='all'`, which is exactly the right set — descending would invent lines no customs
+   declaration ever had.
+4. **A missing HS code is missing, not zero** — a floor with its own `coverage`, exactly as
+   with cost.
+
+### What it deliberately does not do
+
+The customs value is **ex-works**, not CIF, so duty is understated by the inbound freight
+and insurance to the border — the same money the ladder's `inbound` rung holds. `basis` names
+what was used so the number never passes as a CIF value. Fixing it means deciding how
+inbound freight is apportioned across lines, which is its own decision with its own inputs.
+
+The typed `duty` rung is **not** replaced. The two are independent statements about the same
+money and the difference is the useful part; whether the rung becomes derived, or is
+redefined as "customs cost not attributable to a part", is a decision to make with a
+classified BOM in front of you. The cross-check reads the rung through `cogs.breakdown`, never
+by summing `cogs_value` — a locked row has both a facility-own cell and sub-item cells, so a
+raw SUM double-counts exactly the rows that were locked.
+
+Duty runs off a `BomGraph`, so a **milestone's** duty is computed by the same code. Items and
+sourcing come from the graph; rates stay live, because a published tariff is a fact about the
+world now rather than part of a snapshot. So a duty comparison across a milestone shows how
+classification and sourcing moved, priced at today's schedule.

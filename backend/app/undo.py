@@ -37,6 +37,7 @@ from .models import AssemblyLabor, BomLink, ChangeHistory, DecidedCost, FieldVal
 ITEM_COLS = {
     "item_name", "item_type", "materials", "material", "weight_grams", "unit_of_measure",
     "supplier", "supplier_country", "supplier_part_number", "lead_time_weeks",
+    "hs_code", "country_of_origin",
     "cost_type_id", "drawing_url", "thumbnail_file_id", "comment", "external_reference",
     "module_code",
 }

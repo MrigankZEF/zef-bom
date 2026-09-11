@@ -265,3 +265,47 @@ restore silently destroy every frozen BOM.
 That same foreign key blocks the two paths that delete items, so `purge_item` and the
 catalog wipe delete milestones first. A milestone of a BOM that no longer exists is not a
 snapshot of anything, and the pre-wipe workbook still holds every payload.
+
+## Customs (H)
+
+### `items.hs_code`, `items.country_of_origin`
+
+Real columns, not `field_definitions` rows: the custom-field mechanism is right for what only
+humans read, and these are cost inputs the roll-up reaches — an EAV lookup inside a rollup is
+the wrong shape. `hs_code` is stored digits-only so a prefix match is a string prefix.
+
+`country_of_origin` is separate from `supplier_country` **on purpose**. Customs charges on
+where a thing was *made*: a German distributor shipping a Chinese-made part is a CN origin at
+a DE supplier, and conflating them would be wrong on exactly the parts where duty is largest.
+The UI suggests the supplier's country as a placeholder and never defaults to it.
+
+### `duty_rates`
+
+`hs_code`, `origin_country`, `destination_country`, `rate_pct`, `valid_from`, `source`,
+`note`, `archived`.
+
+Matching is **longest HS prefix**: a 4-digit heading covers everything beneath it until a 6-
+or 8-digit line is entered, which is how tariff schedules are written and what lets the table
+be filled in coarsely and refined later without ever being wrong in between, only imprecise.
+
+`origin_country = ''` is the third-country wildcard — empty string and not NULL, because NULL
+is not equal to NULL in SQL and a nullable column would accept the same wildcard row twice
+under the unique constraint. Same reasoning as `cogs_value.item_id`.
+
+`rate_pct` is a percentage, and `valid_from`/`source` exist because auditable beats fresh: a
+landed cost that quietly changed under a quote is worse than one that is three months old and
+dated. A rate whose `valid_from` is in the future does not price a shipment that already
+landed.
+
+### `cogs_facility.country`
+
+ISO-3166 alpha-2. "Landing in Portugal" was an assumption living inside a formula; as a column
+it is data the lookup reads. Assembly facilities are consulted first — that is where the BOM
+arrives — and `duty.DEFAULT_DESTINATION` is the fallback so a figure is possible before the
+Facilities screen is filled in.
+
+### `BomGraph.sourcing`
+
+`make_or_buy` per item at the graph's tier. On the graph rather than queried where it is
+needed, because whether a line crosses a border is part of the state being costed — so a
+milestone's sourcing travels with its rows the same way its prices do.

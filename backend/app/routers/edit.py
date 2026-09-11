@@ -131,6 +131,7 @@ def _merge_into(db: Session, src_id: str, dst_id: str, *, user: str) -> dict:
     src = db.get(Item, src_id)
     for col in ("item_name", "item_type", "materials", "material", "weight_grams",
                 "unit_of_measure", "supplier", "supplier_country", "supplier_part_number",
+                "hs_code", "country_of_origin",
                 "lead_time_weeks", "cost_type_id", "drawing_url", "thumbnail_file_id", "comment",
                 "external_reference"):
         setattr(dst, col, getattr(src, col))
@@ -299,6 +300,7 @@ def duplicate_item(
     COPY_FIELDS = (
         "item_type", "module_code", "materials", "material", "weight_grams", "unit_of_measure",
         "supplier", "supplier_country", "supplier_part_number", "lead_time_weeks",
+        "hs_code", "country_of_origin",
         "cost_type_id", "drawing_url", "comment",
     )
     db.add(Item(

@@ -21,9 +21,9 @@ from sqlalchemy.orm import Session
 
 from . import drive
 from .models import (
-    AssemblyLabor, BomLink, BomMilestone, ChangeHistory, CodeRegistry, CogsFacility, CogsFacilityItem,
-    CogsLock, CogsValue, CostEvidence, DecidedCost, FieldDefinition, FieldValue, Item,
-    ItemLink, ReferenceValue, UploadBatch, User,
+    AssemblyLabor, BomLink, BomMilestone, ChangeHistory, CodeRegistry, CogsFacility,
+    CogsFacilityItem, CogsLock, CogsValue, CostEvidence, DecidedCost, DutyRate,
+    FieldDefinition, FieldValue, Item, ItemLink, ReferenceValue, UploadBatch, User,
 )
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -53,6 +53,8 @@ BACKUP_SHEETS = [
     # Milestones are read-only for ever and derivable from nothing — a lost payload is a
     # frozen BOM that cannot be reconstructed, which is the whole point of keeping it.
     ("BomMilestones", BomMilestone),
+    # Duty rates are typed-in facts about the world, derivable from nothing in this database.
+    ("DutyRates", DutyRate),
 ]
 
 # Scheduled snapshots carry this marker so retention only ever trims THEM — never the
@@ -176,6 +178,8 @@ RESTORE_ORDER = [
     ("CogsLocks", CogsLock),
     # After Items: the root_item_id foreign key needs its item to exist on insert.
     ("BomMilestones", BomMilestone),
+    # No foreign keys — an HS code is a string, not a reference — so the position is free.
+    ("DutyRates", DutyRate),
 ]
 RESTORE_MODELS = dict(RESTORE_ORDER)
 

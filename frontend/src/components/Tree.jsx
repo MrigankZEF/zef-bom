@@ -9,7 +9,7 @@ import { TIERS, tierLabel } from "../tiers";
 // `tier` is owned by App, not here: the drawer renders beside this tree and has to agree
 // with it. Browse is where the app's tier is SET, which is why the control below is the
 // prominent one.
-export default function Tree({ onOpenPart, focus, version, tier, setTier, compare, setCompare }) {
+export default function Tree({ onOpenPart, focus, version, tier, setTier, compare, setCompare, readOnly = false }) {
   const [roots, setRoots] = useState(null);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
@@ -204,7 +204,7 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier, compar
             )}
           </p>
         </div>
-        <div className="page-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="page-actions">
           <span className="segmented-mini">
             <button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}>BOM tree</button>
             <button className={view === "flat" ? "on" : ""} onClick={() => setView("flat")}>Flattened</button>
@@ -218,7 +218,7 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier, compar
           <MilestonePicker
             stones={stones} compare={compare}
             onPick={(m) => { setCompare(m); if (m) setView("diff"); else if (view === "diff") setView("flat"); }}
-            onTake={() => setTaking(roots[0] ? roots[0].item_id : null)}
+            onTake={readOnly ? null : () => setTaking(roots[0] ? roots[0].item_id : null)}
           />
           {/* This is now the app's tier, not just this tree's — the drawer and the Costing tab
               read the same value — so it is sized like a control that decides something rather
@@ -243,7 +243,10 @@ export default function Tree({ onOpenPart, focus, version, tier, setTier, compar
           </span>
           {view === "tree" && <button className="btn ghost sm" onClick={expandAll}><Icon name="chevD" size={12} /> Expand all</button>}
           <button className="btn ghost sm" onClick={collapseAll}><Icon name="chevR" size={12} /> Collapse all</button>
-          <button className="btn sm" onClick={() => setNewBom((v) => !v)}><Icon name="box" size={12} /> New BOM</button>
+          {/* Viewers read the tree; they do not start BOMs or freeze milestones. The buttons
+              are gone rather than disabled — a write control a viewer can never use is
+              clutter, not information, and the backend rejects the call anyway. */}
+          {!readOnly && <button className="btn sm" onClick={() => setNewBom((v) => !v)}><Icon name="box" size={12} /> New BOM</button>}
         </div>
       </div>
 
@@ -665,10 +668,12 @@ function MilestonePicker({ stones, compare, onPick, onTake }) {
           </option>
         ))}
       </select>
-      <button className="btn ghost sm" onClick={onTake} title="Freeze this BOM as it stands, to compare against later"
-              style={{ whiteSpace: "nowrap" }}>
-        <Icon name="box" size={12} /> Milestone
-      </button>
+      {onTake && (
+        <button className="btn ghost sm" onClick={onTake} title="Freeze this BOM as it stands, to compare against later"
+                style={{ whiteSpace: "nowrap" }}>
+          <Icon name="box" size={12} /> Milestone
+        </button>
+      )}
     </span>
   );
 }

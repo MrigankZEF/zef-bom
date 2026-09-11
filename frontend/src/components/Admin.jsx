@@ -25,7 +25,7 @@ export default function Admin({ onOpenPart, onChanged }) {
         <div>
           <div className="page-eyebrow">Admin</div>
           <h1 className="page-title">Admin</h1>
-          <p className="page-sub">Manage the dropdown lists used across the tool, restore archived items, and run the bulk operations — OPML uploads, catalog import, backup and restore.</p>
+          <p className="page-sub">Manage the dropdown lists used across the tool, restore archived items, keep the import duty rates, and run the bulk operations — OPML uploads, catalog import, backup and restore.</p>
         </div>
         <div className="page-actions">
           <div className="segmented-mini">
@@ -33,6 +33,7 @@ export default function Admin({ onOpenPart, onChanged }) {
             <button className={sub === "reference" ? "on" : ""} onClick={() => setSub("reference")}>Reference data</button>
             <button className={sub === "archive" ? "on" : ""} onClick={() => setSub("archive")}>Archive</button>
             <button className={sub === "backup" ? "on" : ""} onClick={() => setSub("backup")}>Backup</button>
+            <button className={sub === "duty" ? "on" : ""} onClick={() => setSub("duty")}>Duty rates</button>
             <button className={sub === "uploads" ? "on" : ""} onClick={() => setSub("uploads")}>OPML uploads</button>
             <button className={sub === "import" ? "on" : ""} onClick={() => setSub("import")}>Catalog import</button>
           </div>
@@ -42,6 +43,7 @@ export default function Admin({ onOpenPart, onChanged }) {
       {sub === "reference" && <Reference />}
       {sub === "archive" && <Archive onOpenPart={onOpenPart} onChanged={onChanged} />}
       {sub === "backup" && <><Backup /><Restore onChanged={onChanged} /></>}
+      {sub === "duty" && <DutyRates />}
       {sub === "uploads" && <Uploads onApplied={onChanged} />}
       {sub === "import" && <CatalogImport onChanged={onChanged} />}
     </div>
@@ -457,3 +459,137 @@ function Archive({ onOpenPart, onChanged }) {
     </div>
   );
 }
+
+
+// Duty rates: published facts about the world, typed in and dated.
+//
+// Auditable beats fresh. A landed cost that quietly changed under a quote is worse than one
+// that is three months old and says so, which is why every row carries `valid_from` and
+// where it came from, and why archiving keeps the row instead of deleting it.
+//
+// Matching is longest-prefix, so this table can be filled in coarsely — a 4-digit heading
+// covers everything beneath it — and refined later without ever being wrong in between,
+// only imprecise. The list shows which rows are headings for exactly that reason.
+function DutyRates() {
+  const [rows, setRows] = useState(null);
+  const [dest, setDest] = useState("");
+  const [defaultDest, setDefaultDest] = useState("PT");
+  const [form, setForm] = useState({ hs_code: "", origin_country: "", rate_pct: "", valid_from: "", source: "", note: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const load = () =>
+    api.dutyRates(dest || undefined)
+      .then((r) => { setRows(r.rates); setDefaultDest(r.destination_default); })
+      .catch((e) => setErr(e.message));
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [dest]);
+
+  const add = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await api.addDutyRate({
+        hs_code: form.hs_code.trim(),
+        destination_country: (dest || defaultDest).toUpperCase(),
+        origin_country: form.origin_country.trim().toUpperCase(),
+        rate_pct: Number(form.rate_pct),
+        valid_from: form.valid_from || null,
+        source: form.source.trim() || null,
+        note: form.note.trim() || null,
+      });
+      setForm({ hs_code: "", origin_country: "", rate_pct: "", valid_from: "", source: "", note: "" });
+      await load();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const archive = async (r) => {
+    if (!window.confirm(`Archive the ${r.rate_pct}% rate for ${r.hs_code}?\n\nThe row is kept — a landed cost computed with it should stay explicable.`)) return;
+    try { await api.archiveDutyRate(r.id); await load(); } catch (e) { setErr(e.message); }
+  };
+
+  const digits = (form.hs_code.match(/\d/g) || []).length;
+  const canAdd = digits >= 4 && form.rate_pct !== "" && Number(form.rate_pct) >= 0;
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="card-title">Import duty rates</span>
+        <span className="card-meta">
+          destination{" "}
+          <input className="input mono" value={dest} placeholder={defaultDest} maxLength={2}
+                 onChange={(e) => setDest(e.target.value.toUpperCase())}
+                 style={{ width: 52, height: 26, display: "inline-block", textAlign: "center" }} />
+        </span>
+      </div>
+
+      <p className="micro" style={{ color: "var(--ink-3)", margin: "0 0 12px" }}>
+        Percent of the customs value. Longest HS prefix wins, so <span className="mono">8544</span> covers
+        every code under it until a longer line is entered. Leave the origin blank for the
+        third-country rate that applies unless a preference or a trade measure says otherwise.
+        <strong> Import VAT does not belong here</strong> — it is recoverable, so it is never part of COGS.
+      </p>
+
+      {err && <p className="err" style={{ marginBottom: 10 }}>{err}</p>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "130px 70px 80px 130px 1fr auto", gap: 8, alignItems: "end", marginBottom: 14 }}>
+        <Field label="HS code">
+          <input className="input mono" value={form.hs_code} placeholder="8544.42.90"
+                 onChange={(e) => setForm((f) => ({ ...f, hs_code: e.target.value }))} />
+        </Field>
+        <Field label="Origin">
+          <input className="input mono" value={form.origin_country} placeholder="any" maxLength={2}
+                 onChange={(e) => setForm((f) => ({ ...f, origin_country: e.target.value.toUpperCase() }))} />
+        </Field>
+        <Field label="Rate %">
+          <input className="input mono" value={form.rate_pct} placeholder="2.7" inputMode="decimal"
+                 onChange={(e) => setForm((f) => ({ ...f, rate_pct: e.target.value }))} />
+        </Field>
+        <Field label="Valid from">
+          <input className="input" type="date" value={form.valid_from}
+                 onChange={(e) => setForm((f) => ({ ...f, valid_from: e.target.value }))} />
+        </Field>
+        <Field label="Source">
+          <input className="input" value={form.source} placeholder="TARIC export 2026-03-01"
+                 onChange={(e) => setForm((f) => ({ ...f, source: e.target.value }))} />
+        </Field>
+        <button className="btn sm" onClick={add} disabled={busy || !canAdd}
+                title={canAdd ? "" : "An HS code needs at least 4 digits, and a rate is required"}>
+          {busy ? "Adding…" : "Add rate"}
+        </button>
+      </div>
+
+      {rows === null ? <p className="muted">Loading…</p> : rows.length === 0 ? (
+        <p className="muted">
+          No rates for {dest || defaultDest} yet. Nothing breaks without them — a classified part
+          with no rate reads as a gap, not as duty-free.
+        </p>
+      ) : (
+        <div>
+          {rows.map((r) => (
+            <div key={r.id} className="duty-row">
+              <span className="mono">
+                {r.hs_code}
+                {r.hs_code.length <= 4 && (
+                  <span className="micro" style={{ color: "var(--ink-4)", marginLeft: 5 }}>heading</span>
+                )}
+              </span>
+              <span className="mono">{r.origin_country || "any"}</span>
+              <span className="mono">{r.rate_pct}%</span>
+              <span className="micro" style={{ color: "var(--ink-3)" }}>{r.valid_from || "undated"}</span>
+              <span className="micro" style={{ color: "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    title={[r.source, r.note].filter(Boolean).join(" · ")}>
+                {r.source || <em>no source recorded</em>}
+              </span>
+              <button className="btn ghost sm" onClick={() => archive(r)} title="Archive — the row is kept">
+                <Icon name="close" size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const Field = ({ label, children }) => (
+  <div style={{ minWidth: 0 }}><span className="input-label">{label}</span>{children}</div>
+);

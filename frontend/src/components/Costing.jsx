@@ -9,7 +9,7 @@ import { spreadPath, spreadX } from "../spread";
 // Costing keeps its own tier CONTROL — it is never on screen with Browse, so two controls
 // are not the confusion this fixes; two independent values were. The value lives in App,
 // so switching Browse -> Costing lands on the tier you were already looking at.
-export default function Costing({ onOpenPart, tier, setTier, compare, setCompare }) {
+export default function Costing({ onOpenPart, tier, setTier, compare, setCompare, version }) {
   const [roots, setRoots] = useState(null);
   const [root, setRoot] = useState("");
   const volume = tier, setVolume = setTier;   // local names, shared value
@@ -20,6 +20,7 @@ export default function Costing({ onOpenPart, tier, setTier, compare, setCompare
   const [mtree, setMtree] = useState(null);   // the milestone's tree, costed at `volume`
   // One drill path for both treemaps. Two maps drilled to different depths compare nothing.
   const [tpath, setTpath] = useState([]);
+  const [duty, setDuty] = useState(null);
   const [metric, setMetric] = useState("cost"); // cost | weight
   // Branch by default: the treemap's AREA already says what a thing costs, so colour is
   // better spent on which subsystem a block belongs to than on saying the price twice.
@@ -55,19 +56,34 @@ export default function Costing({ onOpenPart, tier, setTier, compare, setCompare
       setRoots(rs);
       if (rs[0] && !root) setRoot(rs[0].item_id);
     }).catch((e) => setError(e.message));
-  }, []);
+    /* eslint-disable-next-line */
+  }, [version]);
 
+  // Blanking is keyed on the BOM and the tier only, so changing either reads as a load
+  // while a save from the drawer does not. `version` bumps while the drawer sits open
+  // beside these numbers — emptying the page under it would flash every tile and treemap
+  // for a figure that is about to come back nearly the same.
+  useEffect(() => {
+    setData(null); setTree(null);
+    setLadder(null); setLines(null); setDuty(null);
+  }, [root, volume]);
+
+  // `version` is App's edit counter: the drawer bumps it on every save. Costing used to
+  // ignore it, so editing a price, a weight or an HS code left the totals, the treemap and
+  // the duty card showing the figures from before the edit — arithmetic that was right
+  // when it was fetched and wrong on screen — until the tab or the tier was changed.
   useEffect(() => {
     if (!root) return;
-    setData(null); setTree(null);
-    setLadder(null); setLines(null);
     api.costingBreakdown(root, volume).then(setData).catch((e) => setError(e.message));
     api.tree(root, volume).then(setTree).catch((e) => setError(e.message));
     // The ladder is fetched for every view, not just the COGS ones: BOM+ shows the direct
     // rungs, and switching view should never be a loading state.
     api.cogsLadder(root, volume).then(setLadder).catch((e) => setError(e.message));
     api.cogsBreakdown(volume).then((b) => setLines(b.lines)).catch((e) => setError(e.message));
-  }, [root, volume]);
+    // Fail-soft: duty is new, and a BOM with no classified parts and no rates is the normal
+    // state right now. A missing duty card must never take the Costing tab down with it.
+    api.dutyForBom(root, volume).then(setDuty).catch(() => setDuty(null));
+  }, [root, volume, version]);
 
   if (error) return <div className="page"><p className="err">{error}</p></div>;
   if (!roots) return <div className="page"><p className="muted">Loading…</p></div>;
@@ -304,6 +320,8 @@ export default function Costing({ onOpenPart, tier, setTier, compare, setCompare
           </div>
 
           {ladder && <DirectRungs ladder={ladder} lines={lines} volume={volume} />}
+
+          {duty && <DutyCard duty={duty} volume={volume} onOpenPart={onOpenPart} />}
 
           {data.totals.total - data.totals.covered > 0 && (
             <div className="card" style={{ marginTop: 16 }}>
@@ -755,6 +773,113 @@ function Waterfall({ ladder, showPost }) {
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+
+// Import duty, derived from the parts rather than typed as one number.
+//
+// This does NOT replace the ladder's `duty` rung. The two are independent statements about
+// the same money and the useful thing is the difference: one is what somebody entered on the
+// Facilities screen, the other is what the classified parts add up to. Making the rung
+// derived, or redefining it as "customs cost not attributable to a part", is a decision to
+// make with a real classified BOM in front of you — so for now both are shown and the gap is
+// named.
+//
+// Everything on screen here is a floor while parts are unclassified, and says so.
+function DutyCard({ duty, volume, onOpenPart }) {
+  const [open, setOpen] = useState(false);
+  const t = duty.totals;
+  const x = duty.cross_check || {};
+  const nothing = t.dutiable_lines === 0;
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-head">
+        <span className="card-title">Import duty — landing in {duty.destination}</span>
+        <span className="card-meta">
+          {t.dutiable_lines} imported line{t.dutiable_lines === 1 ? "" : "s"} @ {volume.toLocaleString()}
+        </span>
+      </div>
+
+      {nothing ? (
+        <p className="micro" style={{ color: "var(--ink-3)", margin: 0 }}>
+          Nothing in this BOM is marked <span className="mono">buy</span> or{" "}
+          <span className="mono">made-to-order</span> at this volume, so no line crosses a
+          border. Duty follows sourcing, which is decided per tier in the drawer.
+        </p>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+            <Figure2 label="Duty, derived" value={fmtEURcompact(t.duty)} note={t.is_floor ? "a floor" : null} />
+            <Figure2 label="Customs value" value={fmtEURcompact(t.customs_value)} note="ex-works" />
+            <Figure2 label="Classified" value={`${Math.round(t.coverage * 100)}%`}
+                     note={`${t.priced_lines} of ${t.dutiable_lines} lines`} />
+            <Figure2 label="Typed rung" value={fmtEURcompact(x.typed_rung || 0)}
+                     note={x.difference ? `${x.difference > 0 ? "+" : "−"}${fmtEURcompact(Math.abs(x.difference))} vs. derived` : "agrees"} />
+          </div>
+
+          <p className="micro" style={{ color: "var(--ink-3)", margin: "10px 0 0", lineHeight: 1.5 }}>
+            The customs value is <strong>ex-works</strong>, not CIF — it excludes the inbound
+            freight and insurance to the border, which is the same money the{" "}
+            <span className="mono">inbound</span> rung holds. Duty is therefore understated by
+            whatever that freight is. <strong>Recoverable import VAT is excluded</strong> and
+            must stay excluded: it is a cash-flow event, not a cost.
+          </p>
+
+          {t.is_floor && (
+            <p className="micro" style={{ color: "var(--accent)", margin: "8px 0 0" }}>
+              <Icon name="alert" size={12} />{" "}
+              {t.missing_hs.length > 0 && <>{t.missing_hs.length} line{t.missing_hs.length === 1 ? "" : "s"} with no HS code</>}
+              {t.missing_hs.length > 0 && t.missing_rate.length > 0 && " · "}
+              {t.missing_rate.length > 0 && <>{t.missing_rate.length} classified line{t.missing_rate.length === 1 ? "" : "s"} with no rate for {duty.destination}</>}
+              {" "}— so this total is a floor. Classify in the drawer; rates live in <strong>Admin</strong>.
+            </p>
+          )}
+
+          <div style={{ marginTop: 12 }}>
+            <button className="btn ghost sm" onClick={() => setOpen((v) => !v)}>
+              <Icon name={open ? "chevD" : "chevR"} size={12} /> {open ? "Hide" : "Show"} the lines
+            </button>
+          </div>
+
+          {open && (
+            <div style={{ marginTop: 10 }}>
+              {duty.lines.map((ln) => (
+                <div key={ln.item_id} className="duty-row" style={{ cursor: "pointer" }}
+                     onClick={() => onOpenPart(ln.item_id)} title="Open the part">
+                  <span className="mono">{ln.item_id}</span>
+                  <span className="mono">{ln.origin || "—"}</span>
+                  <span className="mono">
+                    {ln.rate_pct != null ? `${ln.rate_pct}%`
+                      : ln.missing_hs ? <span style={{ color: "var(--accent)" }}>no code</span>
+                      : <span style={{ color: "var(--accent)" }}>no rate</span>}
+                  </span>
+                  <span className="mono">{fmtEURcompact(ln.customs_value)}</span>
+                  <span className="micro" style={{ color: "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {ln.item_name}
+                    {ln.hs_code ? <span className="mono" style={{ marginLeft: 6, color: "var(--ink-4)" }}>{ln.hs_code}</span> : null}
+                  </span>
+                  <span className="mono" style={{ textAlign: "right", paddingRight: 4 }}>
+                    {ln.duty > 0 ? fmtEURcompact(ln.duty) : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Figure2({ label, value, note }) {
+  return (
+    <div>
+      <div className="micro" style={{ color: "var(--ink-3)", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 19, marginTop: 2 }}>{value}</div>
+      {note && <div className="micro" style={{ color: "var(--ink-3)", marginTop: 2 }}>{note}</div>}
     </div>
   );
 }

@@ -23,6 +23,10 @@ class ItemOut(BaseModel):
     supplier_country: str | None = None
     supplier_part_number: str | None = None
     lead_time_weeks: float | None = None
+    # Customs. `country_of_origin` is where it was MADE, which is not always where it was
+    # bought — see models.Item.
+    hs_code: str | None = None
+    country_of_origin: str | None = None
     cost_type_id: int | None = None
     drawing_url: str | None = None
     drive_folder_url: str | None = None
@@ -48,6 +52,10 @@ class ItemPatch(BaseModel):
     supplier_country: str | None = None
     supplier_part_number: str | None = None
     lead_time_weeks: float | None = None
+    # Customs. `country_of_origin` is where it was MADE, which is not always where it was
+    # bought — see models.Item.
+    hs_code: str | None = None
+    country_of_origin: str | None = None
     cost_type_id: int | None = None
     drawing_url: str | None = None
     comment: str | None = None
@@ -267,4 +275,21 @@ class MilestoneIn(BaseModel):
 
     root_item_id: str
     name: str = Field(min_length=1, max_length=255)
+    note: str | None = None
+
+
+class DutyRateIn(BaseModel):
+    """A published duty rate. `origin_country` empty means the third-country wildcard.
+
+    `rate_pct` is a percentage of the customs value — 2.7 for 2.7% — because that is how
+    every tariff schedule and every broker states it, and a units mix-up here is a factor of
+    100 on a real invoice.
+    """
+
+    hs_code: str = Field(min_length=1, max_length=16)
+    destination_country: str = Field(min_length=2, max_length=2)
+    origin_country: str | None = Field(default="", max_length=2)
+    rate_pct: float = Field(ge=0, le=100)
+    valid_from: date | None = None
+    source: str | None = None
     note: str | None = None

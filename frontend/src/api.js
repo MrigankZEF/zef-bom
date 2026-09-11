@@ -59,6 +59,13 @@ export const api = {
     request(`/milestones/${id}/tree?${new URLSearchParams({ volume })}`),
   milestoneDiff: (id, volume = 100) =>
     request(`/milestones/${id}/diff?${new URLSearchParams({ volume })}`),
+  // ── customs duty (H) ──
+  dutyRates: (destination) =>
+    request(`/duty/rates${destination ? `?${new URLSearchParams({ destination })}` : ""}`),
+  addDutyRate: (body) => request("/duty/rates", { method: "POST", body: JSON.stringify(body) }),
+  archiveDutyRate: (id) => request(`/duty/rates/${id}`, { method: "DELETE" }),
+  dutyForBom: (root, volume = 100) =>
+    request(`/duty/bom?${new URLSearchParams({ root, volume })}`),
   itemUsage: (id, volume = 100) =>
     request(`/items/${encodeURIComponent(id)}/usage?${new URLSearchParams({ volume })}`),
   whereUsed: (id) => request(`/items/${encodeURIComponent(id)}/where-used`),

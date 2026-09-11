@@ -455,6 +455,18 @@ body { background: var(--bg); }
   font-variant-numeric: tabular-nums;
 }
 .nav-tab.on .ct { color: var(--ink); border-color: var(--ink); }
+/* A tab a viewer cannot open. Still on the bar, so the shape of the tool is the same for
+   everyone, but visibly out of reach: no pointer, no hover lift, --ink-4 like every other
+   disabled thing here. */
+.nav-tab:disabled { color: var(--ink-4); cursor: not-allowed; }
+.nav-tab:disabled:hover { color: var(--ink-4); }
+
+/* Read-only session: nothing opens the part drawer, so nothing should promise it will.
+   The click handlers are already no-ops in App — this removes the affordance that says
+   otherwise. */
+.app.read-only .tree-name.opens,
+.app.read-only .tree-row .tree-data,
+.app.read-only .tbl tr:hover td { cursor: default; }
 
 .topbar-end {
   display: flex; align-items: center; gap: 14px;
@@ -482,12 +494,23 @@ body { background: var(--bg); }
 .page { padding: 28px 32px 60px; max-width: 1480px; margin: 0 auto; }
 .page-head {
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* The title keeps a floor and the actions column may shrink below its max-content width.
+     `1fr auto` let the controls win outright: `auto` sizes to max-content, so every control
+     added to a page's action row stole width from the title, and with the drawer open
+     Browse's heading collapsed to one character per line — "BOM" over "tree" over a column
+     of single words. `minmax(0, auto)` lets the row wrap instead, which is what the
+     flex-wrap below is for. */
+  grid-template-columns: minmax(220px, 1fr) minmax(0, auto);
   gap: 24px;
   align-items: end;
   padding-bottom: 18px;
   border-bottom: 1px solid var(--hair);
   margin-bottom: 24px;
+}
+@media (max-width: 900px) {
+  /* Below this the two columns cannot both be useful, so the actions go under the title
+     rather than each getting half of nothing. */
+  .page-head { grid-template-columns: minmax(0, 1fr); }
 }
 .page-eyebrow {
   font-family: var(--font-body); font-weight: 500;
@@ -500,7 +523,10 @@ body { background: var(--bg); }
   font-size: 28px; letter-spacing: -0.03em;
 }
 .page-sub { margin-top: 6px; font-size: 13px; color: var(--ink-3); max-width: 560px; }
-.page-actions { display: flex; gap: 8px; align-items: center; }
+/* Wraps, and stays right-aligned when it does. A page's action row grows over time — Browse
+   now carries a view switch, a milestone selector, a tier control and three buttons — and a
+   row that cannot wrap can only squeeze whatever sits beside it. */
+.page-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ---------- cards ---------- */
 .card {
@@ -1199,6 +1225,18 @@ body { background: var(--bg); }
   font-size: 12px;
 }
 .derived + .derived { border-top: 1px solid var(--hair-faint); }
+
+/* A duty rate is a row of facts, not a row of money: the code, origin and rate are numeric
+   and want tabular figures, while the source is prose and must stay left-aligned. `.derived`
+   right-aligns everything after the first column, which is right for the cost ladder and
+   wrong here, so this is its own row rather than a variant of that one. */
+.duty-row {
+  display: grid;
+  grid-template-columns: 130px 60px 66px 104px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px;
+  padding: 5px 0; font-size: 12px;
+}
+.duty-row + .duty-row { border-top: 1px solid var(--hair-faint); }
 .derived > span:nth-child(n+2) {
   font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px;
   text-align: right; padding-right: 7px;

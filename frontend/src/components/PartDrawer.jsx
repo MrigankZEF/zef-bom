@@ -20,11 +20,20 @@ function Accordion({ title, meta, defaultOpen = false, children }) {
   );
 }
 
-const Field = ({ label, children }) => (
+const Field = ({ label, children, hint }) => (
   // minWidth 0: a grid item defaults to min-width:auto and refuses to shrink below its
   // content, so a <select> with long option text bursts out of its column and out of the
   // drawer. Every Field is a grid child somewhere, so the fix belongs here.
-  <div style={{ minWidth: 0 }}><span className="input-label">{label}</span>{children}</div>
+  //
+  // `hint` is for a field whose LABEL cannot carry the rule — "Country of origin" does not
+  // say that origin is not the supplier, and that distinction is the whole reason the field
+  // exists separately. On the label, not a tooltip: a rule nobody hovers is a rule nobody
+  // follows.
+  <div style={{ minWidth: 0 }} title={hint || undefined}>
+    <span className="input-label">{label}</span>
+    {children}
+    {hint && <span className="micro" style={{ display: "block", color: "var(--ink-3)", marginTop: 3, lineHeight: 1.35 }}>{hint}</span>}
+  </div>
 );
 
 // A short, mutually exclusive choice, shown in full rather than hidden behind a select.
@@ -130,13 +139,19 @@ export default function PartDrawer({ itemId, tier, onClose, onOpenPart, onChange
   const { item, rollups, rollup, parents, node, decided, evidence, history, labor, costTypes, links, usage } = d;
   const isAssembly = item.item_type === "assembly";
   const isLeaf = !node.has_children;
+  // Customs fields belong on anything that CROSSES A BORDER: every part, and an assembly
+  // bought as one finished unit. An assembly we build here has no HS code of its own — the
+  // parts under it are the customs lines — so showing the field there would invite a
+  // classification that nothing reads.
+  const boughtWhole = isAssembly && (labor || []).some((l) => l.covers === "all");
+  const dutiable = !isAssembly || boughtWhole;
   const set = (k, v) => { setSaved(false); setForm((f) => ({ ...f, [k]: v })); };
   const totalQty = parents.reduce((s, p) => s + (p.quantity || 0), 0) || 1;
 
   const saveDetails = async () => {
     const patch = { change_reason: reason || undefined };
     const fields = ["item_name", "weight_grams", "supplier", "supplier_country",
-      "supplier_part_number", "lead_time_weeks", "comment"];
+      "supplier_part_number", "lead_time_weeks", "hs_code", "country_of_origin", "comment"];
     let dirty = false;
     for (const k of fields) {
       let v = form[k];
@@ -487,6 +502,21 @@ Create this copy anyway? It gets its own new code.`)) {
                     <Field label="Supplier country"><RefSelect category="country" value={form.supplier_country} onChange={(v) => set("supplier_country", v)} placeholder="— country —" /></Field>
                     <Field label="Supplier part number"><input className="input mono" value={form.supplier_part_number ?? ""} placeholder="e.g. DTM04-4P" onChange={(e) => set("supplier_part_number", e.target.value)} /></Field>
                     <Field label="Lead time (wk)"><NumInput value={form.lead_time_weeks} onChange={(v) => set("lead_time_weeks", v)} /></Field>
+                  </>
+                )}
+                {dutiable && (
+                  <>
+                    <Field label="HS code" hint="Customs classification, 4–10 digits. A 4-digit heading is enough to get a rate; refine it when you have the line.">
+                      <input className="input mono" value={form.hs_code ?? ""} placeholder="e.g. 8544.42.90"
+                             onChange={(e) => set("hs_code", e.target.value)} />
+                    </Field>
+                    {/* Deliberately NOT defaulted from the supplier on save — see models.Item.
+                        A German distributor shipping a Chinese-made part is a CN origin at a DE
+                        supplier, and duty follows where it was made. */}
+                    <Field label="Country of origin" hint="Where it was MADE, which is not always where it was bought. Duty follows this, not the supplier.">
+                      <RefSelect category="country" value={form.country_of_origin} onChange={(v) => set("country_of_origin", v)}
+                                 placeholder={item.supplier_country ? `— often ${item.supplier_country} —` : "— country —"} />
+                    </Field>
                   </>
                 )}
                 {/* A drawing or CAD address is just another link, so it lives in the list
