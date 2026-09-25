@@ -156,6 +156,70 @@ def export_csv(root: str = Query(...), db: Session = Depends(get_db)):
     )
 
 
+@router.get("/export/csv-flat")
+def export_csv_flat(
+    root: str = Query(...),
+    volume: int = Query(default=1, description="Tier that decides which assemblies are bought in"),
+    db: Session = Depends(get_db),
+):
+    """The BOM as a parts list: one row per distinct part, with the total the build needs.
+
+    `total_qty` is the quantity multiplied along every path and summed over paths — a part
+    at ×4 inside a ×6 assembly, and ×2 directly under the root, is 26. A bought-in assembly
+    is one line of its own and its contents are left out: the supplier buys those, not us.
+    Whether an assembly is bought in can differ per tier, hence `volume`. Unit costs are
+    per line and never extended.
+    """
+    if volume not in TIERS:
+        raise HTTPException(400, f"volume must be one of {TIERS}")
+    g = BomGraph(db, volume_tier=volume)
+    if root not in g.items:
+        raise HTTPException(404, f"Item {root} not found")
+
+    decided: dict[tuple[str, int], float] = {
+        (dc.item_id, dc.volume_tier): float(dc.unit_cost_eur)
+        for dc in db.execute(select(DecidedCost)).scalars()
+    }
+    leaves = g.flatten_leaves(root)      # stops at, and includes, each bought-in assembly
+    leaves.pop(root, None)   # a root with no children is not a part of itself
+    # Parents are listed only when they sit in this BOM — the part's other uses are noise here.
+    inside = g.flatten_assemblies(root)
+
+    rows: list[dict] = []
+    for item_id, qty in leaves.items():
+        it = g.items[item_id]
+        rows.append({
+            "item_id": item_id,
+            "item_name": it.item_name,
+            "type": it.item_type,
+            "module": it.module_code or "",
+            "bought_in": "yes" if g.is_boundary(item_id) else "",
+            "total_qty": _qty(qty),
+            "used_in": " ".join(sorted({p for p, _ in g.parents.get(item_id, []) if p in inside})),
+            "weight_g": it.weight_grams if it.weight_grams is not None else "",
+            "supplier": it.supplier or "",
+            "country": it.supplier_country or "",
+            "material": ", ".join(it.materials) if it.materials else (it.material or ""),
+            "unit_cost_eur@1": decided.get((item_id, 1), ""),
+            "unit_cost_eur@100": decided.get((item_id, 100), ""),
+            "unit_cost_eur@10k": decided.get((item_id, 10000), ""),
+        })
+    rows.sort(key=lambda r: r["item_id"])
+
+    buf = io.StringIO()
+    cols = ["item_id", "item_name", "type", "module", "bought_in", "total_qty", "used_in", "weight_g",
+            "supplier", "country", "material",
+            "unit_cost_eur@1", "unit_cost_eur@100", "unit_cost_eur@10k"]
+    writer = csv.DictWriter(buf, fieldnames=cols)
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{root}-flat@{_tier_label(volume)}.csv"'},
+    )
+
+
 # ── assembly flow chart (Mermaid, wrapped in Markdown) ────────────────────────
 # The BOM tree read as a production plan: every assembly becomes a station, every
 # leaf part an input feeding it, and every arrow points downstream at the finished

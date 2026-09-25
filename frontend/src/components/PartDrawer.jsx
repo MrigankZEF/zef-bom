@@ -1669,6 +1669,10 @@ function AdvancedOptions({ itemId, item, isAssembly, parents, busy, changeCode, 
             <span className="card-title" style={{ flex: 1 }}>Export this {item.is_top_level ? "BOM" : "assembly"}</span>
             <button className="btn ghost sm" onClick={() => exportBom("opml")} disabled={busy}><Icon name="box" size={12} /> OPML</button>
             <button className="btn ghost sm" onClick={() => exportBom("csv")} disabled={busy}><Icon name="box" size={12} /> CSV</button>
+            <button className="btn ghost sm" onClick={() => exportBom("csv-flat", `${itemId}-flat.csv`)} disabled={busy}
+                    title="One row per part, with the total quantity the whole build needs">
+              <Icon name="box" size={12} /> Flat CSV
+            </button>
           </div>
         )}
 

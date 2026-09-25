@@ -719,6 +719,31 @@ def test_bought_in_time_is_not_our_time():
     assert g2.assembly_time_total("AEC920A") == 30.0
 
 
+def test_flat_csv_export_lists_each_part_once_and_a_bought_in_assembly_as_one_line():
+    """Every part once, counted down every path. A bought-in harness is a line of its own and
+    its contents are not — at the tier where it is bought in, and only there."""
+    import csv as _csv
+    import io as _io
+
+    from app.routers.export import export_csv_flat
+    db = _flat_fixture()
+    rows = list(_csv.DictReader(_io.StringIO(export_csv_flat(root="AEC900A", volume=100, db=db).body.decode())))
+    assert [(r["item_id"], r["total_qty"]) for r in rows] == [("AEC902P", "26")], rows
+    assert rows[0]["used_in"] == "AEC900A AEC901A"
+    assert rows[0]["unit_cost_eur@100"] == "3.0"
+
+    def flat(volume):
+        body = export_csv_flat(root="AEC920A", volume=volume, db=_boundary_fixture()).body.decode()
+        return {r["item_id"]: r for r in _csv.DictReader(_io.StringIO(body))}
+
+    at100 = flat(100)
+    assert {k: r["total_qty"] for k, r in at100.items()} == {"AEC921A": "2"}, at100
+    assert at100["AEC921A"]["bought_in"] == "yes"
+    assert at100["AEC921A"]["unit_cost_eur@100"] == "40.0"
+    # The fixture only buys the harness in at @100; at @1 it is built here, parts and all.
+    assert {k: r["total_qty"] for k, r in flat(1).items()} == {"AEC923P": "20", "AEC924P": "6"}
+
+
 
 # ══ the COGS ladder ═══════════════════════════════════════════════════════════
 # Four rungs on top of the rolled-up BOM. The cases below are the prototype's own,
