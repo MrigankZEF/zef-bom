@@ -56,13 +56,27 @@ Claude can then call the API directly. Nothing else to set up.
 claude.ai and the phone app cannot run commands, so the file above does not help them. They
 connect through a **connector**:
 
-1. Claude → **Settings → Connectors → Add custom connector**
-2. URL: `https://zef-bom.up.railway.app/api/mcp`
-3. Paste your token when it asks for authentication
+Claude → **Settings → Connectors → Add custom connector**
 
-Then ask the BOM questions from anywhere. The connector offers eight read tools — costing
-summary and breakdown, the BOM tree, the flat purchasing list, the review queue, search,
-one item, and where-used.
+**First screen**
+
+| Field | Value |
+|---|---|
+| Name | `ZEF BOM` |
+| MCP server URL | `https://zef-bom.up.railway.app/api/mcp` |
+
+**Second screen** — this is where it goes wrong if you rush it.
+
+- **Authentication** → choose **No sign-in**. Not "Sign in now", even though it is marked
+  *Detected*: Claude sees our `401` and assumes OAuth, which this server does not do. The
+  "No sign-in" wording is the accurate one — *"for servers that use an API key instead of
+  OAuth"*.
+- **Request headers** → **+ Add header**, name `Authorization`, value `Bearer ` followed by
+  your token. The `Bearer ` prefix is required; without it the server refuses the connection.
+
+Then ask BOM questions from anywhere. Nothing further to configure and nothing to explain to
+Claude: the connector hands it the eight tools with their descriptions, plus a note that costs
+exist at three volumes and that coverage below 100% makes a total a floor rather than a price.
 
 ### ChatGPT (custom GPT)
 
