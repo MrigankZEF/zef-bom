@@ -179,3 +179,48 @@ def test_a_failing_tool_reports_inside_a_successful_response(bom):
 def test_an_unknown_method_is_a_protocol_error(bom):
     r = transport._handle({"jsonrpc": "2.0", "id": 7, "method": "resources/list"}, bom)
     assert r["error"]["code"] == -32601
+
+
+# ── the two response shapes Streamable HTTP allows ───────────────────────────────────────
+def _post(client_accept: str, payload: dict):
+    """Drive the endpoint through the app, so the Accept negotiation is exercised for real."""
+    import asyncio
+    import json as _json
+
+    from starlette.requests import Request
+
+    from app.routers.mcp import mcp_endpoint
+
+    scope = {"type": "http", "method": "POST", "path": "/api/mcp",
+             "headers": [(b"accept", client_accept.encode()),
+                         (b"content-type", b"application/json")]}
+    raw = _json.dumps(payload).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    class _Db:  # initialize never touches the database
+        pass
+
+    return asyncio.run(mcp_endpoint(Request(scope, receive), db=_Db()))
+
+
+INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+
+
+def test_a_client_asking_for_json_gets_json():
+    r = _post("application/json", INIT)
+    assert r.media_type == "application/json"
+    assert json.loads(r.body)["result"]["serverInfo"]["name"] == "zef-bom"
+
+
+def test_a_client_advertising_a_stream_gets_one():
+    """The spec lets the server choose, but a client that asked for `text/event-stream` and got
+    plain JSON is a failure mode indistinguishable from the server being unreachable."""
+    r = _post("application/json, text/event-stream", INIT)
+    assert r.media_type == "text/event-stream"
+    text = r.body.decode()
+    assert text.startswith("event: message\ndata: ")
+    assert text.endswith("\n\n")
+    payload = json.loads(text.split("data: ", 1)[1].strip())
+    assert payload["result"]["protocolVersion"] == engine.PROTOCOL_VERSION

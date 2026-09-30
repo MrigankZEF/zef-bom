@@ -122,6 +122,15 @@ _WEBAPP = Path(__file__).resolve().parent.parent / "webapp"
 if (_WEBAPP / "index.html").exists():
     app.mount("/assets", StaticFiles(directory=str(_WEBAPP / "assets")), name="assets")
 
+    # Well-known URIs are a namespace for machines, and the SPA catch-all was answering every
+    # one of them with 200 and an HTML page. A client asking "is there OAuth metadata here?"
+    # could therefore never get a straight no -- which is how a connector that needs no OAuth
+    # at all still failed with "Couldn't reach the MCP server". A 404 is both correct and the
+    # answer that lets a client move on.
+    @app.get("/.well-known/{_rest:path}", include_in_schema=False)
+    def _well_known(_rest: str):
+        raise HTTPException(404, "Not found")
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa(full_path: str):
         # API routes are matched before this catch-all; everything else is the SPA.

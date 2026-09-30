@@ -22,6 +22,23 @@ from ..db import get_db
 router = APIRouter(tags=["mcp"])
 
 
+def _respond(payload: Any, accept: str) -> Response:
+    """JSON, or the same JSON as one SSE frame when the client asked for a stream.
+
+    Streamable HTTP lets the server pick either, and clients must handle both -- but a client
+    that advertises `text/event-stream` is likelier to be exercising the streaming path, and
+    giving it what it asked for removes a whole class of "couldn't reach the server" that is
+    impossible to tell apart from a network failure.
+    """
+    body = json.dumps(payload)
+    if "text/event-stream" in accept.lower():
+        frame = "event: message\ndata: " + body + "\n\n"
+        return Response(frame,
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+    return Response(body, media_type="application/json")
+
+
 def _result(req_id: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
@@ -87,6 +104,7 @@ def _handle(body: dict, db: Session) -> dict | None:
 
 @router.post("/mcp")
 async def mcp_endpoint(request: Request, db: Session = Depends(get_db)) -> Response:
+    accept = request.headers.get("accept", "")
     try:
         body = json.loads(await request.body() or b"{}")
     except ValueError:
@@ -98,7 +116,7 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)) -> Respo
         out = [r for r in (_handle(m, db) for m in body if isinstance(m, dict)) if r is not None]
         if not out:
             return Response(status_code=202)
-        return Response(json.dumps(out), media_type="application/json")
+        return _respond(out, accept)
 
     if not isinstance(body, dict):
         return Response(json.dumps(_error(None, -32600, "Invalid Request")),
@@ -107,7 +125,7 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)) -> Respo
     result = _handle(body, db)
     if result is None:
         return Response(status_code=202)   # notification: accepted, nothing to say
-    return Response(json.dumps(result), media_type="application/json")
+    return _respond(result, accept)
 
 
 @router.get("/mcp")

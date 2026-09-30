@@ -77,3 +77,17 @@ def test_public_files_and_spa_routes_still_work_without_login(webapp):
     assert _get("/browse/some-bom") == (200, b"public SPA")
     assert _get("/") == (200, b"public SPA")
     assert _get("/api/health")[0] == 401
+
+
+@pytest.mark.parametrize("path", [
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/api/mcp",
+    "/.well-known/oauth-authorization-server",
+])
+def test_well_known_uris_say_no_instead_of_serving_the_app(webapp, path):
+    """A client probing for OAuth metadata was getting 200 and an HTML page, so it could never
+    conclude "there is none here" -- which is how a connector needing no OAuth still failed
+    with "Couldn't reach the MCP server". Well-known URIs are a namespace for machines."""
+    status, body = _get(path)
+    assert status == 404, f"{path} returned {status}"
+    assert b"<!doctype html" not in body.lower()
