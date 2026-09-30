@@ -262,6 +262,9 @@ export const api = {
   addUser: (body) => request("/users", { method: "POST", body: JSON.stringify(body) }),
   setUserRole: (email, role) => request(`/users/${encodeURIComponent(email)}`, { method: "PATCH", body: JSON.stringify({ role }) }),
   removeUser: (email) => request(`/users/${encodeURIComponent(email)}`, { method: "DELETE" }),
+  listApiTokens: () => request("/api-tokens"),
+  createApiToken: (body) => request("/api-tokens", { method: "POST", body: JSON.stringify(body) }),
+  revokeApiToken: (id) => request(`/api-tokens/${id}`, { method: "DELETE" }),
 
   // ── attachments (Drive) ──
   attachments: (id) => request(`/items/${encodeURIComponent(id)}/attachments`),

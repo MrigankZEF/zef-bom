@@ -315,6 +315,38 @@ class User(Base):
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ApiToken(Base):
+    """A long-lived credential for programs, standing in for a browser sign-in.
+
+    READ-ONLY, always. Not "read-only unless the owner is an admin" -- the guard refuses
+    every write carrying one of these, whoever it belongs to. Writing needs a deliberate
+    change here and in `enforce_access`, so a token can never quietly gain powers because
+    its owner was promoted.
+
+    The secret itself is never stored: only its SHA-256. A stolen database gives no working
+    token, and a lost token can only be replaced, never recovered. `prefix` is the first few
+    visible characters, kept so the Admin list can show WHICH token a row is without holding
+    anything that would let you use it.
+
+    Deliberately absent from the backup -- see backup.py for why.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    label: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Whose reading rights it borrows. A token belonging to a viewer still sees only what a
+    # viewer sees, because the same allowlist check runs on every request.
+    user_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AssemblyLabor(Base):
     """How one assembly is costed at one volume tier.
 

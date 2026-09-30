@@ -6,7 +6,10 @@ back to the X-User header / 'anonymous' so the app keeps working before login is
 """
 from __future__ import annotations
 
+import hashlib
+import secrets
 import time
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import Header, HTTPException, Request
@@ -14,6 +17,57 @@ from fastapi import Header, HTTPException, Request
 from .config import settings
 
 _ALGO = "HS256"
+
+# API tokens announce themselves. A bearer value starting with this is looked up in the
+# database rather than decoded as a JWT -- so the two kinds of credential can never be
+# confused for one another, and a malformed token fails as a token, not as a broken JWT.
+TOKEN_PREFIX = "zbt_"
+_PREFIX_SHOWN = 12          # characters kept in the clear, for "which token is this?"
+
+
+def new_api_token() -> tuple[str, str, str]:
+    """`(secret, sha256, prefix)` -- the only place a token exists in the clear."""
+    secret = TOKEN_PREFIX + secrets.token_urlsafe(32)
+    return secret, hash_api_token(secret), secret[:_PREFIX_SHOWN]
+
+
+def hash_api_token(secret: str) -> str:
+    return hashlib.sha256(secret.encode()).hexdigest()
+
+
+def _bearer(authorization: str | None) -> str | None:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+    return None
+
+
+def api_token_user(secret: str):
+    """The `User` an unexpired, unrevoked token belongs to, or None.
+
+    Also stamps `last_used_at`, at most once a minute: knowing a token is live matters when
+    deciding whether to revoke one, and a write on every read would cost more than it tells.
+    """
+    from .db import SessionLocal
+    from .models import ApiToken, User
+
+    digest = hash_api_token(secret)
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        row = db.query(ApiToken).filter(ApiToken.token_hash == digest).one_or_none()
+        if row is None or row.revoked_at is not None:
+            return None
+        expires = row.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)   # SQLite hands back naive datetimes
+        if expires is not None and expires <= now:
+            return None
+        last = row.last_used_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if last is None or (now - last) > timedelta(minutes=1):
+            row.last_used_at = now
+            db.commit()
+        return db.get(User, row.user_email)
 
 
 def create_token(email: str, name: str | None, role: str) -> str:
@@ -67,6 +121,18 @@ def enforce_access(request: Request, authorization: str | None = Header(default=
         return  # the frontend (static assets + SPA) — public
     if path.startswith("/api/auth"):
         return  # login / auth-config — public
+
+    bearer = _bearer(authorization)
+    if bearer and bearer.startswith(TOKEN_PREFIX):
+        # An API token is read-only, whoever owns it. Checked BEFORE the token is even
+        # looked up, so the rule holds for expired and revoked ones too and cannot be
+        # widened by promoting the owner.
+        if method not in ("GET", "HEAD"):
+            raise HTTPException(403, "API tokens are read-only — editing needs a browser sign-in.")
+        user = api_token_user(bearer)
+        if user is None:
+            raise HTTPException(401, "Invalid, expired or revoked API token")
+        return
 
     claims = current_claims(authorization)
     if not claims:

@@ -30,6 +30,7 @@ export default function Admin({ onOpenPart, onChanged }) {
         <div className="page-actions">
           <div className="segmented-mini">
             <button className={sub === "users" ? "on" : ""} onClick={() => setSub("users")}>Users</button>
+            <button className={sub === "tokens" ? "on" : ""} onClick={() => setSub("tokens")}>API tokens</button>
             <button className={sub === "reference" ? "on" : ""} onClick={() => setSub("reference")}>Reference data</button>
             <button className={sub === "archive" ? "on" : ""} onClick={() => setSub("archive")}>Archive</button>
             <button className={sub === "backup" ? "on" : ""} onClick={() => setSub("backup")}>Backup</button>
@@ -40,6 +41,7 @@ export default function Admin({ onOpenPart, onChanged }) {
         </div>
       </div>
       {sub === "users" && <Users />}
+      {sub === "tokens" && <ApiTokens />}
       {sub === "reference" && <Reference />}
       {sub === "archive" && <Archive onOpenPart={onOpenPart} onChanged={onChanged} />}
       {sub === "backup" && <><Backup /><Restore onChanged={onChanged} /></>}
@@ -51,6 +53,142 @@ export default function Admin({ onOpenPart, onChanged }) {
 }
 
 const ROLES = ["admin", "editor", "viewer"];
+
+// ── API tokens ───────────────────────────────────────────────────────────────
+// A token stands in for a browser sign-in so a program can read the BOM. It can only ever
+// read: the server refuses every write carrying one, whoever it belongs to.
+function ApiTokens() {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [label, setLabel] = useState("");
+  const [days, setDays] = useState(30);
+  const [fresh, setFresh] = useState(null);   // the one and only time the secret exists here
+  const [copied, setCopied] = useState(false);
+  // Which account the token borrows, chosen rather than assumed: an admin may legitimately
+  // mint one against a viewer account, and running without sign-in there is no "me" to default
+  // to at all.
+  const [accounts, setAccounts] = useState([]);
+  const [email, setEmail] = useState("");
+
+  // FastAPI sends {"detail": "..."} and the client wraps it with the status code; show the
+  // sentence, not the JSON.
+  const msg = (e) => {
+    const m = String(e.message || e);
+    try { return JSON.parse(m.slice(m.indexOf("{"))).detail || m; } catch { return m; }
+  };
+
+  const load = () => api.listApiTokens().then(setRows).catch((e) => setError(msg(e)));
+  useEffect(() => {
+    load();
+    api.listUsers().then((us) => {
+      setAccounts(us);
+      setEmail((prev) => prev || (us.find((u) => u.role === "admin") || us[0] || {}).email || "");
+    }).catch(() => {});
+  }, []);
+
+  const create = async () => {
+    if (!label.trim()) return;
+    setError(null);
+    try {
+      const t = await api.createApiToken({ label: label.trim(), days: Number(days), email: email || null });
+      setFresh(t); setLabel(""); setCopied(false); load();
+    } catch (e) { setError(msg(e)); }
+  };
+  const revoke = async (t) => {
+    if (!window.confirm(`Revoke "${t.label}" (${t.prefix}…)? Anything using it stops working immediately.`)) return;
+    try { await api.revokeApiToken(t.id); load(); } catch (e) { setError(msg(e)); }
+  };
+
+  const state = (t) => t.revoked ? "revoked" : t.expired ? "expired" : "live";
+  const when = (iso) => iso ? new Date(iso).toLocaleDateString() : "—";
+
+  if (error && !rows) return <p className="err">{error}</p>;
+  if (!rows) return <p className="muted">Loading…</p>;
+
+  return (
+    <>
+      {/* Shown once, then never again — the server keeps only a hash. Saying so here is the
+          difference between someone copying it now and someone filing a support request. */}
+      {fresh?.token && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
+          <div className="card-head"><span className="card-title">Copy this now — it will not be shown again</span></div>
+          <div style={{ padding: "0 18px 16px" }}>
+            <code style={{ display: "block", padding: "10px 12px", background: "var(--bg-sunk)",
+                           border: "1px solid var(--hair)", wordBreak: "break-all", fontSize: 13 }}>
+              {fresh.token}
+            </code>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+              <button className="btn sm" onClick={() => { navigator.clipboard?.writeText(fresh.token); setCopied(true); }}>
+                {copied ? "Copied" : "Copy"}
+              </button>
+              <button className="btn ghost sm" onClick={() => setFresh(null)}>Done</button>
+              <span className="muted" style={{ fontSize: 12 }}>
+                Read-only · expires {when(fresh.expires_at)}. Keep it out of the repository.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head"><span className="card-title">New read-only token</span></div>
+        <div style={{ padding: "0 18px 16px" }}>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Lets a script or an assistant read the BOM without a browser. It borrows your account,
+            so it sees exactly what you see — and it can never change anything.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <input className="input" placeholder="What is it for? e.g. claude-laptop" value={label}
+                   style={{ minWidth: 0, flex: "1 1 240px" }}
+                   onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} />
+            <select className="select" value={email} onChange={(e) => setEmail(e.target.value)}
+                    title="The account whose reading rights this token borrows" style={{ minWidth: 0 }}>
+              {accounts.length === 0 && <option value="">no accounts</option>}
+              {accounts.map((u) => <option key={u.email} value={u.email}>{u.email} · {u.role}</option>)}
+            </select>
+            <select className="select" value={days} onChange={(e) => setDays(e.target.value)} style={{ minWidth: 0 }}>
+              <option value={7}>7 days</option>
+              <option value={30}>30 days</option>
+              <option value={90}>90 days</option>
+            </select>
+            <button className="btn" onClick={create} disabled={!label.trim() || !email}>Create</button>
+          </div>
+          {error && <p className="err" style={{ marginBottom: 0 }}>{error}</p>}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><span className="card-title">Tokens · {rows.length}</span></div>
+        {rows.length === 0 ? <p className="muted" style={{ padding: "0 18px 16px" }}>None yet.</p> : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="table">
+              <thead><tr>
+                <th>Label</th><th>Token</th><th>Account</th><th>Expires</th><th>Last used</th><th>State</th><th></th>
+              </tr></thead>
+              <tbody>
+                {/* Revoked and expired rows stay listed: "who had a key, and when did it stop
+                    working" is a question you ask after something has gone wrong. */}
+                {rows.map((t) => (
+                  <tr key={t.id} style={state(t) === "live" ? undefined : { opacity: 0.55 }}>
+                    <td>{t.label}</td>
+                    <td><code style={{ fontSize: 12 }}>{t.prefix}…</code></td>
+                    <td className="muted">{t.email}</td>
+                    <td>{when(t.expires_at)}</td>
+                    <td className="muted">{t.last_used_at ? new Date(t.last_used_at).toLocaleString() : "never"}</td>
+                    <td>{state(t)}</td>
+                    <td style={{ textAlign: "right" }}>
+                      {state(t) === "live" && <button className="btn ghost sm" onClick={() => revoke(t)}>Revoke</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
 
 function Users() {
   const [rows, setRows] = useState(null);

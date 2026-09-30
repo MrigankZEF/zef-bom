@@ -43,6 +43,12 @@ BACKUP_SHEETS = [
     ("ChangeHistory", ChangeHistory),
     ("CodeRegistry", CodeRegistry),
     ("Users", User),
+    # api_tokens is DELIBERATELY absent, against the rule that every new table joins this
+    # list. Restoring last month's file would resurrect a token revoked since -- a backup
+    # would become a way to un-revoke a credential. Leaving them out means a restore ends
+    # every token instead, which fails in the safe direction: the worst case is that someone
+    # mints a new one. Nothing of value is lost either way, because a token cannot be
+    # recovered from the backup regardless -- only its hash was ever stored.
     # The COGS ladder. A forgotten table is how a backup silently stops being a backup —
     # these carry every figure on the Facilities screen, and none of it is derivable from
     # the BOM.

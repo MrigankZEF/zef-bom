@@ -293,3 +293,12 @@ class DutyRateIn(BaseModel):
     valid_from: date | None = None
     source: str | None = None
     note: str | None = None
+
+
+class ApiTokenIn(BaseModel):
+    """A read-only token for a program. `email` defaults to the admin creating it, so the
+    usual case needs one field; naming someone else is allowed but explicit."""
+
+    label: str = Field(min_length=1, max_length=64)
+    days: int = Field(default=30, ge=1, le=365)
+    email: str | None = None

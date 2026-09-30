@@ -7,13 +7,14 @@ dropdowns and are managed here via '+ add'.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .. import drive
-from ..auth import current_user, require_admin
+from ..auth import current_user, new_api_token, require_admin
 from ..backup import (
     XLSX_MIME, build_backup_workbook, plan_restore, read_backup_workbook,
     restore_from_workbook, run_drive_backup,
@@ -21,10 +22,10 @@ from ..backup import (
 from ..db import get_db
 from ..history import record_change
 from ..models import (
-    AssemblyLabor, BomLink, BomMilestone, ChangeHistory, CostEvidence, DecidedCost, FieldValue, Item,
-    ItemLink, ReferenceValue, UploadBatch, User,
+    ApiToken, AssemblyLabor, BomLink, BomMilestone, ChangeHistory, CostEvidence, DecidedCost,
+    FieldValue, Item, ItemLink, ReferenceValue, UploadBatch, User,
 )
-from ..schemas import ReferenceIn, UserIn, UserRoleIn
+from ..schemas import ApiTokenIn, ReferenceIn, UserIn, UserRoleIn
 
 router = APIRouter(tags=["admin"])
 
@@ -80,6 +81,75 @@ def remove_user(email: str, db: Session = Depends(get_db), admin: str = Depends(
     u = db.get(User, email)
     if u is not None:
         db.delete(u)
+        db.commit()
+
+
+# ── API tokens (admin only, read-only credentials) ───────────────────────────
+def _token_row(t: ApiToken, now: datetime) -> dict:
+    expires = t.expires_at.replace(tzinfo=timezone.utc) if t.expires_at and t.expires_at.tzinfo is None else t.expires_at
+    return {
+        "id": t.id,
+        "label": t.label,
+        "prefix": t.prefix,
+        "email": t.user_email,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "created_by": t.created_by,
+        "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+        "last_used_at": t.last_used_at.isoformat() if t.last_used_at else None,
+        "revoked": t.revoked_at is not None,
+        "expired": bool(expires and expires <= now),
+    }
+
+
+@router.get("/api-tokens")
+def list_api_tokens(db: Session = Depends(get_db), _: str = Depends(require_admin)) -> list[dict]:
+    """Every token ever issued, live or not. Revoked and expired ones stay listed: "who had
+    a key, and when did it stop working" is the question you ask after something goes wrong,
+    and a list that quietly forgets cannot answer it."""
+    now = datetime.now(timezone.utc)
+    rows = db.execute(select(ApiToken).order_by(ApiToken.created_at.desc())).scalars()
+    return [_token_row(t, now) for t in rows]
+
+
+@router.post("/api-tokens", status_code=201)
+def create_api_token(body: ApiTokenIn, db: Session = Depends(get_db),
+                     admin: str = Depends(require_admin)) -> dict:
+    """Mint a read-only token. The secret is in this response and nowhere else, ever."""
+    # Whose reading rights the token borrows. Named explicitly by the caller, falling back to
+    # the admin making it -- except in dev mode, where `require_admin` returns the string
+    # "dev" and there is no signed-in account to fall back TO.
+    email = (body.email or admin).strip().lower()
+    if db.get(User, email) is None:
+        hint = " (running without sign-in, so pick an account explicitly)" if admin == "dev" else ""
+        raise HTTPException(404, f"{email} is not on the allowlist — add the user first{hint}")
+    secret, digest, prefix = new_api_token()
+    row = ApiToken(
+        token_hash=digest, prefix=prefix, label=body.label.strip(), user_email=email,
+        created_by=admin, expires_at=datetime.now(timezone.utc) + timedelta(days=body.days),
+    )
+    db.add(row)
+    # The token itself is never written to the change log -- the log is readable by every
+    # editor, and a credential in an append-only table cannot be taken back out.
+    record_change(db, entity_type="api_token", entity_id=prefix, change_type="create",
+                  field_changed="label", new_value=row.label, changed_by=admin)
+    db.commit()
+    db.refresh(row)
+    return {**_token_row(row, datetime.now(timezone.utc)), "token": secret}
+
+
+@router.delete("/api-tokens/{token_id}", status_code=204)
+def revoke_api_token(token_id: int, db: Session = Depends(get_db),
+                     admin: str = Depends(require_admin)) -> None:
+    """Revoking is immediate: the guard reads `revoked_at` on every single request, so there
+    is no window between clicking and the token going dead."""
+    row = db.get(ApiToken, token_id)
+    if row is None:
+        raise HTTPException(404, "Token not found")
+    if row.revoked_at is None:
+        row.revoked_at = datetime.now(timezone.utc)
+        record_change(db, entity_type="api_token", entity_id=row.prefix, change_type="update",
+                      field_changed="revoked", old_value="live", new_value="revoked",
+                      changed_by=admin)
         db.commit()
 
 
