@@ -16,11 +16,24 @@ from .routers import (
     tree, uploads,
 )
 
+# /docs and /openapi.json sit outside /api, so the guard never saw them and anyone who
+# guessed the URL could read the complete map of this API -- every route, every parameter,
+# every write endpoint -- without signing in. No data, but a free blueprint. It stays on in
+# dev, where it is genuinely useful and there is nothing to protect.
+#
+# Turning it off does not cut off the AI integrations: those read the curated read-only
+# schema committed at docs/api/zef-bom-readonly-openapi.json, which is a smaller and more
+# stable thing to point a connector at than the live 105-operation document.
+_DEV = not settings.google_oauth_client_id
+
 app = FastAPI(
     title="ZEF BOM API",
     version="0.1.0",
     summary="BOM / inventory / costing backend for the ZEF microplant.",
     dependencies=[Depends(enforce_access)],  # login + role guard (no-op in dev)
+    docs_url="/docs" if _DEV else None,
+    redoc_url="/redoc" if _DEV else None,
+    openapi_url="/openapi.json" if _DEV else None,
 )
 
 app.add_middleware(
@@ -125,4 +138,5 @@ if (_WEBAPP / "index.html").exists():
 else:
     @app.get("/", include_in_schema=False)
     def root() -> dict:
-        return {"service": "zef-bom", "docs": "/docs", "note": "frontend not built into backend/webapp"}
+        return {"service": "zef-bom", "docs": "/docs" if _DEV else None,
+                "note": "frontend not built into backend/webapp"}
