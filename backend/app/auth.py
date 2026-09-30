@@ -22,6 +22,13 @@ _ALGO = "HS256"
 # database rather than decoded as a JWT -- so the two kinds of credential can never be
 # confused for one another, and a malformed token fails as a token, not as a broken JWT.
 TOKEN_PREFIX = "zbt_"
+
+# The single exception to "a token may not POST". MCP puts every request in a POST body,
+# reads included, so a connector cannot work without it. Narrow on purpose -- one exact path,
+# not a prefix -- and the read-only guarantee moves to where it can actually be enforced:
+# `app.mcp.TOOLS` is that endpoint's entire surface and holds only GET handlers. A test
+# asserts both halves: that this set stays a single path, and that no write reaches the tools.
+_TOKEN_POST_OK = frozenset({"/api/mcp"})
 _PREFIX_SHOWN = 12          # characters kept in the clear, for "which token is this?"
 
 
@@ -127,7 +134,7 @@ def enforce_access(request: Request, authorization: str | None = Header(default=
         # An API token is read-only, whoever owns it. Checked BEFORE the token is even
         # looked up, so the rule holds for expired and revoked ones too and cannot be
         # widened by promoting the owner.
-        if method not in ("GET", "HEAD"):
+        if method not in ("GET", "HEAD") and path not in _TOKEN_POST_OK:
             raise HTTPException(403, "API tokens are read-only — editing needs a browser sign-in.")
         user = api_token_user(bearer)
         if user is None:

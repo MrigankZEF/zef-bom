@@ -51,6 +51,19 @@ Save the token to a file, then tell Claude where it is:
 
 Claude can then call the API directly. Nothing else to set up.
 
+### Claude chat, Claude on your phone (connector)
+
+claude.ai and the phone app cannot run commands, so the file above does not help them. They
+connect through a **connector**:
+
+1. Claude → **Settings → Connectors → Add custom connector**
+2. URL: `https://zef-bom.up.railway.app/api/mcp`
+3. Paste your token when it asks for authentication
+
+Then ask the BOM questions from anywhere. The connector offers eight read tools — costing
+summary and breakdown, the BOM tree, the flat purchasing list, the review queue, search,
+one item, and where-used.
+
 ### ChatGPT (custom GPT)
 
 ChatGPT's normal browsing **cannot** do this — it cannot attach the token to a request. You
