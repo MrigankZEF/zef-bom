@@ -129,6 +129,22 @@ def enforce_access(request: Request, authorization: str | None = Header(default=
     if path.startswith("/api/auth"):
         return  # login / auth-config — public
 
+    if path == "/api/mcp":
+        # Diagnostic only -- no decision is taken here, and the value is never recorded.
+        # A connector has been failing with 401 while an identical hand-made request with a
+        # token succeeds, and the access log shows status codes but not what arrived. This
+        # answers the one question that separates "the token is wrong" from "no token is being
+        # sent at all", which decides whether any change to this guard is warranted.
+        head = authorization or ""
+        # Report the scheme only when it is one we recognise. Echoing the first word would
+        # print the credential itself whenever the value has no scheme in front of it -- which
+        # is precisely the case this logging exists to detect.
+        first = head.split(" ", 1)[0].lower() if " " in head else ""
+        scheme = first if first in ("bearer", "basic", "token") else (
+            "none" if not head else "missing-or-unrecognised")
+        print(f"[mcp] {method} auth={'present' if head else 'absent'} "
+              f"scheme={scheme} chars={len(head)}", flush=True)
+
     bearer = _bearer(authorization)
     if bearer and bearer.startswith(TOKEN_PREFIX):
         # An API token is read-only, whoever owns it. Checked BEFORE the token is even
