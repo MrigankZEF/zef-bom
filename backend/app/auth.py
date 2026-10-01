@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import Header, HTTPException, Request
 
+from . import oauth
 from .config import settings
 
 _ALGO = "HS256"
@@ -164,8 +165,43 @@ def enforce_access(request: Request, authorization: str | None = Header(default=
             raise HTTPException(401, "Invalid, expired or revoked API token")
         return
 
+    # A pass from the outside authorization server, for connectors that cannot hold a static
+    # token. Checked before our own sessions because the two are told apart by signature
+    # algorithm, and an RS256 token is never one of ours.
+    if bearer and oauth.configured() and oauth.looks_like_ours(bearer):
+        try:
+            issued = oauth.verify(bearer)
+        except oauth.InvalidPass as exc:
+            raise HTTPException(401, str(exc)) from exc
+        db = SessionLocal()
+        try:
+            user = db.get(User, issued.email)
+        finally:
+            db.close()
+        if user is None:
+            raise HTTPException(
+                403, f"{issued.email} isn't authorized for the BOM tool. Ask an admin to add you.")
+        # Same rule as a static token, for the same reason: a connector reads, it does not
+        # edit. Signing in through a provider is a way of proving who you are, not a wider
+        # grant than the token route gives.
+        if method not in ("GET", "HEAD") and path not in _TOKEN_POST_OK:
+            raise HTTPException(403, "Connector access is read-only — editing needs a browser sign-in.")
+        return
+
     claims = current_claims(authorization)
     if not claims:
+        # On the connector path, a bare 401 is a dead end: the client cannot tell "show me a
+        # token" from "sign in somewhere", so it guesses, hunts for metadata, and reports the
+        # server as unreachable. RFC 9728 says where to look, and this header is how. Only on
+        # /api/mcp, and only when a provider is configured -- everywhere else a 401 still
+        # means what it has always meant.
+        if path in _TOKEN_POST_OK and oauth.configured():
+            base = settings.public_base_url.rstrip("/") or str(request.base_url).rstrip("/")
+            raise HTTPException(
+                401, "Sign-in required",
+                headers={"WWW-Authenticate":
+                         f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource"'},
+            )
         raise HTTPException(401, "Sign-in required")
     db = SessionLocal()
     try:

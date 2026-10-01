@@ -32,6 +32,17 @@ class Settings(BaseSettings):
 
     auth_disabled: bool = True
 
+    # An outside authorization server (Auth0) for connectors that cannot carry a static token.
+    # Both blank = off, and nothing about the existing sign-in or the API tokens changes.
+    # The audience is this API's identifier at that provider; a pass minted for anything else
+    # is refused even when it is otherwise perfectly valid.
+    auth0_domain: str = ""        # e.g. zefbv.eu.auth0.com
+    auth0_audience: str = ""      # e.g. https://zef-bom.up.railway.app/api
+    # This app's own address, for the discovery document. RFC 9728 requires `resource` to
+    # equal the URL the person typed into their connector, character for character. Blank =
+    # work it out from the incoming request, which is right locally and behind one proxy.
+    public_base_url: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

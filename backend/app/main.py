@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import oauth
 from .auth import enforce_access
 from .config import settings
 from .routers import (
@@ -127,6 +128,23 @@ if (_WEBAPP / "index.html").exists():
     # could therefore never get a straight no -- which is how a connector that needs no OAuth
     # at all still failed with "Couldn't reach the MCP server". A 404 is both correct and the
     # answer that lets a client move on.
+    # How an OAuth client finds the login desk. RFC 9728: `resource` must equal the MCP URL
+    # exactly as the person typed it into the connector, and `authorization_servers` names the
+    # provider. Served only when one is configured -- otherwise a 404 here is the honest answer
+    # and stops a client hunting for a desk that does not exist.
+    @app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+    @app.get("/.well-known/oauth-protected-resource/api/mcp", include_in_schema=False)
+    def _protected_resource(request: Request):
+        if not oauth.configured():
+            raise HTTPException(404, "Not found")
+        base = settings.public_base_url.rstrip("/") or str(request.base_url).rstrip("/")
+        return {
+            "resource": f"{base}/api/mcp",
+            "authorization_servers": [oauth.issuer()],
+            "bearer_methods_supported": ["header"],
+            "scopes_supported": ["openid", "profile", "email"],
+        }
+
     @app.get("/.well-known/{_rest:path}", include_in_schema=False)
     def _well_known(_rest: str):
         raise HTTPException(404, "Not found")
