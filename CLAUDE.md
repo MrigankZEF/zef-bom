@@ -11,15 +11,36 @@ from.
 Rolled-up cost of AEC Standalone, at the three volume tiers:
 
 ```
-@1       EUR 30,372.41
-@100     EUR  7,960.64
-@10,000  EUR  2,871.87
+@1       EUR 30,866.81
+@100     EUR  5,576.56
+@10,000  EUR  2,314.09
 ```
 
 **Check this before and after any change that could touch costing**, against a database
 rebuilt from a production backup — not against the dev database, which has drifted. If a
 change moves these, either the change is wrong or the change is the point; there is no third
 case, and the difference must be understood before it ships.
+
+These figures are a tripwire, not a constant. Real work on the data moves them, and when it
+does they are re-based deliberately, with the reason written down — never quietly edited to
+whatever the suite now prints, which would turn the check into a mirror.
+
+They last moved in September 2026, from `30,372.41 / 7,960.64 / 2,871.87`, for three reasons,
+all of them legitimate:
+
+* Placeholder prices on the cell components were replaced with real ones — Cell Membrane
+  5.00 → 1.80 and Bipolar Plate 5.00 → 2.50 at @100, each used in the hundreds. The single
+  largest factor.
+* Half Stack Cells went from 26 cells to 22, so the plant has 48 fewer. A design change, not
+  a costing one.
+* Nine assemblies that had no cost type — Stack, Cell, Midplate, Cell Frame, Half Stack
+  Cells, End Cell, Core among them — were given one and timed. They had been contributing
+  zero and are now priced, which is why coverage reads 100% rather than 93%.
+
+Quotes were also cleared off five assemblies around the same time. That changed no number:
+an assembly with children is costed from its children, so a price sitting on one is never
+read unless `covers='all'` makes it a boundary. Worth knowing before concluding that deleting
+one did something.
 
 `backend/scripts/audit_rollups.py` recomputes every cost two further ways, sharing no code
 with `rollups.py`. It exists to check the graph, not to trust it: if it disagrees with the
