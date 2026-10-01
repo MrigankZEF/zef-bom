@@ -43,8 +43,31 @@ def hash_api_token(secret: str) -> str:
 
 
 def _bearer(authorization: str | None) -> str | None:
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization.split(" ", 1)[1].strip()
+    """The credential out of an Authorization header, read generously.
+
+    Generous about the wrapping, never about the secret. Every form below still has to be a
+    token this server issued and has not revoked; nothing here admits anyone who lacks one.
+
+    The strictness was costing more than it bought. A connector's header is typed into a form
+    by hand, and the ways to get it subtly wrong are invisible on screen: a non-breaking space
+    pasted out of a web page, a tab, no space at all. Each produced a 401, which a client reads
+    not as "that credential is malformed" but as "this server wants an OAuth sign-in" -- so it
+    goes hunting for metadata that does not exist and reports the server as invalid. Three days
+    of that traced to one character that cannot be seen.
+
+    A bare token with no scheme is accepted too: `zbt_` is our own prefix, so a value starting
+    with it is unambiguous, and refusing it only punishes someone for a formatting rule they
+    cannot see they have broken.
+    """
+    if not authorization:
+        return None
+    head = authorization.strip()
+    if head.lower().startswith("bearer"):
+        rest = head[len("bearer"):].strip()     # any whitespace, or none at all
+        if rest:
+            return rest
+    if head.startswith(TOKEN_PREFIX):           # the scheme omitted entirely
+        return head
     return None
 
 
@@ -128,22 +151,6 @@ def enforce_access(request: Request, authorization: str | None = Header(default=
         return  # the frontend (static assets + SPA) — public
     if path.startswith("/api/auth"):
         return  # login / auth-config — public
-
-    if path == "/api/mcp":
-        # Diagnostic only -- no decision is taken here, and the value is never recorded.
-        # A connector has been failing with 401 while an identical hand-made request with a
-        # token succeeds, and the access log shows status codes but not what arrived. This
-        # answers the one question that separates "the token is wrong" from "no token is being
-        # sent at all", which decides whether any change to this guard is warranted.
-        head = authorization or ""
-        # Report the scheme only when it is one we recognise. Echoing the first word would
-        # print the credential itself whenever the value has no scheme in front of it -- which
-        # is precisely the case this logging exists to detect.
-        first = head.split(" ", 1)[0].lower() if " " in head else ""
-        scheme = first if first in ("bearer", "basic", "token") else (
-            "none" if not head else "missing-or-unrecognised")
-        print(f"[mcp] {method} auth={'present' if head else 'absent'} "
-              f"scheme={scheme} chars={len(head)}", flush=True)
 
     bearer = _bearer(authorization)
     if bearer and bearer.startswith(TOKEN_PREFIX):

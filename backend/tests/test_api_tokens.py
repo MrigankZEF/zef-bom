@@ -133,3 +133,35 @@ def test_a_browser_session_still_works_exactly_as_before(env):
     auth.enforce_access(_req("GET"), "Bearer " + jwt_token)
     auth.enforce_access(_req("POST"), "Bearer " + jwt_token)
     assert auth.require_admin("Bearer " + jwt_token) == "admin@example.com"
+
+
+# ── how the credential is wrapped ────────────────────────────────────────────────────────
+@pytest.mark.parametrize("wrap,label", [
+    ("Bearer {t}",   "the documented form"),
+    ("bearer {t}",   "lowercase scheme"),
+    ("BEARER {t}",   "shouted scheme"),
+    ("Bearer\u00a0{t}", "non-breaking space, pasted from a web page"),
+    ("Bearer\t{t}",  "a tab"),
+    ("Bearer{t}",    "no space at all"),
+    ("Bearer  {t}",  "two spaces"),
+    ("  Bearer {t} ", "leading and trailing whitespace"),
+    ("{t}",          "the bare token, no scheme"),
+])
+def test_a_token_is_accepted_however_it_was_typed(env, wrap, label):
+    """Observed in production: a connector sent `Bearer` and the token with no separator and
+    got a 401, which the client reported as "not a valid MCP server" rather than as a bad
+    credential. The wrapping is a formatting rule nobody can see they have broken; the secret
+    inside is what must be right."""
+    secret = _mint(env)
+    auth.enforce_access(_req("GET"), wrap.format(t=secret))
+
+
+@pytest.mark.parametrize("bad", [
+    "Bearer ", "Bearer", "", "Basic {t}", "Bearer not-a-real-token", "zbt_wrong", "{t}x",
+])
+def test_generous_parsing_still_admits_nobody_without_a_real_token(env, bad):
+    """The point of the leniency is the wrapper, never the secret."""
+    secret = _mint(env)
+    header = bad.format(t=secret) if "{t}" in bad else bad
+    with pytest.raises(HTTPException):
+        auth.enforce_access(_req("GET"), header)
